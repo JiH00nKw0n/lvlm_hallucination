@@ -13,6 +13,8 @@ LLAMA_REAL_TYPE = "llama_real"
 
 
 class LLamaRealConfig(PretrainedConfig):
+    model_type = LLAMA_REAL_TYPE
+
     def __init__(
             self,
             text_config: Union[AutoConfig, Dict] = None,

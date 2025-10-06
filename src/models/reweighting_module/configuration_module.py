@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, List, Union
 
 from transformers import PretrainedConfig
 from transformers.models.auto import AutoConfig
@@ -132,10 +132,13 @@ class ReweightAttentionConfig(PretrainedConfig):
             self,
             num_latents_value: int = 512,
             hidden_dim: int = 4096,
-            image_token_id: int = 32000,  # "<image>" token sequence
-            assistant_token_ids: Tuple[int] = (22933, 9047, 13566, 29901),  # "ASSISTANT:" token sequence
+            # "<image>" token sequence
+            image_token_id: int = 32000,
+            # "ASSISTANT:" token sequence
+            assistant_token_ids: Union[List[int] | Tuple[int]] = (22933, 9047, 13566, 29901),
             attention_bias=False,
             attention_dropout=0.0,
+            implementation_type: str = "max_pool",
             **kwargs,
     ):
         self.num_latents_value = num_latents_value
@@ -144,6 +147,7 @@ class ReweightAttentionConfig(PretrainedConfig):
         self.assistant_token_ids = list(assistant_token_ids)
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
+        self.implementation_type = implementation_type
 
         super().__init__(**kwargs)
 

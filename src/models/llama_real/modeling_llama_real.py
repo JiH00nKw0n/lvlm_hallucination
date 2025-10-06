@@ -99,12 +99,6 @@ class LlamaRealAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        reweight_mask = self.reweight_attention(
-            input_ids=input_ids,
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-        )
-
         query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
@@ -116,7 +110,14 @@ class LlamaRealAttention(nn.Module):
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
-
+        
+        reweight_mask = self.reweight_attention(
+            input_ids=input_ids,
+            query_states=query_states,
+            key_states=key_states,
+            attention_mask=attention_mask,
+        )
+        
         if self.config._attn_implementation != "flex_attention":
             raise ValueError("LLamaRealAttention only support `flex_attention`")
         attention_interface: Callable = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
@@ -199,7 +200,7 @@ class LlamaRealDecoderLayer(GradientCheckpointingLayer):
 
 @auto_docstring
 class LlamaRealPreTrainedModel(PreTrainedModel):
-    config: LlamaConfig
+    config_class = LLamaRealConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["LlamaDecoderLayer"]
