@@ -4,6 +4,7 @@ from transformers import LlamaConfig
 from transformers import PretrainedConfig
 from transformers.models.auto import CONFIG_MAPPING, AutoConfig
 from transformers.utils import logging
+from transformers.utils.auto_docstring import HARDCODED_CONFIG_FOR_MODELS
 
 from src.models.reweighting_module.configuration_module import ReweightAttentionConfig, REWEIGHT_ATTENTION_MODULE_TYPE
 
@@ -51,3 +52,5 @@ __all__ = [
 AutoConfig.register(LLAMA_REAL_TYPE, LLamaRealConfig)
 
 LLamaRealConfig.register_for_auto_class()
+
+HARDCODED_CONFIG_FOR_MODELS["llama-real"] = LLamaRealConfig
