@@ -15,7 +15,7 @@ class ReweightAttentionModule(nn.Module):
 
         self.head_dim = config.head_dim
         self.rank_dim = config.rank_dim
-        self.num_key_value_groups = config.num_key_value_groups
+        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
 
         self.q_proj_a = nn.Linear(
             config.num_attention_heads * self.head_dim, config.num_attention_heads * self.rank_dim,
