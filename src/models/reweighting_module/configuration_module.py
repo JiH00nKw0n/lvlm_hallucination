@@ -138,6 +138,7 @@ class ReweightAttentionConfig(PretrainedConfig):
             assistant_token_ids: Union[List[int] | Tuple[int]] = (22933, 9047, 13566, 29901),
             attention_bias=False,
             attention_dropout=0.0,
+            alpha_std: float = 0.02,
             implementation_type: str = "max_pool",
             **kwargs,
     ):
@@ -148,6 +149,7 @@ class ReweightAttentionConfig(PretrainedConfig):
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
         self.implementation_type = implementation_type
+        self.alpha_std = alpha_std
 
         super().__init__(**kwargs)
 

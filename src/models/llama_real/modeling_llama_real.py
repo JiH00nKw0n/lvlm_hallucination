@@ -24,7 +24,7 @@ from torch import nn
 from transformers import LlamaConfig, AutoModel
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationMixin
-from transformers.masking_utils import create_causal_mask
+from transformers.masking_utils import create_causal_mask, eager_mask, causal_mask_function, _preprocess_mask_arguments
 from transformers.modeling_layers import (
     GradientCheckpointingLayer,
 )
@@ -92,6 +92,7 @@ class LlamaRealAttention(nn.Module):
             hidden_states: torch.Tensor,
             position_embeddings: tuple[torch.Tensor, torch.Tensor],
             attention_mask: Optional[torch.Tensor],
+            tensor_mask: Optional[torch.Tensor],
             past_key_values: Optional[Cache] = None,
             cache_position: Optional[torch.LongTensor] = None,
             **kwargs: Unpack[TransformersKwargs],
@@ -115,7 +116,7 @@ class LlamaRealAttention(nn.Module):
             input_ids=input_ids,
             query_states=query_states,
             key_states=key_states,
-            attention_mask=attention_mask,
+            attention_mask=tensor_mask,
         )
         
         if self.config._attn_implementation != "flex_attention":
@@ -167,6 +168,7 @@ class LlamaRealDecoderLayer(GradientCheckpointingLayer):
             input_ids: torch.Tensor,
             hidden_states: torch.Tensor,
             attention_mask: Optional[torch.Tensor] = None,
+            tensor_mask: Optional[torch.Tensor] = None,
             position_ids: Optional[torch.LongTensor] = None,
             past_key_values: Optional[Cache] = None,
             use_cache: Optional[bool] = False,
@@ -181,6 +183,7 @@ class LlamaRealDecoderLayer(GradientCheckpointingLayer):
             input_ids=input_ids,
             hidden_states=hidden_states,
             attention_mask=attention_mask,
+            tensor_mask=tensor_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
             use_cache=use_cache,
@@ -278,6 +281,32 @@ class LlamaRealModel(LlamaRealPreTrainedModel):
             position_ids=position_ids,
         )
 
+        # Flex attention만 지원
+        if self.config._attn_implementation != "flex_attention":
+            raise NotImplementedError("LlamaRealModel only supports flex_attention")
+        
+        if hasattr(past_key_values, "is_sliding") and False in past_key_values.is_sliding:
+            layer_idx = past_key_values.is_sliding.index(False)
+        else:
+            layer_idx = 0
+            
+        # If using a cache, it can give all information about mask sizes based on seen tokens
+        if past_key_values is not None:
+            kv_length, kv_offset = past_key_values.get_mask_sizes(cache_position, layer_idx)
+        # Otherwise, the sizes are simply the input sizes
+        else:
+            kv_length, kv_offset = inputs_embeds.shape[1], 0
+
+        tensor_mask = eager_mask(
+            batch_size=inputs_embeds.shape[0],
+            cache_position=cache_position,
+            kv_length=kv_length,
+            kv_offset=kv_offset,
+            mask_function=causal_mask_function,
+            attention_mask=attention_mask.to(device=cache_position.device, dtype=torch.bool) if attention_mask is not None and attention_mask.ndim == 2 else attention_mask,
+            dtype=inputs_embeds.dtype,
+        )
+
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
@@ -286,6 +315,7 @@ class LlamaRealModel(LlamaRealPreTrainedModel):
                 input_ids=input_ids,
                 hidden_states=hidden_states,
                 attention_mask=causal_mask,
+                tensor_mask=tensor_mask,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 cache_position=cache_position,
