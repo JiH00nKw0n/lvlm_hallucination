@@ -181,22 +181,24 @@ class RLHFVImageForDPOCollator(DataCollatorForPreference, ImageCollator):
             return_tensors=self.return_tensors,
             padding=self.padding,
             max_length=self.max_length,
-            truncation=self.truncation
+            truncation=self.truncation,
+            add_special_tokens=False
         )
         rejected = self.processor(
             text=rejected,
             return_tensors=self.return_tensors,
             padding=self.padding,
             max_length=self.max_length,
-            truncation=self.truncation
+            truncation=self.truncation,
+            add_special_tokens=False
         )
 
         inputs = {
-            "prompt_input_ids": prompt.input_ids,
-            "prompt_attention_mask": prompt.attention_mask,
-            "pixel_values": prompt.pixel_values,
-            "chosen_input_ids": chosen.input_ids,
-            "rejected_input_ids": rejected.input_ids,
+            "prompt_input_ids": prompt.input_ids[0],
+            "prompt_attention_mask": prompt.attention_mask[0],
+            "pixel_values": prompt.pixel_values[0],
+            "chosen_input_ids": chosen.input_ids[0],
+            "rejected_input_ids": rejected.input_ids[0],
         }
         return BatchEncoding(inputs)
 
