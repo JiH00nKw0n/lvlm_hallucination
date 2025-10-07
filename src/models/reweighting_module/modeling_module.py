@@ -322,6 +322,32 @@ class ReweightAttentionModule(nn.Module):
             attention_mask
         )
 
+        # Normalize reweight_mask: standardize per query (excluding -inf positions)
+        # Create valid mask: True where attention is allowed (not -inf from causal mask)
+        if attention_mask is not None:
+            valid_mask = ~torch.isinf(attention_mask[:, 0, :, :key_length])  # (batch_size, query_length, key_length)
+            valid_mask = valid_mask.unsqueeze(1)  # (batch_size, 1, query_length, key_length)
+
+            # Mask out invalid positions once
+            reweight_mask = reweight_mask.masked_fill(~valid_mask, 0.0)
+
+            # Count valid positions per query
+            valid_counts = valid_mask.float().sum(dim=-1, keepdim=True).clamp(min=1.0)  # (B, 1, Lq, 1)
+
+            # Compute mean and std over valid positions only
+            mean = reweight_mask.sum(dim=-1, keepdim=True) / valid_counts  # (B, H, Lq, 1)
+            variance = ((reweight_mask - mean) ** 2).sum(dim=-1, keepdim=True) / valid_counts
+            std = (variance + 1e-8).sqrt()
+
+            # Standardize (invalid positions already 0, will remain 0 after standardization)
+            reweight_mask = (reweight_mask - mean) / std
+            # No need to mask again - already 0 at invalid positions
+        else:
+            # Simple standardization without masking
+            mean = reweight_mask.mean(dim=-1, keepdim=True)
+            std = reweight_mask.std(dim=-1, keepdim=True, unbiased=False)
+            reweight_mask = (reweight_mask - mean) / (std + 1e-8)
+
         # Scale by learnable alpha parameter
         reweight_mask = self.alpha * reweight_mask
 
