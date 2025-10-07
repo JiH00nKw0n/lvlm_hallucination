@@ -17,6 +17,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from dataclasses import dataclass
 from typing import Optional, Union, Callable
 
 import torch
@@ -24,7 +25,7 @@ from torch import nn
 from transformers import LlamaConfig, AutoModel
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationMixin
-from transformers.masking_utils import create_causal_mask, eager_mask, causal_mask_function, _preprocess_mask_arguments
+from transformers.masking_utils import create_causal_mask, eager_mask, causal_mask_function
 from transformers.modeling_layers import (
     GradientCheckpointingLayer,
 )
@@ -50,6 +51,30 @@ from src.models.reweighting_module.configuration_module import ReweightAttention
 from src.models.reweighting_module.modeling_module import ReweightAttentionModule
 
 logger = logging.get_logger(__name__)
+
+
+@dataclass
+class ReweightBaseModelOutputWithPast(BaseModelOutputWithPast):
+    """
+    Base model output with reweight masks.
+
+    Args:
+        reweight_masks (`torch.FloatTensor` of shape `(num_layers, batch_size, num_heads, query_length, key_length)`, *optional*):
+            Attention reweight masks from all decoder layers.
+    """
+    reweight_masks: Optional[torch.Tensor] = None
+
+
+@dataclass
+class ReweightCausalLMOutputWithPast(CausalLMOutputWithPast):
+    """
+    Causal LM output with reweight masks.
+
+    Args:
+        reweight_masks (`torch.FloatTensor` of shape `(num_layers, batch_size, num_heads, query_length, key_length)`, *optional*):
+            Attention reweight masks from all decoder layers.
+    """
+    reweight_masks: Optional[torch.Tensor] = None
 
 
 class LlamaRealAttention(nn.Module):
@@ -96,7 +121,7 @@ class LlamaRealAttention(nn.Module):
             past_key_values: Optional[Cache] = None,
             cache_position: Optional[torch.LongTensor] = None,
             **kwargs: Unpack[TransformersKwargs],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -111,14 +136,14 @@ class LlamaRealAttention(nn.Module):
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
-        
+
         reweight_mask = self.reweight_attention(
             input_ids=input_ids,
             query_states=query_states,
             key_states=key_states,
             attention_mask=tensor_mask,
         )
-        
+
         if self.config._attn_implementation != "flex_attention":
             raise ValueError("LLamaRealAttention only support `flex_attention`")
         attention_interface: Callable = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
@@ -138,7 +163,7 @@ class LlamaRealAttention(nn.Module):
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
-        return attn_output, attn_weights
+        return attn_output, attn_weights, reweight_mask
 
 
 class LlamaRealDecoderLayer(GradientCheckpointingLayer):
@@ -175,11 +200,11 @@ class LlamaRealDecoderLayer(GradientCheckpointingLayer):
             cache_position: Optional[torch.LongTensor] = None,
             position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
             **kwargs: Unpack[TransformersKwargs],
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         # Self Attention
-        hidden_states, _ = self.self_attn(
+        hidden_states, _, reweight_mask = self.self_attn(
             input_ids=input_ids,
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -198,7 +223,7 @@ class LlamaRealDecoderLayer(GradientCheckpointingLayer):
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
-        return hidden_states
+        return hidden_states, reweight_mask
 
 
 @auto_docstring
@@ -284,12 +309,12 @@ class LlamaRealModel(LlamaRealPreTrainedModel):
         # Flex attention만 지원
         if self.config._attn_implementation != "flex_attention":
             raise NotImplementedError("LlamaRealModel only supports flex_attention")
-        
+
         if hasattr(past_key_values, "is_sliding") and False in past_key_values.is_sliding:
             layer_idx = past_key_values.is_sliding.index(False)
         else:
             layer_idx = 0
-            
+
         # If using a cache, it can give all information about mask sizes based on seen tokens
         if past_key_values is not None:
             kv_length, kv_offset = past_key_values.get_mask_sizes(cache_position, layer_idx)
@@ -303,15 +328,20 @@ class LlamaRealModel(LlamaRealPreTrainedModel):
             kv_length=kv_length,
             kv_offset=kv_offset,
             mask_function=causal_mask_function,
-            attention_mask=attention_mask.to(device=cache_position.device, dtype=torch.bool) if attention_mask is not None and attention_mask.ndim == 2 else attention_mask,
+            attention_mask=attention_mask.to(
+                device=cache_position.device, dtype=torch.bool
+            ) if attention_mask is not None and attention_mask.ndim == 2 else attention_mask,
             dtype=inputs_embeds.dtype,
         )
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
+        # Collect reweight masks from all layers
+        all_reweight_masks = []  # List to store masks from each layer
+
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
-            hidden_states = decoder_layer(
+            hidden_states, reweight_mask = decoder_layer(
                 input_ids=input_ids,
                 hidden_states=hidden_states,
                 attention_mask=causal_mask,
@@ -322,11 +352,18 @@ class LlamaRealModel(LlamaRealPreTrainedModel):
                 position_embeddings=position_embeddings,
                 **kwargs,
             )
+            # reweight_mask shape: (batch_size, num_heads, query_length, key_length)
+            all_reweight_masks.append(reweight_mask)
 
         hidden_states = self.norm(hidden_states)
-        return BaseModelOutputWithPast(
+
+        # Stack all reweight masks: (num_layers, batch_size, num_heads, query_length, key_length)
+        stacked_reweight_masks = torch.stack(all_reweight_masks, dim=0)
+
+        return ReweightBaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values,
+            reweight_masks=stacked_reweight_masks,
         )
 
 
@@ -377,7 +414,7 @@ class LlamaRealForCausalLM(LlamaRealPreTrainedModel, GenerationMixin):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-        outputs: BaseModelOutputWithPast = self.model(
+        outputs: ReweightBaseModelOutputWithPast = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -397,12 +434,13 @@ class LlamaRealForCausalLM(LlamaRealPreTrainedModel, GenerationMixin):
         if labels is not None:
             loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
 
-        return CausalLMOutputWithPast(
+        return ReweightCausalLMOutputWithPast(
             loss=loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            reweight_masks=outputs.reweight_masks,
         )
 
 
