@@ -1,6 +1,10 @@
 """
 Test script for ReweightAttentionModule
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import torch
 from src.models.reweighting_module.configuration_module import ReweightAttentionConfig
 from src.models.reweighting_module.modeling_module import ReweightAttentionModule
@@ -90,12 +94,12 @@ def test_full_forward():
     query_states = torch.randn(batch_size, num_heads, seq_len, head_dim)
     key_states = torch.randn(batch_size, num_heads, seq_len, head_dim)
 
-    # Create causal attention mask
+    # Create causal attention mask: (batch_size, 1, seq_len, seq_len)
     causal_mask = torch.triu(
         torch.full((seq_len, seq_len), float('-inf')),
         diagonal=1
     )
-    attention_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, seq_len)
+    attention_mask = causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, seq_len, seq_len)
 
     # Forward pass
     reweight_mask = module(input_ids, query_states, key_states, attention_mask)
@@ -117,8 +121,10 @@ def test_full_forward():
 
     # Visualize block weights for first query position
     print("  Block weights (softmax probabilities) for first sample, first head, first query:")
-    boundaries = module._get_block_boundaries(input_ids)
-    print(f"  Boundaries: {boundaries}")
+    # Get boundaries for first sample only
+    input_ids_first_sample = input_ids[0:1]  # (1, seq_len)
+    boundaries_first_sample = module._get_block_boundaries(input_ids_first_sample)
+    print(f"  Boundaries: {boundaries_first_sample}")
 
     # Extract attention weights for first query position
     query_states_proj = module.q_proj_b(module.q_proj_a(
@@ -132,12 +138,17 @@ def test_full_forward():
     attn_w = torch.matmul(query_states_proj, key_states_proj.transpose(1, 2)) * module.scaling
     attn_w = attn_w + attention_mask[0, 0]
 
-    block_scores = module._pool_blocks(attn_w.unsqueeze(0), boundaries)
+    # Pass attention mask for first sample: (1, 1, seq_len, seq_len)
+    block_scores = module._pool_blocks(
+        attn_w.unsqueeze(0),  # (1, num_heads, seq_len, seq_len)
+        boundaries_first_sample,
+        attention_mask[0:1]  # (1, 1, seq_len, seq_len)
+    )
     block_probs = torch.softmax(block_scores, dim=-1)
 
     for q_pos in [0, 7, 13]:  # instruction, assistant end, last token
         print(f"  Query position {q_pos}:")
-        for i, (s, e) in enumerate(boundaries):
+        for i, (s, e) in enumerate(boundaries_first_sample[0]):
             prob = block_probs[0, 0, q_pos, i].item()
             print(f"    Block {i} [{s}:{e}): {prob:.4f}")
 

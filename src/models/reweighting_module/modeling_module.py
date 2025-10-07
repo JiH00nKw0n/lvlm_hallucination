@@ -41,7 +41,7 @@ class ReweightAttentionModule(nn.Module):
         self.implementation_type = config.implementation_type
 
         # Learnable scaling parameter for reweighting strength
-        self.alpha = nn.Parameter(torch.randn(1) * self.alpha_std)
+        self.alpha = nn.Parameter(torch.randn(1) * self.config.alpha_std)
 
     def _get_block_boundaries(self, input_ids: torch.Tensor) -> List[List[Tuple[int, int]]]:
         """
