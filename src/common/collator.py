@@ -19,7 +19,7 @@ logger = logging.get_logger(__name__)
 __all__ = [
     "ImageCollator",
     "ImageURLCollator",
-    "RLHFVImageForDPOCollator",
+    "RLHFVForDPOImageCollator",
 ]
 
 
@@ -145,8 +145,8 @@ class ImageURLCollator(BaseCollator):
         ]
 
 
-@registry.register_collator('RLHFVImageForDPOCollator')
-class RLHFVImageForDPOCollator(DataCollatorForPreference, ImageCollator):
+@registry.register_collator('RLHFVForDPOImageCollator')
+class RLHFVForDPOImageCollator(DataCollatorForPreference, ImageCollator):
 
     def _process_example(self, example: Dict) -> BatchEncoding:
         image = example.get("images")
