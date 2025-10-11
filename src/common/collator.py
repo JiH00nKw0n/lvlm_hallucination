@@ -6,9 +6,9 @@ import PIL
 import aiohttp
 from PIL import Image
 from tqdm.asyncio import tqdm_asyncio
-from transformers import BatchEncoding
 from transformers.utils import add_end_docstrings, logging
 from trl.trainer.dpo_trainer import DataCollatorForPreference
+from trl.trainer.sft_trainer import DataCollatorForVisionLanguageModeling
 
 from src.common.registry import registry
 from src.utils import is_url
@@ -20,6 +20,7 @@ __all__ = [
     "ImageCollator",
     "ImageURLCollator",
     "RLHFVForDPOImageCollator",
+    "DummyImageCollator",
 ]
 
 
@@ -58,6 +59,8 @@ class ImageCollator(BaseCollator):
         def _convert_single_image(example: Dict) -> Dict:
             value = example.get("images")
 
+            if isinstance(value, list):
+                return {**example, "images": [v.convert(self.color_model) for v in value]}
             if value is None:
                 raise ValueError("'images' key is missing.")
             if not isinstance(value, PIL.Image.Image):
@@ -146,64 +149,62 @@ class ImageURLCollator(BaseCollator):
 
 
 @registry.register_collator('RLHFVForDPOImageCollator')
-class RLHFVForDPOImageCollator(DataCollatorForPreference, ImageCollator):
+class RLHFVForDPOImageCollator(ImageCollator, DataCollatorForPreference):
+    pass
 
-    def _process_example(self, example: Dict) -> BatchEncoding:
-        image = example.get("images")
-        data = example.get("text")
-        question = data.get("question")
-        chosen = data.get("chosen")
-        rejected = data.get("rejected")
 
-        conversation = [
-            {
+@registry.register_collator('LRVInstructForSFTImageCollator')
+class LRVInstructForSFTImageCollator(ImageCollator, DataCollatorForVisionLanguageModeling):
+    completion_only_loss: bool = True
+    image_field: str = "images"
+    prompt_field: str = "prompt"
+    completion_field: str = "completion"
+    prompt_role: str = "user"
+    completion_role: str = "assistant"
 
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": question},
-                ],
-            },
-        ]
+    def _process_example(self, example: Dict) -> Dict:
+        image = example.get(self.image_field)
+        prompt = example.get(self.prompt_field)
+        completion = example.get(self.completion_field)
 
-        prompt = self.processor.apply_chat_template(conversation, add_generation_prompt=True)
-
-        prompt = self.processor(
-            images=[image],
-            text=prompt,
-            return_tensors=self.return_tensors,
-            padding=self.padding,
-            max_length=self.max_length,
-            truncation=self.truncation
-        )
-        chosen = self.processor(
-            text=chosen,
-            return_tensors=self.return_tensors,
-            padding=self.padding,
-            max_length=self.max_length,
-            truncation=self.truncation,
-            add_special_tokens=False
-        )
-        rejected = self.processor(
-            text=rejected,
-            return_tensors=self.return_tensors,
-            padding=self.padding,
-            max_length=self.max_length,
-            truncation=self.truncation,
-            add_special_tokens=False
-        )
-
-        inputs = {
-            "prompt_input_ids": prompt.input_ids[0],
-            "prompt_attention_mask": prompt.attention_mask[0],
-            "pixel_values": prompt.pixel_values[0],
-            "chosen_input_ids": chosen.input_ids[0],
-            "rejected_input_ids": rejected.input_ids[0],
+        processed_input = {
+            "images": [image],
+            "prompt": [{"role": self.prompt_role, "content": prompt}],
+            "completion": [{"role": self.completion_role, "content": completion}],
         }
-        return BatchEncoding(inputs)
+        return processed_input
 
     def __call__(self, features: List[Dict], return_tensors: Optional[str] = None):
         features = self._convert_images(features)
         features = list(map(self._process_example, features))
 
         return super().__call__(features, return_tensors=return_tensors)
+
+
+@add_end_docstrings(BASE_COLLATOR_DOCSTRING)
+@dataclass
+@registry.register_collator('DummyImageCollator')
+class DummyImageCollator(BaseCollator):
+    """
+    A dummy collator that accepts a processor but performs no operations.
+
+    This collator is used for evaluators that handle their own batch processing
+    (e.g., LVLMEvaluator) and don't require data collation. It exists to satisfy
+    the collator requirement in the evaluation task structure while allowing
+    the evaluator to access the processor directly.
+
+    The collator simply returns the input features as-is without any processing.
+    """
+
+    def __call__(self, features: List[Dict], return_tensors: Optional[str] = None):
+        """
+        Returns the input features without any processing.
+
+        Args:
+            features: List of feature dictionaries.
+            return_tensors: Ignored (for API compatibility).
+
+        Returns:
+            The input features unchanged.
+        """
+        return features
