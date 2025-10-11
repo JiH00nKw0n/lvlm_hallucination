@@ -11,7 +11,7 @@ import src.dist_utils as dist_utils
 __all__ = ["setup_logger", "Logger", "LogContext"]
 
 LOG_DIR = os.getenv("LOG_DIR")
-ROOT_LOGGER = 'MULTIMODAL'
+ROOT_LOGGER = 'HAL'
 
 
 def setup_logger():
