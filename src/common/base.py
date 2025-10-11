@@ -1,11 +1,12 @@
 import logging
+from dataclasses import dataclass
 from typing import Dict
 from typing import Union, Optional, TypeVar, Callable
 
 import numpy as np
 from omegaconf import OmegaConf, DictConfig
 from pydantic import ConfigDict
-from pydantic.dataclasses import dataclass
+from pydantic.dataclasses import dataclass as pydantic_dataclass
 from transformers import ProcessorMixin
 from transformers.utils import PaddingStrategy, add_end_docstrings
 
@@ -67,14 +68,16 @@ class BaseCollator:
     color_model: str = "RGB"
     seed: Optional[int] = 2025
     rng: Optional[np.random.Generator] = None
+    label_pad_token_id: int = -100
 
     def __post_init__(self):
         """Initialize RNG with seed after dataclass initialization."""
         if self.rng is None:
             self.rng = np.random.default_rng(self.seed)
+        self.tokenizer = self.processor.tokenizer
 
 
-@dataclass(
+@pydantic_dataclass(
     config=ConfigDict(
         extra='ignore', frozen=True, strict=True, validate_assignment=True
     )
