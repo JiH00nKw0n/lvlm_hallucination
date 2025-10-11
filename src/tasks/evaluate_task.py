@@ -122,12 +122,18 @@ class MultiDatasetEvaluateTask(BaseEvaluateTask):
         Returns:
             EvaluatorContainer: A container holding multiple evaluators that can run evaluations for the model.
         """
+        from accelerate import PartialState
+
         evaluator_config = evaluator_config if evaluator_config is not None else self.config.evaluator_config
         dataset_dict = self.build_datasets()
 
         container = EvaluatorContainer()
         model = self.build_model()
         processor = self.build_processor()
+
+        # Move model to distributed device (PartialState is singleton, safe to create here)
+        distributed_state = PartialState()
+        model = model.to(distributed_state.device)
 
         for evaluator_line, (builder_cls_name, builder) in zip(
                 evaluator_config,
@@ -201,7 +207,7 @@ class MultiDatasetEvaluateTaskWithPretrainedModel(MultiDatasetEvaluateTask, Task
 
         model = model_cls.from_pretrained(**model_config.config)
 
-        return model.cuda().eval()
+        return model.eval()
 
     def build_datasets(
             self,
@@ -263,7 +269,7 @@ class MultiDatasetEvaluateTaskWithCustomModel(MultiDatasetEvaluateTask, TaskWith
 
         model = model_cls.from_pretrained(**model_config.config)
 
-        return model.cuda().eval()
+        return model.eval()
 
     def build_datasets(
             self,
