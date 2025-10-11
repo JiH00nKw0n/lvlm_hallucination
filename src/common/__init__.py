@@ -4,6 +4,7 @@ from src.common.collator import ImageCollator, ImageURLCollator, RLHFVForDPOImag
 from src.common.config import TrainConfig, EvaluateConfig
 from src.common.logger import Logger, LogContext
 from src.common.registry import registry
+from src.common.experimental import experimental
 
 __all__ = [
     "BaseCollator",
@@ -16,4 +17,5 @@ __all__ = [
     "Logger",
     "LogContext",
     "registry",
+    "experimental",
 ]

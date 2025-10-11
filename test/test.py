@@ -23,7 +23,7 @@ conversation = [
 conversation2 = [
     {
 
-      "role": "",
+      "role": "system",
       "content": [
           {"type": "text", "text": "What are these?"},
         ],
@@ -38,7 +38,7 @@ raw_image = Image.open(requests.get(image_file, stream=True).raw)
 
 # Process inputs
 inputs = processor(images=raw_image, text=prompt, return_tensors='pt')
-inputs2 = processor( text=prompt2, return_tensors='pt')
+inputs2 = processor( text=prompt2, return_tensors='pt', add_special_tokens=False)
 print(inputs.keys())
 print(inputs2.keys())
 print(inputs["input_ids"])
