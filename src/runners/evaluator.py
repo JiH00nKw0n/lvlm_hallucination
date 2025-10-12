@@ -7,7 +7,6 @@ from accelerate.utils import gather_object
 from datasets import tqdm
 from pydantic import Field
 from torch.utils.data import DataLoader
-from transformers import ProcessorMixin
 
 from src.common.registry import registry
 from src.runners.base import BaseEvaluator
@@ -88,11 +87,13 @@ class LVLMEvaluator(BaseEvaluator):
         ...         return {"accuracy": correct / len(results)}
     """
 
-    generation_config: Optional[Dict] = Field(default_factory=lambda: {
-        "max_new_tokens": 10,
-        "temperature": 0.0,
-        "do_sample": False,
-    })
+    generation_config: Optional[Dict] = Field(
+        default_factory=lambda: {
+            "max_new_tokens": 10,
+            "temperature": 0.0,
+            "do_sample": False,
+        }
+        )
     decode_fn: Optional["Callable"] = None  # type: ignore
     distributed_state: Optional[PartialState] = None  # type: ignore
 
@@ -249,8 +250,8 @@ class LVLMEvaluator(BaseEvaluator):
 
         # Split indexed dataset across GPUs with padding
         with self.distributed_state.split_between_processes(
-            indexed_dataset,
-            apply_padding=True  # Pad to make lengths equal for gathering
+                indexed_dataset,
+                apply_padding=True  # Pad to make lengths equal for gathering
         ) as process_dataset:
             results = []
 
@@ -263,9 +264,9 @@ class LVLMEvaluator(BaseEvaluator):
             )
 
             for batch in tqdm(
-                dataloader,
-                desc=f"Generating answers for {self.dataset_name} (GPU {self.distributed_state.process_index})",
-                disable=not self.distributed_state.is_main_process
+                    dataloader,
+                    desc=f"Generating answers for {self.dataset_name} (GPU {self.distributed_state.process_index})",
+                    disable=not self.distributed_state.is_main_process
             ):
                 # Prepare inputs
                 inputs = self._prepare_batch(batch)
@@ -283,11 +284,13 @@ class LVLMEvaluator(BaseEvaluator):
                 for sample, generated_text in zip(batch, generated_texts):
                     parsed_answer = self._parse_answer(generated_text, sample)
 
-                    results.append({
-                        **sample,
-                        'generated': generated_text,
-                        'parsed_answer': parsed_answer
-                    })
+                    results.append(
+                        {
+                            **sample,
+                            'generated': generated_text,
+                            'parsed_answer': parsed_answer
+                        }
+                    )
 
         # Gather results from all processes
         all_results = gather_object(results)
@@ -357,6 +360,7 @@ class POPEEvaluator(LVLMEvaluator):
     Example:
         >>> from src.datasets.pope import POPEDatasetBuilder
         >>> from transformers import AutoProcessor, AutoModel
+        >>> from src.common.registry import registry
         >>>
         >>> # Load dataset
         >>> dataset = POPEDatasetBuilder().build_dataset()
@@ -365,16 +369,20 @@ class POPEEvaluator(LVLMEvaluator):
         >>> model = AutoModel.from_pretrained("llava-hf/llava-1.5-7b-hf", device_map="auto")
         >>> processor = AutoProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf")
         >>>
+        >>> # Create collator
+        >>> collator_cls = registry.get_collator_class("DummyImageCollator")
+        >>> collator = collator_cls(processor=processor)
+        >>>
         >>> # Evaluate
         >>> evaluator = POPEEvaluator(
         ...     model=model,
-        ...     processor=processor,
+        ...     data_collator=collator,
         ...     evaluate_dataset=dataset,
-        ...     dataset_name="pope",
         ...     output_dir="./results"
         ... )
         >>> evaluator.evaluate(batch_size=8)
     """
+    dataset_name: Optional[str] = "POPE"
 
     def _prepare_conversation(self, sample: dict) -> list:
         """
@@ -509,8 +517,10 @@ class MMEEvaluator(LVLMEvaluator):
         - Total score per category: (acc + acc_plus) * 100
 
     Example:
-        >>> from src.datasets.mme import MMEDatasetBuilder, EVAL_TYPE_DICT
         >>> from transformers import AutoProcessor, AutoModel
+
+from src.common.registry import registry
+from src.datasets.mme import MMEDatasetBuilder, EVAL_TYPE_DICT
         >>>
         >>> # Load dataset
         >>> dataset = MMEDatasetBuilder().build_dataset()
@@ -519,16 +529,20 @@ class MMEEvaluator(LVLMEvaluator):
         >>> model = AutoModel.from_pretrained("llava-hf/llava-1.5-7b-hf", device_map="auto")
         >>> processor = AutoProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf")
         >>>
+        >>> # Create collator
+        >>> collator_cls = registry.get_collator_class("DummyImageCollator")
+        >>> collator = collator_cls(processor=processor)
+        >>>
         >>> # Evaluate
         >>> evaluator = MMEEvaluator(
         ...     model=model,
-        ...     processor=processor,
+        ...     data_collator=collator,
         ...     evaluate_dataset=dataset,
-        ...     dataset_name="mme",
         ...     output_dir="./results"
         ... )
         >>> evaluator.evaluate(batch_size=8)
     """
+    dataset_name: Optional[str] = "MME"
 
     def _prepare_conversation(self, sample: dict) -> list:
         """
@@ -580,6 +594,8 @@ class MMEEvaluator(LVLMEvaluator):
         and computes:
         - acc: Per-question accuracy
         - acc_plus: Accuracy where both questions per image are correct
+        - precision: TP / (TP + FP) - excludes "other" responses
+        - recall: TP / (TP + FN) - excludes "other" responses
         - Total score per category: (acc + acc_plus) * 100
 
         Args:
@@ -590,6 +606,7 @@ class MMEEvaluator(LVLMEvaluator):
             Dictionary with per-category and per-task-type scores
         """
         from collections import defaultdict
+        from sklearn.metrics import precision_score, recall_score, confusion_matrix
         from src.datasets.mme import EVAL_TYPE_DICT
 
         # Group results by category
@@ -610,12 +627,19 @@ class MMEEvaluator(LVLMEvaluator):
             correct_images = 0
             total_images = total_questions // 2  # Each image has 2 questions
 
+            # Collect all predictions and ground truths for precision/recall
+            gts = []
+            preds = []
+
             # Process in chunks of 2 (one image = 2 questions)
             for i in range(0, total_questions, 2):
                 # Handle potential odd number of questions
                 if i + 1 >= total_questions:
                     # Single question remaining
                     result = category_results[i]
+                    gts.append(result["answer"])
+                    preds.append(result["parsed_answer"])
+
                     if result["parsed_answer"] == result["answer"]:
                         correct_questions += 1
                     break
@@ -623,6 +647,11 @@ class MMEEvaluator(LVLMEvaluator):
                 # Get 2 questions for this image
                 result1 = category_results[i]
                 result2 = category_results[i + 1]
+
+                gts.append(result1["answer"])
+                gts.append(result2["answer"])
+                preds.append(result1["parsed_answer"])
+                preds.append(result2["parsed_answer"])
 
                 image_correct_count = 0
 
@@ -640,17 +669,55 @@ class MMEEvaluator(LVLMEvaluator):
                 if image_correct_count == 2:
                     correct_images += 1
 
-            # Calculate metrics
+            # Calculate basic metrics
             acc = correct_questions / total_questions if total_questions > 0 else 0
             acc_plus = correct_images / total_images if total_images > 0 else 0
 
             # MME score: (acc + acc_plus) * 100
             score = (acc + acc_plus) * 100
 
+            # Compute precision, recall, and confusion matrix (following calculation.py)
+            # Convert to binary labels: yes=1, no=0, other=-1
+            label_map = {"yes": 1, "no": 0, "other": -1}
+            gts_binary = [label_map[x] for x in gts]
+            preds_binary = [label_map[x] for x in preds]
+
+            # Filter out "other" predictions for precision/recall calculation
+            clean_gts = []
+            clean_preds = []
+            other_num = 0
+
+            for gt, pred in zip(gts_binary, preds_binary):
+                if pred == -1:
+                    other_num += 1
+                    continue
+                clean_gts.append(gt)
+                clean_preds.append(pred)
+
+            # Calculate precision, recall, and confusion matrix
+            precision = 0.0
+            recall = 0.0
+            tp = fn = fp = tn = 0
+
+            if len(clean_gts) > 0:
+                precision = precision_score(clean_gts, clean_preds, average='binary', zero_division=0)
+                recall = recall_score(clean_gts, clean_preds, average='binary', zero_division=0)
+
+                conf_mat = confusion_matrix(clean_gts, clean_preds, labels=[1, 0])
+                tp, fn = conf_mat[0]
+                fp, tn = conf_mat[1]
+
             category_scores[category] = {
                 "acc": float(acc),
                 "acc_plus": float(acc_plus),
                 "score": float(score),
+                "precision": float(precision),
+                "recall": float(recall),
+                "TP": int(tp),
+                "FN": int(fn),
+                "FP": int(fp),
+                "TN": int(tn),
+                "other_num": int(other_num),
                 "total_questions": total_questions,
                 "total_images": total_images
             }
