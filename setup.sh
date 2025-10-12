@@ -35,9 +35,9 @@ source .venv/bin/activate
 echo "Upgrading pip..."
 pip install --upgrade pip
 
-# Install PyTorch ecosystem (CUDA 12.4 version)
+# Install PyTorch ecosystem (CUDA 12.8 version)
 echo "Installing PyTorch 2.8.0 with torchvision and torchaudio..."
-pip install torch==2.8.0 torchvision==0.21.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu124
+pip install torch==2.8.0 torchvision==0.21.0 torchaudio==2.8.0
 
 # Install other dependencies from requirements.txt
 echo "Installing dependencies from requirements.txt..."
