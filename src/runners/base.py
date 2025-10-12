@@ -1,18 +1,13 @@
 import json
 import os
-from typing import Any, Dict, Optional, Type, Union, TypeVar
+from typing import Any, Dict, Optional, Union
 
 from datasets import Dataset
 from pydantic import BaseModel, ConfigDict
 from transformers import PreTrainedModel, Trainer
 from transformers.utils import logging
 
-# from src.collators import BaseCollator
-
 logger = logging.get_logger(__name__)
-
-# CollatorType = Type[BaseCollator]
-CollatorType = TypeVar("CollatorType", bound="BaseCollator")
 
 __all__ = ["BaseTrainer", "BaseEvaluator"]
 
@@ -39,7 +34,7 @@ class BaseEvaluator(BaseModel):
     """
 
     model: Optional[PreTrainedModel] = None
-    data_collator: Optional[CollatorType] = None
+    data_collator: Optional[Any] = None
     dataset_name: Optional[str] = None
     evaluate_dataset: Optional[Dataset] = None
     overwrite_results: Optional[bool] = False

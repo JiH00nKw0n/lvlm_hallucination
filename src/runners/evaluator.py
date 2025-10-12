@@ -7,6 +7,7 @@ from accelerate.utils import gather_object
 from datasets import tqdm
 from pydantic import Field
 from torch.utils.data import DataLoader
+from trl.data_utils import apply_chat_template
 
 from src.common.registry import registry
 from src.runners.base import BaseEvaluator
@@ -93,7 +94,7 @@ class LVLMEvaluator(BaseEvaluator):
             "temperature": 0.0,
             "do_sample": False,
         }
-        )
+    )
     decode_fn: Optional["Callable"] = None  # type: ignore
     distributed_state: Optional[PartialState] = None  # type: ignore
 
@@ -133,8 +134,9 @@ class LVLMEvaluator(BaseEvaluator):
 
         This method:
         1. Converts each sample to conversation format
-        2. Applies chat template using processor
-        3. Returns batched tensors ready for model.generate()
+        2. Applies chat template using TRL's apply_chat_template utility
+        3. Tokenizes formatted text with images using processor
+        4. Returns batched tensors ready for model.generate()
 
         Args:
             batch: List of raw dataset samples
@@ -142,18 +144,28 @@ class LVLMEvaluator(BaseEvaluator):
         Returns:
             Dictionary of batched input tensors (input_ids, attention_mask, pixel_values, etc.)
         """
-        # Prepare conversations for each sample
-        conversations = [self._prepare_conversation(sample) for sample in batch]
 
-        # Apply chat template to batch
-        # Note: processor.apply_chat_template handles batching internally
         # Access processor through data_collator
         processor = self.data_collator.processor
-        inputs = processor.apply_chat_template(
-            conversations,
-            return_dict=True,
-            add_generation_prompt=True,
-            return_tensors="pt"
+
+        # Prepare conversations for each sample and apply chat template
+        formatted_texts = []
+        for sample in batch:
+            conversation = self._prepare_conversation(sample)
+            # Use TRL's apply_chat_template
+            formatted = apply_chat_template(
+                {"messages": conversation},
+                processor,
+                add_generation_prompt=True
+            )
+            formatted_texts.append(formatted["text"])
+
+        # Tokenize the batch
+        inputs = processor(
+            text=formatted_texts,
+            images=[sample["image"] for sample in batch],
+            return_tensors="pt",
+            padding=True
         )
 
         # Move to model device

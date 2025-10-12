@@ -165,7 +165,6 @@ class MultiDatasetEvaluateTask(BaseEvaluateTask):
                 evaluator=evaluator_cls(
                     model=model,
                     evaluate_dataset=evaluate_dataset,
-                    dataset_name=builder.name,
                     data_collator=collator,
                     **config
                 )
@@ -205,7 +204,9 @@ class MultiDatasetEvaluateTaskWithPretrainedModel(MultiDatasetEvaluateTask, Task
 
         assert model_cls is not None, f"Model {model_cls} not properly registered."
 
-        model = model_cls.from_pretrained(**model_config.config)
+        # Convert OmegaConf to dict to avoid issues with transformers
+        model_kwargs = OmegaConf.to_container(model_config.config, resolve=True)
+        model = model_cls.from_pretrained(**model_kwargs)
 
         return model.eval()
 

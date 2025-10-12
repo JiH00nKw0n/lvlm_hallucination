@@ -7,3 +7,4 @@ images/*
 test/create_dataset.py
 dataset_local/*
 src/eval_tool/*
+setup_temp.sh
