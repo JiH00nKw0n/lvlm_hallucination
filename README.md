@@ -6,12 +6,13 @@ Research project for studying hallucinations in Large Vision-Language Models.
 
 ### System Requirements
 - **Python**: 3.12.x
-- **CUDA**: 12.4 (for GPU support)
-- **Operating System**: Linux, macOS, or Windows with WSL2
+- **CUDA**: 12.8+ (for GPU support)
+- **NVIDIA Driver**: 570+ (required for CUDA 12.8)
+- **Operating System**: Linux (Ubuntu 22.04+ recommended), macOS, or Windows with WSL2
 
 ### Hardware Requirements
-- **GPU**: NVIDIA GPU with CUDA Compute Capability 7.0+ (recommended)
-- **VRAM**: 16GB+ recommended for training
+- **GPU**: NVIDIA GPU with CUDA Compute Capability 7.0+ (A100 recommended)
+- **VRAM**: 80GB+ recommended for evaluation (40GB minimum with MIG)
 - **RAM**: 32GB+ recommended
 
 ## Installation
@@ -26,10 +27,13 @@ chmod +x setup.sh
 ```
 
 The setup script will:
-1. Verify Python 3.12 installation
-2. Create a virtual environment (`.venv`)
-3. Install PyTorch ecosystem with CUDA 12.4 support
-4. Install all project dependencies
+1. Verify and install Python 3.12 if needed
+2. Check NVIDIA driver version and upgrade to 570+ if necessary
+3. Create a virtual environment (`.venv`)
+4. Install PyTorch 2.8.0 with CUDA 12.8 support
+5. Install all project dependencies from requirements.txt
+
+**Important**: If driver upgrade is required, the script will prompt for system reboot. After reboot, run `./setup.sh` again to complete PyTorch installation.
 
 ### Manual Setup
 
@@ -43,8 +47,8 @@ source .venv/bin/activate
 # Upgrade pip
 pip install --upgrade pip
 
-# Install PyTorch with CUDA 12.4 support
-pip install torch==2.8.0 torchvision==0.21.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu124
+# Install PyTorch with CUDA 12.8 support
+pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0
 
 # Install other dependencies
 pip install -r requirements.txt
@@ -53,8 +57,8 @@ pip install -r requirements.txt
 ## Package Versions
 
 ### Core ML Framework
-- **torch**: 2.8.0 (with CUDA 12.4)
-- **torchvision**: 0.21.0
+- **torch**: 2.8.0 (with CUDA 12.8)
+- **torchvision**: 0.23.0
 - **torchaudio**: 2.8.0
 - **transformers**: 4.56.2
 
@@ -124,23 +128,30 @@ python test/test_reweighting_module.py
 
 ## CUDA Compatibility
 
-This project uses PyTorch 2.8.0 compiled with CUDA 12.4 support. Ensure your system meets the following requirements:
+This project requires PyTorch 2.8.0 with CUDA 12.8 support. Ensure your system meets the following requirements:
 
 ### NVIDIA Driver Requirements
-- **Linux**: NVIDIA Driver 550.54.15 or newer
-- **Windows**: NVIDIA Driver 551.23 or newer
+- **Linux**: NVIDIA Driver 570+ (required for CUDA 12.8)
+- **Windows**: NVIDIA Driver 571+ or newer
 
-### Verify CUDA Installation
+### Verify Installation
 
 ```bash
 # Check NVIDIA driver version
 nvidia-smi
 
-# Check CUDA version
+# Check CUDA toolkit version (if installed)
 nvcc --version
 
 # Verify PyTorch CUDA support
-python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')"
+python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')"
+```
+
+**Expected output:**
+```
+PyTorch: 2.8.0+cu128
+CUDA available: True
+CUDA version: 12.8
 ```
 
 ## Troubleshooting
@@ -156,12 +167,40 @@ sudo apt install python3.12 python3.12-venv python3.12-dev
 brew install python@3.12
 ```
 
-### CUDA Issues
-If PyTorch cannot detect CUDA:
-1. Verify NVIDIA driver installation: `nvidia-smi`
-2. Check CUDA toolkit installation: `nvcc --version`
-3. Ensure driver version matches CUDA 12.4 requirements
-4. Reinstall PyTorch with correct CUDA version
+### CUDA/Driver Issues
+
+**Problem: `RuntimeError: NVML_SUCCESS == r INTERNAL ASSERT FAILED`**
+
+This error indicates driver-CUDA version mismatch. Solutions:
+
+1. **Check current driver version:**
+   ```bash
+   nvidia-smi | grep "Driver Version"
+   ```
+
+2. **If driver < 570, upgrade using setup.sh:**
+   ```bash
+   ./setup.sh
+   # Script will detect old driver and prompt for upgrade
+   # After reboot, run ./setup.sh again
+   ```
+
+3. **Manual driver upgrade (Ubuntu):**
+   ```bash
+   wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+   sudo dpkg -i cuda-keyring_1.1-1_all.deb
+   sudo apt-get update
+   sudo apt-get -y install cuda-drivers-570
+   sudo reboot
+   ```
+
+**Problem: Docker container environment**
+
+If running in Docker, driver upgrade must be done on the **host system**, not inside the container:
+- Exit container
+- Upgrade host driver to 570+
+- Restart container
+- Install compatible PyTorch inside container
 
 ### Dependency Conflicts
 If you encounter dependency conflicts:
@@ -169,6 +208,16 @@ If you encounter dependency conflicts:
 # Clean install
 rm -rf .venv
 ./setup.sh
+```
+
+### MIG (Multi-Instance GPU) Configuration
+If using A100 with MIG enabled:
+```bash
+# Check MIG status
+nvidia-smi -L
+
+# Ensure sufficient memory per MIG instance (40GB+ recommended)
+nvidia-smi
 ```
 
 ## Contributing
