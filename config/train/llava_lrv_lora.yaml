@@ -1,0 +1,64 @@
+# Training configuration for LLaVA-1.5-7B with LRV-Instruct dataset
+# Using LoRA for parameter-efficient fine-tuning
+
+run:
+  task: DatasetTrainTaskWithPretrainedModel
+  runner: CustomSFTTrainer
+  seed: 2025
+
+model:
+  model_cls: LlavaForConditionalGeneration
+  config:
+    pretrained_model_name_or_path: llava-hf/llava-1.5-7b-hf
+    torch_dtype: float16
+    device_map: null  # Trainer will handle device placement
+
+processor:
+  config:
+    pretrained_model_name_or_path: llava-hf/llava-1.5-7b-hf
+    use_fast: true
+
+dataset:
+  LRVInstructDatasetBuilder:
+    split: train
+
+collator:
+  collator_cls: LRVInstructForSFTImageCollator
+  config: {}
+
+trainer:
+  output_dir: ./checkpoints/llava-lrv-lora
+  num_train_epochs: 3
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-5
+  weight_decay: 0.0
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  logging_steps: 10
+  save_strategy: steps
+  save_steps: 500
+  save_total_limit: 2
+  fp16: true
+  bf16: false
+  dataloader_num_workers: 4
+  remove_unused_columns: false
+  report_to: wandb
+  run_name: llava-lrv-lora
+  # LoRA configuration
+  peft_config:
+    task_type: CAUSAL_LM
+    r: 16
+    lora_alpha: 32
+    lora_dropout: 0.05
+    bias: none
+    target_modules:
+      - q_proj
+      - v_proj
+      - k_proj
+      - o_proj
+      - gate_proj
+      - up_proj
+      - down_proj
+  # Uncomment to enable DeepSpeed ZeRO-2
+  # deepspeed: config/deepspeed/ds_config_zero2.json

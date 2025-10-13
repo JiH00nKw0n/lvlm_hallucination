@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Optional, Dict, Type, TypeVar
+from typing import Optional, Dict, Type, TypeVar, Any
 
 from datasets import Dataset, IterableDataset, interleave_datasets, concatenate_datasets
 from omegaconf import DictConfig
@@ -11,7 +11,7 @@ from transformers import (
     TrainingArguments,
     add_end_docstrings
 )
-from peft import get_peft_model, LoraConfig
+from peft import get_peft_model, LoraConfig, get_peft_config
 
 from src.common import registry, TrainConfig
 from src.tasks.base import BaseTrainTask, TaskWithCustomModel, TaskWithPretrainedModel, TRAIN_TASK_DOCSTRING
@@ -50,7 +50,7 @@ class SingleTrainTask(BaseTrainTask):
         trainer_cls = registry.get_trainer_class(trainer_name)
         assert trainer_cls is not None, "Trainer {} not properly registered.".format(trainer_name)
 
-        trainer_config = trainer_config if trainer_config is not None else self.config.trainer_config
+        trainer_config = trainer_config if trainer_config is not None else self.config.trainer_config.copy()
 
         collator_cls = registry.get_collator_class(self.config.collator_config.collator_cls)
 
@@ -63,11 +63,20 @@ class SingleTrainTask(BaseTrainTask):
             **self.config.collator_config.config,
         )
 
+        # Extract peft_config from trainer_config if present
+        peft_config = None
+        peft_config_dict: dict[str, Any] = trainer_config.pop('peft_config', {})
+        if peft_config_dict:
+            # Use get_peft_config to automatically determine the correct PEFT config type
+            peft_config = get_peft_config(peft_config_dict)
+            logger.info(f"PEFT Config: {peft_config}")
+
         return trainer_cls(
             model=self.build_model(),
             args=TrainingArguments(**trainer_config),
             train_dataset=train_dataset,
             data_collator=collator,
+            peft_config=peft_config,
         )
 
 
@@ -154,25 +163,10 @@ class SingleTrainTaskWithPretrainedModel(SingleTrainTask, TaskWithPretrainedMode
 
         model = model_cls.from_pretrained(**model_config.config)
 
-        if model_config.lora is not None:
-            if isinstance(model_config.lora, str):
-                lora_config = load_yml(model_config.lora)
-            elif isinstance(model_config.lora, os.PathLike):
-                lora_config = load_yml(os.fspath(model_config.lora))
-            else:
-                raise TypeError("`lora` configuration must be either a string or a valid path.")
+        # Note: PEFT/LoRA should be configured via trainer_config['peft_config']
+        # The trainer will handle PEFT model wrapping automatically
 
-            peft_config = LoraConfig(**lora_config)
-            model = get_peft_model(model, peft_config)
-
-            logger.info(f"{repr(model)}")
-            trainable_params, all_param = model.get_nb_trainable_parameters()
-            logger.info(
-                f'ALL PARAM: {all_param} / TRAINABLE PARAM: {trainable_params} / '
-                f'RATIO: {trainable_params / all_param * 100}%'
-            )
-
-        return model.cuda().train()
+        return model
 
 
 @add_end_docstrings(TRAIN_TASK_DOCSTRING)
@@ -207,27 +201,10 @@ class SingleTrainTaskWithCustomModel(SingleTrainTask, TaskWithCustomModel):
         model_cfg = model_cfg_cls(**model_config.config)
         model = model_cls(model_cfg)
 
-        # Apply LoRA configurations if provided
-        if model_config.lora is not None:
-            if isinstance(model_config.lora, DictConfig):
-                text_model_config_path = model_config.lora.pop('text_model', None)
-                vision_model_config_path = model_config.lora.pop('vision_model', None)
-            else:
-                raise TypeError("LoRA configuration must be a valid `DictConfig` object.")
+        # Note: For custom models with separate text/vision components,
+        # you may need custom PEFT handling. Consider using trainer_config['peft_config'] instead.
 
-            # Apply LoRA configuration to text model
-            if text_model_config_path is not None:
-                text_model_lora_config = load_yml(text_model_config_path)
-                text_model_peft_config = LoraConfig(**text_model_lora_config)
-                model.text_model = get_peft_model(model.text_model, text_model_peft_config)
-
-            # Apply LoRA configuration to vision model
-            if vision_model_config_path is not None:
-                vision_model_lora_config = load_yml(vision_model_config_path)
-                vision_model_peft_config = LoraConfig(**vision_model_lora_config)
-                model.vision_model = get_peft_model(model.vision_model, vision_model_peft_config)
-
-        return model.cuda().train()
+        return model
 
 
 @add_end_docstrings(TRAIN_TASK_DOCSTRING)
