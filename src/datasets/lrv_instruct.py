@@ -17,5 +17,5 @@ class LRVInstructDatasetBuilder(BaseBuilder):
             split=self.split
         )
         dataset = dataset.rename_columns({"image": "images", "question": "prompt", "answer": "completion"})
-
+        dataset = dataset.select(range(100000))
         return dataset

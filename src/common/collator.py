@@ -59,12 +59,24 @@ class ImageCollator(BaseCollator):
         def _convert_single_image(example: Dict) -> Dict:
             value = example.get("images")
 
-            if isinstance(value, list):
-                return {**example, "images": [v.convert(self.color_model) for v in value]}
             if value is None:
                 raise ValueError("'images' key is missing.")
+
+            if isinstance(value, list):
+                # Validate each element in the list is a PIL Image
+                for idx, img in enumerate(value):
+                    if not isinstance(img, PIL.Image.Image):
+                        raise TypeError(
+                            f"'images' list element at index {idx} must be PIL.Image.Image, "
+                            f"got {type(img).__name__}."
+                        )
+                return {**example, "images": [v.convert(self.color_model) for v in value]}
+
             if not isinstance(value, PIL.Image.Image):
-                raise ValueError(f"'images' must be PIL.Image.Image, got {type(value).__name__}.")
+                raise TypeError(
+                    f"'images' must be PIL.Image.Image or list of PIL.Image.Image, "
+                    f"got {type(value).__name__}."
+                )
 
             return {**example, "images": value.convert(self.color_model)}
 

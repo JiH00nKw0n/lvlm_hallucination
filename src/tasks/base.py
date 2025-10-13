@@ -96,9 +96,18 @@ class BaseTask(BaseModel):
             processor_config: Optional[Dict] = None
     ) -> ProcessorType:
         """
-        Abstract method for building a processor. Must be implemented by subclasses.
+        Builds a processor using the provided configuration. If no configuration is provided, it uses
+        the processor configuration from `self.config`.
+
+        Args:
+            processor_config (`Optional[Dict]`, *optional*):
+                The processor configuration dictionary. If not provided, uses the configuration from `self.config`.
+
+        Returns:
+            `ProcessorType`: The processor instance.
         """
-        raise NotImplementedError
+        processor_config = processor_config if processor_config is not None else self.config.processor_config.copy()
+        return AutoProcessor.from_pretrained(**processor_config.config)
 
     def build_datasets(
             self,
@@ -119,9 +128,6 @@ class TaskWithPretrainedModel(BaseTask):
     Methods:
         build_model(model_config: `Optional[Dict]`):
             Builds and returns a pretrained model. If a LoRA configuration is provided, it applies LoRA to the model.
-
-        build_processor(processor_config: `Optional[Dict]`):
-            Builds and returns a processor for the task.
     """
 
     def build_model(
@@ -129,24 +135,6 @@ class TaskWithPretrainedModel(BaseTask):
             model_config: Optional[Dict] = None
     ) -> ModelType:
         raise NotImplementedError
-
-    def build_processor(
-            self,
-            processor_config: Optional[Dict] = None
-    ) -> ProcessorType:
-        """
-        Builds a processor using the provided configuration. If no configuration is provided, it uses
-        the processor configuration from `self.config`.
-
-        Args:
-            processor_config (`Optional[Dict]`, *optional*):
-                The processor configuration dictionary. If not provided, uses the configuration from `self.config`.
-
-        Returns:
-            `ProcessorType`: The processor instance.
-        """
-        processor_config = processor_config if processor_config is not None else self.config.processor_config.copy()
-        return AutoProcessor.from_pretrained(**processor_config.config)
 
 
 @add_end_docstrings(TASK_DOCSTRING)
@@ -160,9 +148,6 @@ class TaskWithCustomModel(BaseTask):
         build_model(model_config: `Optional[Dict]`):
             Builds and returns a custom model based on configurations from the registry.
             Supports LoRA fine-tuning for text and vision models.
-
-        build_processor(processor_config: `Optional[Dict]`):
-            Builds and returns a custom processor for text and vision tasks.
     """
 
     def build_model(
@@ -170,37 +155,6 @@ class TaskWithCustomModel(BaseTask):
             model_config: Optional[Dict] = None
     ) -> ModelType:
         raise NotImplementedError
-
-    def build_processor(
-            self,
-            processor_config: Optional[Dict] = None
-    ) -> ProcessorType:
-        """
-        Builds a custom processor using the provided configuration from the registry.
-
-        Args:
-            processor_config (`Optional[Dict]`, *optional*):
-                The processor configuration dictionary. If not provided, uses the configuration from `self.config`.
-
-        Returns:
-            `ProcessorType`: The processor instance.
-
-        Raises:
-            AssertionError: If the processor class is not properly registered in the registry.
-        """
-        from src.common.registry import registry
-
-        processor_config = processor_config if processor_config is not None else self.config.processor_config.copy()
-
-        # Get the processor class from the registry
-        processor_cls = registry.get_processor_class(processor_config.processor_cls)
-
-        assert processor_cls is not None, "Processor {} not properly registered.".format(processor_cls)
-
-        if hasattr(processor_cls, 'from_text_vision_pretrained'):
-            return processor_cls.from_text_vision_pretrained(**processor_config.config)
-        else:
-            return processor_cls.from_pretrained(**processor_config.config)
 
 # Evaluate Task docstring
 EVALUATE_TASK_DOCSTRING = """
