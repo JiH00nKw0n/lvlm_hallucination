@@ -13,6 +13,7 @@ test_llava_config = {
     "projector_hidden_act": "gelu",
     "text_config": {
         "model_type": "llama_real",
+        "hidden_size": 4096,
         "text_config": {
             "_name_or_path": "lmsys/vicuna-7b-v1.5",
             "architectures": [

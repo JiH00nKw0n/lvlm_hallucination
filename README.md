@@ -6,8 +6,8 @@ Research project for studying hallucinations in Large Vision-Language Models.
 
 ### System Requirements
 - **Python**: 3.12.x
-- **CUDA**: 12.8+ (for GPU support)
-- **NVIDIA Driver**: 570+ (required for CUDA 12.8)
+- **CUDA**: 12.1+ (for GPU support)
+- **NVIDIA Driver**: 535+ (required for CUDA 12.1)
 - **Operating System**: Linux (Ubuntu 22.04+ recommended), macOS, or Windows with WSL2
 
 ### Hardware Requirements
@@ -27,28 +27,27 @@ chmod +x setup.sh
 ```
 
 The setup script will:
-1. Verify and install Python 3.12 if needed
-2. Check NVIDIA driver version and upgrade to 570+ if necessary
-3. Create a virtual environment (`.venv`)
-4. Install PyTorch 2.8.0 with CUDA 12.8 support
-5. Install all project dependencies from requirements.txt
-
-**Important**: If driver upgrade is required, the script will prompt for system reboot. After reboot, run `./setup.sh` again to complete PyTorch installation.
+1. Use your existing Python 3.12 if needed
+2. Create a virtual environment (`.venv`)
+3. Install PyTorch 2.5.1 with CUDA 12.1 support
+4. Install all project dependencies from requirements.txt
 
 ### Manual Setup
 
 If you prefer to install manually:
 
 ```bash
-# Create virtual environment with Python 3.12
+# Create virtual environment with Python 3
 python3.12 -m venv .venv
 source .venv/bin/activate
 
 # Upgrade pip
 pip install --upgrade pip
 
-# Install PyTorch with CUDA 12.8 support
-pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0
+# Install PyTorch with CUDA 12.1 support
+pip install --no-cache-dir --force-reinstall \
+  --index-url https://download.pytorch.org/whl/cu121 \
+  torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1
 
 # Install other dependencies
 pip install -r requirements.txt
@@ -57,9 +56,9 @@ pip install -r requirements.txt
 ## Package Versions
 
 ### Core ML Framework
-- **torch**: 2.8.0 (with CUDA 12.8)
-- **torchvision**: 0.23.0
-- **torchaudio**: 2.8.0
+- **torch**: 2.5.1 (with CUDA 12.1)
+- **torchvision**: 0.20.1
+- **torchaudio**: 2.5.1
 - **transformers**: 4.56.2
 
 ### Data Processing
@@ -117,7 +116,7 @@ python test/test_reweighting_module.py
 - **ReweightAttentionModule**: Attention reweighting mechanism for hallucination reduction
 
 ### Attention Mechanisms
-- Flex Attention support (PyTorch 2.8.0+)
+- Flex Attention support (PyTorch 2.5.1+)
 - Block-based attention pooling (mean/max pool)
 - Learnable attention scaling
 
@@ -128,11 +127,11 @@ python test/test_reweighting_module.py
 
 ## CUDA Compatibility
 
-This project requires PyTorch 2.8.0 with CUDA 12.8 support. Ensure your system meets the following requirements:
+This project requires PyTorch 2.5.1 with CUDA 12.1 support. Ensure your system meets the following requirements:
 
 ### NVIDIA Driver Requirements
-- **Linux**: NVIDIA Driver 570+ (required for CUDA 12.8)
-- **Windows**: NVIDIA Driver 571+ or newer
+- **Linux**: NVIDIA Driver 535+ (required for CUDA 12.1)
+- **Windows**: NVIDIA Driver 536+ or newer
 
 ### Verify Installation
 
@@ -149,9 +148,9 @@ python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA av
 
 **Expected output:**
 ```
-PyTorch: 2.8.0+cu128
+PyTorch: 2.5.1+cu121
 CUDA available: True
-CUDA version: 12.8
+CUDA version: 12.1
 ```
 
 ## Troubleshooting
@@ -163,7 +162,7 @@ If you encounter Python version errors:
 sudo apt update
 sudo apt install python3.12 python3.12-venv python3.12-dev
 
-# Install Python 3.12 (macOS with Homebrew)
+# Install Python 3 (macOS with Homebrew)
 brew install python@3.12
 ```
 
@@ -178,19 +177,11 @@ This error indicates driver-CUDA version mismatch. Solutions:
    nvidia-smi | grep "Driver Version"
    ```
 
-2. **If driver < 570, upgrade using setup.sh:**
+2. **If driver < 535, upgrade manually:**
    ```bash
-   ./setup.sh
-   # Script will detect old driver and prompt for upgrade
-   # After reboot, run ./setup.sh again
-   ```
-
-3. **Manual driver upgrade (Ubuntu):**
-   ```bash
-   wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
-   sudo dpkg -i cuda-keyring_1.1-1_all.deb
+   # Ubuntu/Debian
    sudo apt-get update
-   sudo apt-get -y install cuda-drivers-570
+   sudo apt-get install nvidia-driver-535
    sudo reboot
    ```
 
@@ -198,7 +189,7 @@ This error indicates driver-CUDA version mismatch. Solutions:
 
 If running in Docker, driver upgrade must be done on the **host system**, not inside the container:
 - Exit container
-- Upgrade host driver to 570+
+- Upgrade host driver to 535+
 - Restart container
 - Install compatible PyTorch inside container
 

@@ -23,7 +23,7 @@ scikit-learn==1.7.2
 # Utilities
 packaging==25.0
 requests==2.32.5
-numpy==2.3.3
+numpy==2.2.6
 trl==0.23.1
 
 # Quantization

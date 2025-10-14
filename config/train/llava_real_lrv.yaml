@@ -2,16 +2,16 @@
 # Using LoRA + DeepSpeed ZeRO-2 for distributed training
 
 run:
-  task: DatasetTrainTaskWithPretrainedModel
+  task: DatasetTrainTaskWithCustomModel
   runner: CustomSFTTrainer
   seed: 2025
 
 model:
   model_cls: LlavaForConditionalGeneration
-  config_cls: LlavaForConditionalGeneration
+  config_cls: LlavaConfig
   model_cls_config:
     pretrained_model_name_or_path: llava-hf/llava-1.5-7b-hf
-    torch_dtype: float16
+    dtype: float16
   config_cls_config:
     architectures:
       - LlavaForConditionalGeneration
@@ -22,6 +22,8 @@ model:
     projector_hidden_act: gelu
     text_config:
       model_type: llama_real
+      hidden_size: 4096
+      vocab_size: 32064
       text_config:
         _name_or_path: lmsys/vicuna-7b-v1.5
         architectures:
@@ -63,7 +65,7 @@ collator:
   config: {}
 
 trainer:
-  output_dir: ./checkpoints/llava-real-lrv-lora-deepspeed
+  output_dir: ./checkpoints/llava-real-lrv
   num_train_epochs: 3
   per_device_train_batch_size: 8
   gradient_accumulation_steps: 1
@@ -71,7 +73,7 @@ trainer:
   weight_decay: 0.0
   warmup_ratio: 0.03
   lr_scheduler_type: cosine
-  logging_steps: 10
+  logging_steps: 1
   save_strategy: epoch
   save_total_limit: 2
   fp16: true
@@ -81,4 +83,4 @@ trainer:
   report_to: wandb
   run_name: llava-lrv-lora-deepspeed
   # DeepSpeed ZeRO-2 configuration
-  deepspeed: config/deepspeed/ds_config_zero2.json
+#  deepspeed: config/deepspeed/ds_config_zero2.json

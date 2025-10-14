@@ -1,5 +1,5 @@
-from transformers import LlavaConfig, LlavaForConditionalGeneration
-
+from transformers import LlavaConfig
+from src.models.llava import LlavaForConditionalGeneration 
 from src.common.registry import registry
 from src.models.llama_real import LLamaRealConfig, LlamaRealModel
 from src.models.reweighting_module import ReweightAttentionConfig, ReweightAttentionModule

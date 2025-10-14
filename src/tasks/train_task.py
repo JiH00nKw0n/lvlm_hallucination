@@ -2,6 +2,7 @@ import logging
 from typing import Optional, Dict, Type, TypeVar, Any
 
 from datasets import Dataset, IterableDataset, interleave_datasets, concatenate_datasets
+from omegaconf import OmegaConf
 from peft import get_peft_config
 from transformers import (
     PreTrainedModel,
@@ -194,11 +195,26 @@ class SingleTrainTaskWithCustomModel(SingleTrainTask, TaskWithCustomModel):
         assert model_cfg_cls is not None, "Model config {} not properly registered.".format(model_cfg_cls)
 
         # Initialize the model configuration and model
-        model_cfg = model_cfg_cls(**model_config.config_cls_config)
-        model = model_cls(config=model_cfg, **model_config.model_cls_config)
+        config_cls_config = OmegaConf.to_container(model_config.config_cls_config, resolve=True)
+        model_cfg = model_cfg_cls(**config_cls_config)
+        model = model_cls.from_pretrained(config=model_cfg, **model_config.model_cls_config)
 
         for name, p in model.named_parameters():
             p.requires_grad = ("reweight_attention" in name)
+
+        # Log trainable parameters
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_percent = 100 * trainable_params / total_params if total_params > 0 else 0
+
+        logger.info("=" * 50)
+        logger.info("Model Parameter Summary")
+        logger.info("=" * 50)
+        logger.info(f"Total parameters: {total_params:,}")
+        logger.info(f"Trainable parameters: {trainable_params:,}")
+        logger.info(f"Non-trainable parameters: {total_params - trainable_params:,}")
+        logger.info(f"Trainable percentage: {trainable_percent:.2f}%")
+        logger.info("=" * 50)
 
         # Note: For custom models with separate text/vision components,
         # you may need custom PEFT handling. Consider using trainer_config['peft_config'] instead.
