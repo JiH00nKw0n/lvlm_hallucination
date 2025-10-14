@@ -1,7 +1,6 @@
 .idea
 .venv
 .claude.md
-*.json
 *.gz
 images/*
 test/create_dataset.py

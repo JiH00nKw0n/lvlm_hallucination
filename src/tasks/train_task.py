@@ -1,21 +1,17 @@
 import logging
-import os
 from typing import Optional, Dict, Type, TypeVar, Any
 
 from datasets import Dataset, IterableDataset, interleave_datasets, concatenate_datasets
-from omegaconf import DictConfig
+from peft import get_peft_config
 from transformers import (
-    AutoModel,
     PreTrainedModel,
     ProcessorMixin,
     TrainingArguments,
     add_end_docstrings
 )
-from peft import get_peft_model, LoraConfig, get_peft_config
 
 from src.common import registry, TrainConfig
 from src.tasks.base import BaseTrainTask, TaskWithCustomModel, TaskWithPretrainedModel, TRAIN_TASK_DOCSTRING
-from src.utils import load_yml
 
 ModelType = Type[PreTrainedModel]
 ProcessorType = Type[ProcessorMixin]
@@ -161,12 +157,12 @@ class SingleTrainTaskWithPretrainedModel(SingleTrainTask, TaskWithPretrainedMode
         assert model_cls is not None, "Model {} not properly registered.".format(model_cls)
         # Initialize the model
 
-        model = model_cls.from_pretrained(**model_config.config)
+        model = model_cls.from_pretrained(**model_config.model_cls_config)
 
         # Note: PEFT/LoRA should be configured via trainer_config['peft_config']
         # The trainer will handle PEFT model wrapping automatically
 
-        return model
+        return model.train()
 
 
 @add_end_docstrings(TRAIN_TASK_DOCSTRING)
@@ -198,13 +194,16 @@ class SingleTrainTaskWithCustomModel(SingleTrainTask, TaskWithCustomModel):
         assert model_cfg_cls is not None, "Model config {} not properly registered.".format(model_cfg_cls)
 
         # Initialize the model configuration and model
-        model_cfg = model_cfg_cls(**model_config.config)
-        model = model_cls(model_cfg)
+        model_cfg = model_cfg_cls(**model_config.config_cls_config)
+        model = model_cls(config=model_cfg, **model_config.model_cls_config)
+
+        for name, p in model.named_parameters():
+            p.requires_grad = ("reweight_attention" in name)
 
         # Note: For custom models with separate text/vision components,
         # you may need custom PEFT handling. Consider using trainer_config['peft_config'] instead.
 
-        return model
+        return model.train()
 
 
 @add_end_docstrings(TRAIN_TASK_DOCSTRING)

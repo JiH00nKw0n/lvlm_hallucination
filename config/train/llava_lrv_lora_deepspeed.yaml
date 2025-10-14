@@ -8,10 +8,9 @@ run:
 
 model:
   model_cls: LlavaForConditionalGeneration
-  config:
+  model_cls_config:
     pretrained_model_name_or_path: llava-hf/llava-1.5-7b-hf
     torch_dtype: float16
-    device_map: null  # Trainer will handle device placement
 
 processor:
   config:
@@ -29,15 +28,14 @@ collator:
 trainer:
   output_dir: ./checkpoints/llava-lrv-lora-deepspeed
   num_train_epochs: 3
-  per_device_train_batch_size: 4
-  gradient_accumulation_steps: 4
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 1
   learning_rate: 2.0e-5
   weight_decay: 0.0
   warmup_ratio: 0.03
   lr_scheduler_type: cosine
   logging_steps: 10
-  save_strategy: steps
-  save_steps: 500
+  save_strategy: epoch
   save_total_limit: 2
   fp16: true
   bf16: false
@@ -48,8 +46,8 @@ trainer:
   # LoRA configuration
   peft_config:
     task_type: CAUSAL_LM
-    r: 16
-    lora_alpha: 32
+    r: 32
+    lora_alpha: 64
     lora_dropout: 0.05
     bias: none
     target_modules:
@@ -60,5 +58,8 @@ trainer:
       - gate_proj
       - up_proj
       - down_proj
+    exclude_modules:
+      - vision_tower
+      - multi_modal_projector
   # DeepSpeed ZeRO-2 configuration
   deepspeed: config/deepspeed/ds_config_zero2.json

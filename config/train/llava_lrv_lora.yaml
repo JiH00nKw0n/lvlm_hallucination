@@ -8,7 +8,7 @@ run:
 
 model:
   model_cls: LlavaForConditionalGeneration
-  config:
+  model_cls_config:
     pretrained_model_name_or_path: llava-hf/llava-1.5-7b-hf
     torch_dtype: float16
     device_map: null  # Trainer will handle device placement
@@ -60,5 +60,8 @@ trainer:
       - gate_proj
       - up_proj
       - down_proj
+    exclude_modules:
+      - vision_tower
+      - multi_modal_projector
   # Uncomment to enable DeepSpeed ZeRO-2
   # deepspeed: config/deepspeed/ds_config_zero2.json

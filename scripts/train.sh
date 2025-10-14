@@ -24,7 +24,7 @@ DEVICES=${1:-"0,1,2,3"}
 CFG_PATH=${2:-"$PROJECT_DIR/config/train/llava_lrv_lora.yaml"}
 
 # Get wandb key (optional)
-WANDB_KEY=${3:-""}
+WANDB_KEY=${3:-"3314a9f18c06914b9c333abc68130f93f2cb1a23"}
 
 # Create log directory if it doesn't exist
 mkdir -p "$PARENT_DIR/.log"
