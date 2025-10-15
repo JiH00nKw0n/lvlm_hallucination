@@ -13,9 +13,9 @@ PROJECT_DIR=$(dirname "$SCRIPT_DIR")
 PARENT_DIR=$(dirname "$PROJECT_DIR")
 
 # Set cache directories
-export HF_DATASETS_CACHE="$PROJECT_DIR/.cache"
-export HF_HOME="$PROJECT_DIR/.cache"
-export LOG_DIR="$PARENT_DIR/.log"
+export HF_DATASETS_CACHE="PARENT_DIR/.cache"
+export HF_HOME="PARENT_DIR/.cache"
+export LOG_DIR="PARENT_DIR/.log"
 export DEEPSPEED_COMM=nccl
 export NCCL_DEBUG=INFO
 
