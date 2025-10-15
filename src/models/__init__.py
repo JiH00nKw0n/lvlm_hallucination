@@ -1,7 +1,8 @@
 from transformers import LlavaConfig, LlavaForConditionalGeneration
-# from src.models.llava import LlavaForConditionalGeneration 
+
 from src.common.registry import registry
 from src.models.llama_real import LLamaRealConfig, LlamaRealModel
+from src.models.llava import CustomLlavaForConditionalGeneration
 from src.models.reweighting_module import ReweightAttentionConfig, ReweightAttentionModule
 
 registry.register_model("LlavaForConditionalGeneration")(LlavaForConditionalGeneration)
@@ -12,4 +13,5 @@ __all__ = [
     "LlamaRealModel",
     "ReweightAttentionConfig",
     "ReweightAttentionModule",
+    "CustomLlavaForConditionalGeneration",
 ]
