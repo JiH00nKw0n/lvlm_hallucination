@@ -38,14 +38,13 @@ from transformers.models.llama.modeling_llama import (
     LlamaRMSNorm,
     LlamaRotaryEmbedding,
     LlamaMLP,
-    apply_rotary_pos_emb,
+    apply_rotary_pos_emb, repeat_kv,
 )
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 from transformers.utils.deprecation import deprecate_kwarg
 from transformers.utils.generic import check_model_inputs
 
-from src.integrations import ALL_ATTENTION_FUNCTIONS
 from src.models.llama_real.configuration_llama_real import LLamaRealConfig
 from src.models.reweighting_module.configuration_module import ReweightAttentionConfig
 from src.models.reweighting_module.modeling_module import ReweightAttentionModule
@@ -75,6 +74,33 @@ class ReweightCausalLMOutputWithPast(CausalLMOutputWithPast):
             Attention reweight masks from all decoder layers.
     """
     reweight_masks: Optional[torch.Tensor] = None
+
+
+def eager_attention_forward(
+        module: nn.Module,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        reweight_mask: Optional[torch.Tensor],
+        scaling: float,
+        dropout: float = 0.0,
+        **kwargs: Unpack[TransformersKwargs],
+):
+    key_states = repeat_kv(key, module.num_key_value_groups)
+    value_states = repeat_kv(value, module.num_key_value_groups)
+
+    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+    if attention_mask is not None:
+        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+        attn_weights = attn_weights + causal_mask + reweight_mask.to(device=attention_mask.device)
+
+    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+    attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
+    attn_output = torch.matmul(attn_weights, value_states)
+    attn_output = attn_output.transpose(1, 2).contiguous()
+
+    return attn_output, attn_weights
 
 
 class LlamaRealAttention(nn.Module):
@@ -144,18 +170,17 @@ class LlamaRealAttention(nn.Module):
             attention_mask=tensor_mask,
         )
 
-        if self.config._attn_implementation != "flex_attention":
-            raise ValueError("LLamaRealAttention only support `flex_attention`")
-        attention_interface: Callable = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        attention_interface: Callable = eager_attention_forward
+        if self.config._attn_implementation != "eager":
+            raise ValueError("LLamaRealAttention only support `eager`")
 
         attn_output, attn_weights = attention_interface(
             self,
             query_states,
             key_states,
             value_states,
-            ## custom reweight_mask
-            reweight_mask,
             attention_mask,
+            reweight_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
             **kwargs,
@@ -304,9 +329,8 @@ class LlamaRealModel(LlamaRealPreTrainedModel):
             position_ids=position_ids,
         )
 
-        # Flex attention만 지원
-        if self.config._attn_implementation != "flex_attention":
-            raise NotImplementedError("LlamaRealModel only supports flex_attention")
+        if self.config._attn_implementation != "eager":
+            raise NotImplementedError("LlamaRealModel only supports `eager`")
 
         if hasattr(past_key_values, "is_sliding") and False in past_key_values.is_sliding:
             layer_idx = past_key_values.is_sliding.index(False)
