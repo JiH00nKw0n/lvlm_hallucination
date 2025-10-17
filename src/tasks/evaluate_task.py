@@ -51,12 +51,12 @@ class EvaluatorContainer(BaseModel):
 
     model_config = ConfigDict(frozen=False, strict=False, validate_assignment=False)
 
-    def evaluate(self, batch_size: Optional[int] = 128):
+    def evaluate(self, batch_size: Optional[int] = 64):
         """
         Runs the evaluation process for each evaluator in the container.
 
         Args:
-            batch_size (int, optional): The batch size for evaluation. Defaults to 128.
+            batch_size (int, optional): The batch size for evaluation. Defaults to 64.
         """
         for evaluator in self.container:
             if issubclass(type(evaluator), BaseEvaluator):

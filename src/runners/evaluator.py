@@ -255,6 +255,8 @@ class LVLMEvaluator(BaseEvaluator):
             Duplicate samples from padding are identified by _sample_idx and removed after gathering.
         """
         # Add index to track original order and identify padding duplicates
+        batch_size = self.batch_size if batch_size is not None else batch_size
+        
         indexed_dataset = [
             {"_sample_idx": idx, **sample}
             for idx, sample in enumerate(self.evaluate_dataset)

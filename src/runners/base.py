@@ -39,6 +39,7 @@ class BaseEvaluator(BaseModel):
     evaluate_dataset: Optional[Dataset] = None
     overwrite_results: Optional[bool] = False
     output_dir: Optional[Union[str, os.PathLike]] = None
+    batch_size: Optional[int] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -52,24 +53,24 @@ class BaseEvaluator(BaseModel):
         self.model.eval()
         self.dataset_name = self.dataset_name.upper()
 
-    def _encode_dataset(self, batch_size: int = 128):
+    def _encode_dataset(self, batch_size: int = 64):
         """
         Encodes the dataset for evaluation. This method must be implemented by subclasses.
 
         Args:
-            batch_size (`int`, *optional*, defaults to 128): The batch size for encoding the dataset.
+            batch_size (`int`, *optional*, defaults to 64): The batch size for encoding the dataset.
 
         Raises:
             `NotImplementedError`: If the method is not implemented in the subclass.
         """
         raise NotImplementedError
 
-    def evaluate(self, batch_size: int = 128):
+    def evaluate(self, batch_size: int = 64):
         """
         Evaluates the model on the provided dataset. This method must be implemented by subclasses.
 
         Args:
-            batch_size (`int`, *optional*, defaults to 128): The batch size for evaluation.
+            batch_size (`int`, *optional*, defaults to 64): The batch size for evaluation.
 
         Raises:
             `NotImplementedError`: If the method is not implemented in the subclass.

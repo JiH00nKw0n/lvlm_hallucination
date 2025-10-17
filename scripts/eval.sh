@@ -33,6 +33,7 @@ echo "Parent directory: $PARENT_DIR"
 # Configuration files to evaluate
 CFG_PATHS=(
     "$PROJECT_DIR/config/evaluate/llava-1.5-7b-hf.yaml"
+    "$PROJECT_DIR/config/evaluate/llava-1.5-7b-hf-ft.yaml"
     # Add more config paths here as needed
 )
 

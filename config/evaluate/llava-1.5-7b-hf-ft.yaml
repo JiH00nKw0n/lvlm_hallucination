@@ -28,8 +28,8 @@ evaluator:
   - POPEEvaluator:
       collator:
         collator_cls: DummyImageCollator
-        config: {}
-      batch_size: 8
+        config: { }
+      batch_size: 32
       output_dir: ./results/llava-1.5-7b-hf/pope
       generation_config:
         max_new_tokens: 10
@@ -38,8 +38,8 @@ evaluator:
   - MMEEvaluator:
       collator:
         collator_cls: DummyImageCollator
-        config: {}
-      batch_size: 8
+        config: { }
+      batch_size: 32
       output_dir: ./results/llava-1.5-7b-hf/mme
       generation_config:
         max_new_tokens: 10
