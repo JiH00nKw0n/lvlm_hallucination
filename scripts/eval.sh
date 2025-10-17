@@ -12,19 +12,19 @@ PROJECT_DIR=$(dirname "$SCRIPT_DIR")
 PARENT_DIR=$(dirname "$PROJECT_DIR")
 
 # Set cache directories
-export HF_DATASETS_CACHE="PROJECT_DIR/.cache"
-export HF_HOME="PROJECT_DIR/.cache"
-export LOG_DIR="PROJECT_DIR/.log"
+export HF_DATASETS_CACHE="$PROJECT_DIR/.cache"
+export HF_HOME="$PROJECT_DIR/.cache"
+export LOG_DIR="$PROJECT_DIR/.log"
 
 # Get GPU configuration
 DEVICES=${1:-"0,1,2,3"}  # Default to GPUs 0,1,2,3
 
 # Create log directory if it doesn't exist
-mkdir -p "PROJECT_DIR/.log"
+mkdir -p "$PROJECT_DIR/.log"
 
 # Create log file with timestamp
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-LOG_FILE="PROJECT_DIR/.log/eval_${TIMESTAMP}.log"
+LOG_FILE="$PROJECT_DIR/.log/eval_${TIMESTAMP}.log"
 
 echo "Logging to: $LOG_FILE"
 echo "Project directory: $PROJECT_DIR"
