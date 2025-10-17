@@ -161,7 +161,7 @@ class ReweightAttentionModule(nn.Module):
                     # For each query position and block, compute valid count
                     # valid_mask: (Lq, Lk), block_mask: (num_blocks, Lk)
                     # Result: (Lq, num_blocks) - count of valid positions per block per query
-                    valid_counts = torch.matmul(valid_mask.float(), block_mask.T)  # (Lq, num_blocks)
+                    valid_counts = torch.matmul(valid_mask.to(dtype), block_mask.T)  # (Lq, num_blocks)
 
                     # Mask out -inf positions in attention weights
                     masked_attn = sample_attn.masked_fill(~valid_mask.unsqueeze(0), 0.0)  # (H, Lq, Lk)
@@ -174,7 +174,7 @@ class ReweightAttentionModule(nn.Module):
                     block_scores = block_sums / valid_counts.unsqueeze(0)  # (H, Lq, num_blocks)
                 else:
                     # No causal mask: use simple mean pooling
-                    block_sizes = (block_ends - block_starts).float()  # (num_blocks, 1)
+                    block_sizes = (block_ends - block_starts).to(dtype).clamp(min=1.0)  # (num_blocks, 1) - prevent division by zero
                     normalized_block_mask = block_mask / block_sizes  # (num_blocks, key_length)
                     block_scores = torch.matmul(sample_attn, normalized_block_mask.T)  # (H, Lq, num_blocks)
 
@@ -322,8 +322,7 @@ class ReweightAttentionModule(nn.Module):
             attention_mask
         )
 
-        # Normalize reweight_mask: standardize per query (excluding -inf positions)
-        # Create valid mask: True where attention is allowed (not -inf from causal mask)
+        # Center reweight_mask by subtracting mean (no std normalization)
         if attention_mask is not None:
             valid_mask = ~torch.isinf(attention_mask[:, 0, :, :key_length])  # (batch_size, query_length, key_length)
             valid_mask = valid_mask.unsqueeze(1)  # (batch_size, 1, query_length, key_length)
@@ -332,23 +331,28 @@ class ReweightAttentionModule(nn.Module):
             reweight_mask = reweight_mask.masked_fill(~valid_mask, 0.0)
 
             # Count valid positions per query
-            valid_counts = valid_mask.float().sum(dim=-1, keepdim=True).clamp(min=1.0)  # (B, 1, Lq, 1)
+            valid_counts = valid_mask.sum(dim=-1, keepdim=True).clamp(min=1.0)  # (B, 1, Lq, 1)
 
-            # Compute mean and std over valid positions only
+            # Compute mean over valid positions only
             mean = reweight_mask.sum(dim=-1, keepdim=True) / valid_counts  # (B, H, Lq, 1)
-            variance = ((reweight_mask - mean) ** 2).sum(dim=-1, keepdim=True) / valid_counts
-            std = (variance + 1e-8).sqrt()
 
-            # Standardize (invalid positions already 0, will remain 0 after standardization)
-            reweight_mask = (reweight_mask - mean) / std
-            # No need to mask again - already 0 at invalid positions
+            # Center by subtracting mean
+            reweight_mask = reweight_mask - mean
+
+            # Re-mask invalid positions to 0 (since mean subtraction affects them)
+            reweight_mask = reweight_mask.masked_fill(~valid_mask, 0.0)
         else:
-            # Simple standardization without masking
+            # Simple mean centering without masking
             mean = reweight_mask.mean(dim=-1, keepdim=True)
-            std = reweight_mask.std(dim=-1, keepdim=True, unbiased=False)
-            reweight_mask = (reweight_mask - mean) / (std + 1e-8)
+            reweight_mask = reweight_mask - mean
+
+        # Clip reweight_mask to prevent extreme values
+        reweight_mask = torch.clamp(reweight_mask, min=-10.0, max=10.0)
 
         # Scale by learnable alpha parameter
         reweight_mask = self.alpha * reweight_mask
+
+        # Final clipping after scaling
+        reweight_mask = torch.clamp(reweight_mask, min=-5.0, max=5.0)
 
         return reweight_mask

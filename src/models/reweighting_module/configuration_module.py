@@ -68,7 +68,7 @@ class ReweightAttentionConfig(PretrainedConfig):
             image_token_id: int = 32000,
             assistant_token_ids: Union[List[int], Tuple[int]] = (22933, 9047, 13566, 29901),
             alpha_std: float = 0.02,
-            implementation_type: str = "max_pool",
+            implementation_type: str = "mean_pool",
             **kwargs,
     ):
         self.num_attention_heads = num_attention_heads

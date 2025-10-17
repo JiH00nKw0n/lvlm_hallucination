@@ -3,6 +3,7 @@ from typing import Optional, Dict, Type, List
 
 from datasets import Dataset, DatasetDict
 from omegaconf import DictConfig, OmegaConf
+from peft import PeftModel
 from pydantic import BaseModel, ConfigDict, Field
 from transformers import add_end_docstrings, PreTrainedModel, ProcessorMixin
 
@@ -159,7 +160,7 @@ class MultiDatasetEvaluateTask(BaseEvaluateTask):
                 raise TypeError(
                     f"Expected `evaluate_dataset` to be of type `datasets.Dataset`, "
                     f"or `datasets.DatasetDict` but got {type(evaluate_dataset)} instead."
-                    )
+                )
 
             container.add(
                 evaluator=evaluator_cls(
@@ -298,3 +299,45 @@ class MultiDatasetEvaluateTaskWithCustomModel(MultiDatasetEvaluateTask, TaskWith
             self,
             evaluator_config=evaluator_config,
         )
+
+
+@add_end_docstrings(EVALUATE_TASK_DOCSTRING)
+@registry.register_task("MultiDatasetEvaluateTaskWithPEFTModel")
+class MultiDatasetEvaluateTaskWithPEFTModel(MultiDatasetEvaluateTaskWithPretrainedModel):
+    """
+    An evaluation task for pretrained models. Inherits from `EvaluateTask` and `TaskWithPretrainedModel`.
+    """
+
+    def build_model(
+            self,
+            model_config: Optional[Dict] = None
+    ) -> PreTrainedModel:
+        # TODO: Logic loading checkpoints which is trained with PEFT.
+        #  These checkpoints typically have `adaptor_config.json` file.
+
+        """
+        Builds and returns a pretrained model for evaluation. Optionally applies LoRA configurations.
+
+        Args:
+            model_config (Optional[Dict]): The model configuration.
+            If not provided, defaults to `self.config.model_config`.
+
+        Returns:
+            PreTrainedModel: The pretrained model for evaluation.
+        """
+        model_config = model_config \
+            if model_config is not None else self.config.model_config.copy()
+
+        model_cls = registry.get_model_class(model_config.model_cls)
+
+        assert model_cls is not None, f"Model {model_cls} not properly registered."
+
+        # Convert OmegaConf to dict to avoid issues with transformers
+        model_kwargs = OmegaConf.to_container(model_config.config, resolve=True)
+        base_model = model_cls.from_pretrained(**model_kwargs)
+
+        peft_model = PeftModel.from_pretrained(base_model, model_config.adapter_path)
+        
+        model = peft_model.merge_and_unload().eval()
+
+        return model.eval()

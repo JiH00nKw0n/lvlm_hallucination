@@ -13,9 +13,9 @@ PROJECT_DIR=$(dirname "$SCRIPT_DIR")
 PARENT_DIR=$(dirname "$PROJECT_DIR")
 
 # Set cache directories
-export HF_DATASETS_CACHE="PARENT_DIR/.cache"
-export HF_HOME="PARENT_DIR/.cache"
-export LOG_DIR="PARENT_DIR/.log"
+export HF_DATASETS_CACHE="SCRIPT_DIR/.cache"
+export HF_HOME="SCRIPT_DIR/.cache"
+export LOG_DIR="SCRIPT_DIR/.log"
 export DEEPSPEED_COMM=nccl
 export NCCL_DEBUG=INFO
 
@@ -26,11 +26,11 @@ DEVICES=${1:-"0,1,2,3"}
 WANDB_KEY=${2:-"3314a9f18c06914b9c333abc68130f93f2cb1a23"}
 
 # Create log directory if it doesn't exist
-mkdir -p "$PARENT_DIR/.log"
+mkdir -p "SCRIPT_DIR/.log"
 
 # Create log file with timestamp
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-LOG_FILE="$PARENT_DIR/.log/train_${TIMESTAMP}.log"
+LOG_FILE="SCRIPT_DIR/.log/train_${TIMESTAMP}.log"
 
 echo "Logging to: $LOG_FILE"
 echo "Project directory: $PROJECT_DIR"

@@ -1,10 +1,7 @@
 #!/bin/bash
-cd ..
 mkdir .log
 mkdir .cache
 mkdir result
-# shellcheck disable=SC2164
-cd lvlm_hallucination
 
 echo "Simple setup script - no version checks"
 

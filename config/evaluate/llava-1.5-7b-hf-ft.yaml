@@ -1,0 +1,47 @@
+# Evaluation configuration for LLaVA-1.5-7B-HF
+# Evaluates on POPE and MME benchmarks
+
+run:
+  task: MultiDatasetEvaluateTaskWithPEFTModel
+  seed: 2025
+
+model:
+  model_cls: LlavaForConditionalGeneration
+  config:
+    pretrained_model_name_or_path: llava-hf/llava-1.5-7b-hf
+    dtype: float16
+    # Note: device will be set by Accelerate PartialState in evaluator
+  adapter_path: ./checkpoints/llava-lrv-lora
+
+processor:
+  config:
+    pretrained_model_name_or_path: llava-hf/llava-1.5-7b-hf
+    use_fast: true
+
+dataset:
+  - POPEDatasetBuilder:
+      split: test
+  - MMEDatasetBuilder:
+      split: test
+
+evaluator:
+  - POPEEvaluator:
+      collator:
+        collator_cls: DummyImageCollator
+        config: {}
+      batch_size: 8
+      output_dir: ./results/llava-1.5-7b-hf/pope
+      generation_config:
+        max_new_tokens: 10
+        temperature: 0.0
+        do_sample: false
+  - MMEEvaluator:
+      collator:
+        collator_cls: DummyImageCollator
+        config: {}
+      batch_size: 8
+      output_dir: ./results/llava-1.5-7b-hf/mme
+      generation_config:
+        max_new_tokens: 10
+        temperature: 0.0
+        do_sample: false

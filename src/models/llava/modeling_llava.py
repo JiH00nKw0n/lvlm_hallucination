@@ -127,7 +127,7 @@ class CustomLlavaPreTrainedModel(PreTrainedModel):
     The Llava model which consists of a vision backbone and a language model, without a language modeling head.
     """
 )
-class CustomLlavaModel(LlavaPreTrainedModel):
+class CustomLlavaModel(CustomLlavaPreTrainedModel):
     _checkpoint_conversion_mapping = {"language_model.model": "language_model"}
 
     def __init__(self, config: LlavaConfig):
@@ -307,7 +307,7 @@ class CustomLlavaModel(LlavaPreTrainedModel):
     """
 )
 @registry.register_model("CustomLlavaForConditionalGeneration")
-class CustomLlavaForConditionalGeneration(LlavaPreTrainedModel, GenerationMixin):
+class CustomLlavaForConditionalGeneration(CustomLlavaPreTrainedModel, GenerationMixin):
     _checkpoint_conversion_mapping = {
         "^language_model.model": "model.language_model",
         "^vision_tower": "model.vision_tower",
