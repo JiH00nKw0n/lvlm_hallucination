@@ -30,7 +30,7 @@ evaluator:
         collator_cls: DummyImageCollator
         config: { }
       batch_size: 32
-      output_dir: ./results/llava-1.5-7b-hf/pope
+      output_dir: ./results/llava-1.5-7b-hf-ft/pope
       generation_config:
         max_new_tokens: 10
         temperature: 0.0
@@ -40,7 +40,7 @@ evaluator:
         collator_cls: DummyImageCollator
         config: { }
       batch_size: 32
-      output_dir: ./results/llava-1.5-7b-hf/mme
+      output_dir: ./results/llava-1.5-7b-hf-ft/mme
       generation_config:
         max_new_tokens: 10
         temperature: 0.0
