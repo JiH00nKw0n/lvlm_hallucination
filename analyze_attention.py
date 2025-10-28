@@ -134,6 +134,8 @@ def plot_attention_map(
     tokens: List[str],
     layer_idx: int,
     head_idx: Optional[int] = None,
+    vision_token_range: Optional[Tuple[int, int]] = None,
+    prompt_token_range: Optional[Tuple[int, int]] = None,
     output_path: str = None,
     title: str = "Attention Map"
 ):
@@ -145,6 +147,8 @@ def plot_attention_map(
         tokens: List of token strings
         layer_idx: Which layer to visualize
         head_idx: Which head to visualize (if None, average over all heads)
+        vision_token_range: Optional (start, end) of vision tokens
+        prompt_token_range: Optional (start, end) of prompt tokens
         output_path: Path to save plot
         title: Plot title
     """
@@ -176,6 +180,28 @@ def plot_attention_map(
         cbar_kws={'label': 'Attention Weight'},
         ax=ax
     )
+
+    # Mark vision token range end
+    if vision_token_range is not None:
+        _, vision_end = vision_token_range
+        if vision_end <= max_tokens:
+            # Add vertical line at x-axis
+            ax.axvline(x=vision_end, color='red', linestyle='--', linewidth=2, label='Vision Token End')
+            # Add horizontal line at y-axis
+            ax.axhline(y=vision_end, color='red', linestyle='--', linewidth=2)
+
+    # Mark prompt token range end
+    if prompt_token_range is not None:
+        _, prompt_end = prompt_token_range
+        if prompt_end <= max_tokens:
+            # Add vertical line at x-axis
+            ax.axvline(x=prompt_end, color='orange', linestyle='--', linewidth=2, label='Prompt Token End')
+            # Add horizontal line at y-axis
+            ax.axhline(y=prompt_end, color='orange', linestyle='--', linewidth=2)
+
+    # Add legend if any lines were drawn
+    if vision_token_range is not None or prompt_token_range is not None:
+        ax.legend(loc='upper right', fontsize=10)
 
     ax.set_xlabel('Key Tokens', fontsize=12)
     ax.set_ylabel('Query Tokens', fontsize=12)
@@ -462,6 +488,7 @@ def analyze_single_sample(
                         attentions,
                         tokens,
                         layer_idx=layer_idx,
+                        vision_token_range=vision_token_range,
                         output_path=os.path.join(sample_dir, f"image_attention_map_layer_{layer_idx}.png"),
                         title=f"Image Mode Attention Map Layer {layer_idx} - '{noun}'"
                     )
@@ -551,6 +578,7 @@ def analyze_single_sample(
                         attentions,
                         tokens,
                         layer_idx=layer_idx,
+                        prompt_token_range=prompt_token_range,
                         output_path=os.path.join(sample_dir, f"text_attention_map_layer_{layer_idx}.png"),
                         title=f"Text Mode Attention Map Layer {layer_idx} - '{noun}'"
                     )

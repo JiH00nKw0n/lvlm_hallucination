@@ -6,6 +6,7 @@ Saves input_ids, attention_mask, attention_weights, and model outputs.
 
 import os
 import argparse
+import json
 import torch
 from datasets import load_from_disk
 from transformers import AutoProcessor, LlavaConfig
@@ -117,6 +118,12 @@ def process_single_sample(
             use_cache=False,
         )
 
+    # Decode generated text (only the newly generated tokens)
+    generated_text_image = processor.decode(
+        generated_ids[0][inputs_with_image['input_ids'].shape[1]:],
+        skip_special_tokens=True
+    )
+
     # Find vision token range (image token ID is typically 32000 for LLaVA)
     image_token_id = 32000
     vision_token_positions = [i for i, token_id in enumerate(generated_ids[0]) if token_id.item() == image_token_id]
@@ -131,6 +138,7 @@ def process_single_sample(
         'attention_mask': inputs_with_image['attention_mask'].cpu(),
         'pixel_values': inputs_with_image['pixel_values'].cpu(),
         'generated_ids': generated_ids.cpu(),
+        'generated_text': generated_text_image,
         'attentions': full_outputs.attentions.cpu() if full_outputs.attentions is not None else None,
         'vision_token_range': vision_token_range,
     }
@@ -167,6 +175,12 @@ def process_single_sample(
             use_cache=False,
         )
 
+    # Decode generated text (only the newly generated tokens)
+    generated_text_text = processor.decode(
+        generated_ids_text[0][inputs_text_only['input_ids'].shape[1]:],
+        skip_special_tokens=True
+    )
+
     # Find caption token range by searching for the caption token sequence
     input_ids_list = generated_ids_text[0].tolist()
     caption_start_idx = None
@@ -189,6 +203,7 @@ def process_single_sample(
         'input_ids': inputs_text_only['input_ids'].cpu(),
         'attention_mask': inputs_text_only['attention_mask'].cpu(),
         'generated_ids': generated_ids_text.cpu(),
+        'generated_text': generated_text_text,
         'attentions': full_outputs_text.attentions.cpu() if full_outputs_text.attentions is not None else None,
         'prompt_token_range': prompt_token_range,
         'caption_length': caption_length,
@@ -301,6 +316,23 @@ def main():
     torch.save(all_results, final_path)
     print(f"\nAll results saved to {final_path}")
     print(f"Total samples processed: {len(all_results)}")
+
+    # Save generated texts as JSON
+    json_results = {
+        "image_mode": {},
+        "text_mode": {}
+    }
+
+    for result in all_results:
+        idx = str(result['sample_idx'])
+        json_results["image_mode"][idx] = result['image_mode']['generated_text']
+        json_results["text_mode"][idx] = result['text_mode']['generated_text']
+
+    json_path = os.path.join(output_dir, "generated_texts.json")
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(json_results, f, ensure_ascii=False, indent=2)
+
+    print(f"Generated texts saved to {json_path}")
 
 
 if __name__ == "__main__":
