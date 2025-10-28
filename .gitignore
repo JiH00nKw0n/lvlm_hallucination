@@ -5,6 +5,9 @@
 images/*
 test/create_dataset.py
 dataset_local/*
+dataset_question/*
 src/eval_tool/*
 setup_temp.sh
 requirements_temp.txt
+.env
+test/*

@@ -21,6 +21,7 @@ from typing import Optional, Union, Any
 
 import torch
 from torch import nn, Tensor
+from transformers import AutoModel
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationMixin
 from transformers.masking_utils import create_causal_mask
@@ -28,7 +29,6 @@ from transformers.modeling_layers import (
     GradientCheckpointingLayer,
 )
 from transformers.modeling_outputs import (
-    BaseModelOutputWithPast,
     CausalLMOutputWithPast,
 )
 from transformers.models.llama.configuration_llama import LlamaConfig
@@ -124,7 +124,7 @@ class EvalLlamaModel(LlamaPreTrainedModel):
             cache_position: Optional[torch.LongTensor] = None,
             use_cache: Optional[bool] = None,
             **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutputWithPast:
+    ) -> CausalLMOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -174,7 +174,7 @@ class EvalLlamaModel(LlamaPreTrainedModel):
         # Shape: (batch_size, num_layers, num_heads, seq_len, seq_len)
         attentions = torch.stack(all_attn_weights, dim=1)
 
-        return BaseModelOutputWithPast(
+        return CausalLMOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values,
             attentions=attentions,
@@ -190,7 +190,7 @@ class EvalLlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = LlamaModel(config)
+        self.model = EvalLlamaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
@@ -229,7 +229,7 @@ class EvalLlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-        outputs: BaseModelOutputWithPast = self.model(
+        outputs: CausalLMOutputWithPast = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -262,3 +262,9 @@ __all__ = [
     "EvalLlamaForCausalLM",
     "EvalLlamaModel",
 ]
+
+## AutoModel Register
+AutoModel.register(LlamaConfig, EvalLlamaModel)
+
+## Register for auto class
+EvalLlamaForCausalLM.register_for_auto_class("EvalLlamaForCausalLM")
