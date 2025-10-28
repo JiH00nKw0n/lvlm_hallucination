@@ -5,6 +5,7 @@ Saves input_ids, attention_mask, attention_weights, and model outputs.
 """
 
 import os
+import argparse
 import torch
 from datasets import load_from_disk
 from transformers import AutoProcessor, LlavaConfig
@@ -197,10 +198,22 @@ def process_single_sample(
 
 
 def main():
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="Run inference with LLaVA and save results")
+    parser.add_argument("--num_samples", type=int, default=None,
+                        help="Number of samples to process (default: all samples)")
+    parser.add_argument("--model_name", type=str, default="llava-hf/llava-1.5-7b-hf",
+                        help="Model name or path")
+    parser.add_argument("--dataset_path", type=str, default="dataset_question/test",
+                        help="Path to dataset")
+    parser.add_argument("--output_dir", type=str, default="inference_results",
+                        help="Output directory")
+    args = parser.parse_args()
+
     # Configuration
-    model_name = "llava-hf/llava-1.5-7b-hf"
-    dataset_path = "dataset_question/test"
-    output_dir = "inference_results"
+    model_name = args.model_name
+    dataset_path = args.dataset_path
+    output_dir = args.output_dir
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"Using device: {device}")
@@ -208,7 +221,18 @@ def main():
     # Load dataset
     print(f"Loading dataset from {dataset_path}...")
     dataset = load_from_disk(dataset_path)
-    print(f"Dataset loaded: {len(dataset)} samples")
+    total_samples = len(dataset)
+    print(f"Dataset loaded: {total_samples} samples")
+
+    # Limit samples if specified
+    if args.num_samples is not None:
+        num_samples = min(args.num_samples, total_samples)
+        dataset = dataset.select(range(num_samples))
+        print(f"Processing {num_samples} samples (out of {total_samples})")
+    else:
+        num_samples = total_samples
+        print(f"Processing all {num_samples} samples")
+
     print(f"Columns: {dataset.column_names}")
 
     # Load processor

@@ -1,4 +1,5 @@
 # Core ML libraries
+torch==2.8.0
 transformers==4.56.2
 peft==0.17.1
 accelerate==1.10.0
@@ -29,3 +30,8 @@ wandb==0.22.2
 
 # Quantization
 bitsandbytes==0.48.0
+
+# Visualization and analysis
+matplotlib==3.10.7
+seaborn==0.13.2
+spacy==3.8.7
