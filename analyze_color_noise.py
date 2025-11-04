@@ -1,0 +1,409 @@
+"""
+Analyze the impact of color noise on LVLM object recognition.
+
+Tests how different hue_range and blend_strength parameters affect
+the model's confidence (logprobs) in predicting the correct object.
+
+Experiment:
+1. Apply SAM segmentation + colorization with varying parameters
+2. Prompt: "USER: <image>\n An image of ASSISTANT: "
+3. Measure logprobs for the first predicted token (target object)
+4. Average over 100 samples
+5. Plot line charts for hue_range and blend_strength effects
+"""
+
+import argparse
+import os
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+from pathlib import Path
+from PIL import Image
+from tqdm import tqdm
+from transformers import AutoProcessor, SamModel, SamProcessor
+from typing import Dict, List
+
+from test import CLASS_NAMES
+from colorize_with_sam import get_sam_mask_auto
+from test.test_utils import colorize_subject
+
+
+def load_vlm_model(model_name: str, device: str = "auto"):
+    """Load vision-language model and processor."""
+    from transformers import LlavaForConditionalGeneration, AutoProcessor
+
+    print(f"Loading VLM model: {model_name}")
+    model = LlavaForConditionalGeneration.from_pretrained(
+        model_name,
+        torch_dtype=torch.float16,
+        device_map=device,
+    )
+    processor = AutoProcessor.from_pretrained(model_name)
+
+    return model, processor
+
+
+def load_sam_model(sam_model_name: str, device: str):
+    """Load SAM model for segmentation."""
+    print(f"Loading SAM model: {sam_model_name}")
+    model = SamModel.from_pretrained(sam_model_name).to(device)
+    processor = SamProcessor.from_pretrained(sam_model_name)
+    return model, processor
+
+
+def get_logprobs_for_token(
+    model,
+    processor,
+    image,
+    target_text: str,
+    max_new_tokens: int = 1
+) -> float:
+    """
+    Get log probability of the target token being predicted.
+
+    Args:
+        model: VLM model
+        processor: VLM processor
+        image: PIL Image
+        target_text: Target token text (e.g., "apple")
+        max_new_tokens: Number of tokens to generate
+
+    Returns:
+        Log probability of target token
+    """
+    # Prepare prompt
+    prompt = f"USER: <image>\n An image of ASSISTANT: "
+
+    # Prepare inputs
+    inputs = processor(text=prompt, images=image, return_tensors="pt")
+
+    # Move to model device
+    model_device = next(model.parameters()).device
+    inputs = {k: v.to(model_device) for k, v in inputs.items()}
+
+    # Generate with output_scores to get logits
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            return_dict_in_generate=True,
+            output_scores=True,
+        )
+
+    # Get logits for first generated token
+    # scores[0] is logits for first generated token: (batch, vocab_size)
+    first_token_logits = outputs.scores[0][0]  # (vocab_size,)
+
+    # Get log probabilities
+    log_probs = torch.log_softmax(first_token_logits, dim=-1)
+
+    # Tokenize target text to get target token ID
+    # We only care about the first token of the target
+    target_tokens = processor.tokenizer.encode(target_text, add_special_tokens=False)
+    if len(target_tokens) == 0:
+        # Try with space prefix (common for first token)
+        target_tokens = processor.tokenizer.encode(f" {target_text}", add_special_tokens=False)
+
+    if len(target_tokens) > 0:
+        target_token_id = target_tokens[0]
+        target_logprob = log_probs[target_token_id].item()
+    else:
+        # Fallback: return very low probability
+        target_logprob = -100.0
+
+    return target_logprob
+
+
+def evaluate_single_image(
+    image_path: str,
+    class_id: int,
+    vlm_model,
+    vlm_processor,
+    sam_model,
+    sam_processor,
+    sam_device: str,
+    hue_range: tuple,
+    blend_strength: float,
+    grid_size: int = 5
+) -> float:
+    """
+    Evaluate a single image with given colorization parameters.
+
+    Returns:
+        Log probability of correct object prediction
+    """
+    # Load original image
+    img = Image.open(image_path).convert("RGB")
+
+    # Get object name
+    object_name = CLASS_NAMES.get(class_id, "object")
+
+    # Apply colorization if blend_strength > 0
+    if blend_strength > 0:
+        # Generate mask with SAM
+        mask = get_sam_mask_auto(img, sam_processor, sam_model, sam_device, grid_size=grid_size)
+
+        # Apply colorization
+        img_colorized = colorize_subject(
+            img, mask,
+            saturation=230,
+            hue_range=hue_range,
+            blend_strength=blend_strength
+        )
+    else:
+        # No colorization (baseline)
+        img_colorized = img
+
+    # Get logprobs
+    logprob = get_logprobs_for_token(
+        vlm_model,
+        vlm_processor,
+        img_colorized,
+        object_name
+    )
+
+    return logprob
+
+
+def run_experiment(
+    image_dir: str,
+    vlm_model_name: str,
+    sam_model_name: str,
+    output_dir: str,
+    num_samples: int = 100,
+    device: str = "auto"
+):
+    """
+    Run the main experiment.
+
+    Args:
+        image_dir: Directory containing input images (0.png, 1.png, ...)
+        vlm_model_name: VLM model name
+        sam_model_name: SAM model name
+        output_dir: Output directory for results
+        num_samples: Number of samples to evaluate
+        device: Device for models
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Load models
+    vlm_model, vlm_processor = load_vlm_model(vlm_model_name, device)
+
+    # SAM device
+    sam_device = "cuda" if torch.cuda.is_available() and device != "cpu" else "cpu"
+    sam_model, sam_processor = load_sam_model(sam_model_name, sam_device)
+
+    # Get image files
+    image_path = Path(image_dir)
+    image_files = sorted(image_path.glob("*.png"))[:num_samples]
+
+    print(f"Found {len(image_files)} images")
+
+    # Define parameter ranges
+    hue_values = list(range(0, 181, 30))  # [0, 30, 60, 90, 120, 150, 180]
+    blend_values = [round(x * 0.2, 1) for x in range(6)]  # [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+
+    print(f"Hue values: {hue_values}")
+    print(f"Blend values: {blend_values}")
+
+    # ========== Experiment 1: Vary hue_range (fix blend_strength=1.0) ==========
+    print("\n" + "="*80)
+    print("Experiment 1: Varying hue_range")
+    print("="*80)
+
+    hue_results = {hue: [] for hue in hue_values}
+
+    for hue_val in tqdm(hue_values, desc="Hue values"):
+        hue_range = (hue_val, hue_val)
+
+        for img_path in tqdm(image_files, desc=f"Images (hue={hue_val})", leave=False):
+            class_id = int(img_path.stem)
+
+            try:
+                logprob = evaluate_single_image(
+                    str(img_path),
+                    class_id,
+                    vlm_model,
+                    vlm_processor,
+                    sam_model,
+                    sam_processor,
+                    sam_device,
+                    hue_range=hue_range,
+                    blend_strength=1.0  # Fixed
+                )
+                hue_results[hue_val].append(logprob)
+            except Exception as e:
+                print(f"Error processing {img_path.name} with hue={hue_val}: {e}")
+                continue
+
+    # ========== Experiment 2: Vary blend_strength (fix hue_range=(180,180)) ==========
+    print("\n" + "="*80)
+    print("Experiment 2: Varying blend_strength")
+    print("="*80)
+
+    blend_results = {blend: [] for blend in blend_values}
+
+    for blend_val in tqdm(blend_values, desc="Blend values"):
+        for img_path in tqdm(image_files, desc=f"Images (blend={blend_val})", leave=False):
+            class_id = int(img_path.stem)
+
+            try:
+                logprob = evaluate_single_image(
+                    str(img_path),
+                    class_id,
+                    vlm_model,
+                    vlm_processor,
+                    sam_model,
+                    sam_processor,
+                    sam_device,
+                    hue_range=(180, 180),  # Fixed
+                    blend_strength=blend_val
+                )
+                blend_results[blend_val].append(logprob)
+            except Exception as e:
+                print(f"Error processing {img_path.name} with blend={blend_val}: {e}")
+                continue
+
+    # ========== Compute averages ==========
+    print("\n" + "="*80)
+    print("Computing averages...")
+    print("="*80)
+
+    # Hue results
+    hue_avg = {hue: np.mean(logprobs) for hue, logprobs in hue_results.items() if len(logprobs) > 0}
+    hue_std = {hue: np.std(logprobs) for hue, logprobs in hue_results.items() if len(logprobs) > 0}
+
+    print("\nHue Range Results:")
+    for hue in sorted(hue_avg.keys()):
+        print(f"  Hue {hue:3d}: {hue_avg[hue]:.4f} ± {hue_std[hue]:.4f} (n={len(hue_results[hue])})")
+
+    # Blend results
+    blend_avg = {blend: np.mean(logprobs) for blend, logprobs in blend_results.items() if len(logprobs) > 0}
+    blend_std = {blend: np.std(logprobs) for blend, logprobs in blend_results.items() if len(logprobs) > 0}
+
+    print("\nBlend Strength Results:")
+    for blend in sorted(blend_avg.keys()):
+        print(f"  Blend {blend:.1f}: {blend_avg[blend]:.4f} ± {blend_std[blend]:.4f} (n={len(blend_results[blend])})")
+
+    # ========== Plot results ==========
+    print("\n" + "="*80)
+    print("Plotting results...")
+    print("="*80)
+
+    # Plot 1: Hue range effect
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    hues = sorted(hue_avg.keys())
+    avgs = [hue_avg[h] for h in hues]
+    stds = [hue_std[h] for h in hues]
+
+    ax.plot(hues, avgs, marker='o', linewidth=2, markersize=8, label='Mean logprob')
+    ax.fill_between(hues,
+                     [a - s for a, s in zip(avgs, stds)],
+                     [a + s for a, s in zip(avgs, stds)],
+                     alpha=0.3)
+
+    ax.set_xlabel('Hue Range Value', fontsize=12)
+    ax.set_ylabel('Log Probability', fontsize=12)
+    ax.set_title('Effect of Hue Range on Object Recognition\n(blend_strength=1.0)', fontsize=14)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "hue_range_effect.png"), dpi=150, bbox_inches='tight')
+    plt.close()
+
+    # Plot 2: Blend strength effect
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    blends = sorted(blend_avg.keys())
+    avgs = [blend_avg[b] for b in blends]
+    stds = [blend_std[b] for b in blends]
+
+    ax.plot(blends, avgs, marker='o', linewidth=2, markersize=8, label='Mean logprob', color='coral')
+    ax.fill_between(blends,
+                     [a - s for a, s in zip(avgs, stds)],
+                     [a + s for a, s in zip(avgs, stds)],
+                     alpha=0.3, color='coral')
+
+    ax.set_xlabel('Blend Strength', fontsize=12)
+    ax.set_ylabel('Log Probability', fontsize=12)
+    ax.set_title('Effect of Blend Strength on Object Recognition\n(hue_range=(180, 180))', fontsize=14)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "blend_strength_effect.png"), dpi=150, bbox_inches='tight')
+    plt.close()
+
+    # Save raw results
+    results = {
+        'hue_results': {k: v for k, v in hue_results.items()},
+        'blend_results': {k: v for k, v in blend_results.items()},
+        'hue_avg': hue_avg,
+        'hue_std': hue_std,
+        'blend_avg': blend_avg,
+        'blend_std': blend_std,
+    }
+
+    torch.save(results, os.path.join(output_dir, "results.pt"))
+
+    print(f"\nResults saved to {output_dir}/")
+    print(f"  - hue_range_effect.png")
+    print(f"  - blend_strength_effect.png")
+    print(f"  - results.pt")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Analyze color noise effect on LVLM")
+    parser.add_argument(
+        "--image_dir",
+        type=str,
+        default="images/images",
+        help="Directory containing input images"
+    )
+    parser.add_argument(
+        "--vlm_model",
+        type=str,
+        default="llava-hf/llava-1.5-7b-hf",
+        help="Vision-language model name"
+    )
+    parser.add_argument(
+        "--sam_model",
+        type=str,
+        default="facebook/sam-vit-base",
+        help="SAM model name (base, large, huge)"
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="analysis_color_noise",
+        help="Output directory"
+    )
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=100,
+        help="Number of samples to evaluate"
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        help="Device for models (auto, cuda, cpu)"
+    )
+
+    args = parser.parse_args()
+
+    run_experiment(
+        image_dir=args.image_dir,
+        vlm_model_name=args.vlm_model,
+        sam_model_name=args.sam_model,
+        output_dir=args.output_dir,
+        num_samples=args.num_samples,
+        device=args.device
+    )
+
+
+if __name__ == "__main__":
+    main()

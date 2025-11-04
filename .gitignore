@@ -10,4 +10,5 @@ src/eval_tool/*
 setup_temp.sh
 requirements_temp.txt
 .env
-test/*
+test/read_dataset.py
+test/upload_existing_dataset.py
