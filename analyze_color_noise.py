@@ -1,15 +1,18 @@
 """
-Analyze the impact of color noise on LVLM object recognition.
+Analyze the impact of color noise and gaussian noise on LVLM object recognition.
 
-Tests how different hue_range and blend_strength parameters affect
-the model's confidence (logprobs) in predicting the correct object.
+Tests how different parameters affect the model's confidence (logprobs):
+1. hue_range - Color gradient variation
+2. blend_strength - Color blending intensity
+3. gaussian_noise - Random pixel noise on masked region
 
 Experiment:
-1. Apply SAM segmentation + colorization with varying parameters
+1. Apply SAM segmentation + noise/colorization with varying parameters
 2. Prompt: "USER: <image>\n An image of ASSISTANT: "
 3. Measure logprobs for the first predicted token (target object)
 4. Average over 100 samples
-5. Plot line charts for hue_range and blend_strength effects
+5. Plot line charts for each parameter effect
+6. Save random sample images and detailed JSON results
 """
 
 import argparse
@@ -22,6 +25,8 @@ from PIL import Image
 from tqdm import tqdm
 from transformers import AutoProcessor, SamModel, SamProcessor
 from typing import Dict, List
+import json
+import random
 
 from test import CLASS_NAMES
 from colorize_with_sam import get_sam_mask_auto
@@ -49,6 +54,39 @@ def load_sam_model(sam_model_name: str, device: str):
     model = SamModel.from_pretrained(sam_model_name).to(device)
     processor = SamProcessor.from_pretrained(sam_model_name)
     return model, processor
+
+
+def apply_gaussian_noise(
+    image: Image.Image,
+    mask: Image.Image,
+    noise_std: float
+) -> Image.Image:
+    """
+    Apply Gaussian noise to masked region of the image.
+
+    Args:
+        image: PIL Image (RGB)
+        mask: PIL Image (grayscale, 0-255)
+        noise_std: Standard deviation of Gaussian noise (in pixel units 0-255)
+
+    Returns:
+        PIL Image with noise applied to masked region
+    """
+    # Convert to numpy arrays
+    img_np = np.array(image).astype(np.float32)
+    mask_np = np.array(mask).astype(np.float32) / 255.0  # Normalize to 0-1
+
+    # Generate Gaussian noise (mean=0, std=noise_std)
+    noise = np.random.normal(0, noise_std, img_np.shape).astype(np.float32)
+
+    # Apply noise only to masked region
+    mask_3d = np.stack([mask_np] * 3, axis=2)  # (H, W, 3)
+    img_noisy = img_np + noise * mask_3d
+
+    # Clip to valid range [0, 255]
+    img_noisy = np.clip(img_noisy, 0, 255).astype(np.uint8)
+
+    return Image.fromarray(img_noisy)
 
 
 def get_logprobs_for_token(
@@ -114,7 +152,7 @@ def get_logprobs_for_token(
     return target_logprob
 
 
-def evaluate_single_image(
+def evaluate_single_image_with_image(
     image_path: str,
     class_id: int,
     vlm_model,
@@ -122,15 +160,16 @@ def evaluate_single_image(
     sam_model,
     sam_processor,
     sam_device: str,
-    hue_range: tuple,
-    blend_strength: float,
+    hue_range: tuple = None,
+    blend_strength: float = 0.0,
+    noise_std: float = 0.0,
     grid_size: int = 5
-) -> float:
+):
     """
-    Evaluate a single image with given colorization parameters.
+    Evaluate a single image and return both logprob and modified image.
 
     Returns:
-        Log probability of correct object prediction
+        Tuple of (logprob, modified_image)
     """
     # Load original image
     img = Image.open(image_path).convert("RGB")
@@ -138,31 +177,37 @@ def evaluate_single_image(
     # Get object name
     object_name = CLASS_NAMES.get(class_id, "object")
 
-    # Apply colorization if blend_strength > 0
-    if blend_strength > 0:
-        # Generate mask with SAM
+    # Generate mask with SAM (needed for both noise and colorization)
+    if blend_strength > 0 or noise_std > 0:
         mask = get_sam_mask_auto(img, sam_processor, sam_model, sam_device, grid_size=grid_size)
+    else:
+        mask = None
 
-        # Apply colorization
-        img_colorized = colorize_subject(
-            img, mask,
+    # Apply modifications
+    img_modified = img
+
+    # 1. Apply colorization if requested
+    if blend_strength > 0 and hue_range is not None:
+        img_modified = colorize_subject(
+            img_modified, mask,
             saturation=230,
             hue_range=hue_range,
             blend_strength=blend_strength
         )
-    else:
-        # No colorization (baseline)
-        img_colorized = img
+
+    # 2. Apply Gaussian noise if requested
+    if noise_std > 0 and mask is not None:
+        img_modified = apply_gaussian_noise(img_modified, mask, noise_std)
 
     # Get logprobs
     logprob = get_logprobs_for_token(
         vlm_model,
         vlm_processor,
-        img_colorized,
+        img_modified,
         object_name
     )
 
-    return logprob
+    return logprob, img_modified
 
 
 def run_experiment(
@@ -186,6 +231,10 @@ def run_experiment(
     """
     os.makedirs(output_dir, exist_ok=True)
 
+    # Create subdirectories
+    samples_dir = os.path.join(output_dir, "sample_images")
+    os.makedirs(samples_dir, exist_ok=True)
+
     # Load models
     vlm_model, vlm_processor = load_vlm_model(vlm_model_name, device)
 
@@ -199,12 +248,21 @@ def run_experiment(
 
     print(f"Found {len(image_files)} images")
 
+    # Select random 5 samples for visualization
+    random.seed(42)
+    sample_indices = random.sample(range(len(image_files)), min(5, len(image_files)))
+    sample_files = [image_files[i] for i in sample_indices]
+
+    print(f"Selected {len(sample_files)} random samples for visualization: {[f.stem for f in sample_files]}")
+
     # Define parameter ranges
     hue_values = list(range(0, 181, 30))  # [0, 30, 60, 90, 120, 150, 180]
     blend_values = [round(x * 0.2, 1) for x in range(6)]  # [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    noise_values = [0, 10, 20, 30, 40, 50]  # Gaussian noise std values
 
     print(f"Hue values: {hue_values}")
     print(f"Blend values: {blend_values}")
+    print(f"Noise values: {noise_values}")
 
     # ========== Experiment 1: Vary hue_range (fix blend_strength=1.0) ==========
     print("\n" + "="*80)
@@ -212,29 +270,42 @@ def run_experiment(
     print("="*80)
 
     hue_results = {hue: [] for hue in hue_values}
+    hue_detailed = {hue: [] for hue in hue_values}  # Store (image_id, logprob)
 
     for hue_val in tqdm(hue_values, desc="Hue values"):
         hue_range = (hue_val, hue_val)
 
-        for img_path in tqdm(image_files, desc=f"Images (hue={hue_val})", leave=False):
+        for idx, img_path in enumerate(tqdm(image_files, desc=f"Images (hue={hue_val})", leave=False)):
             class_id = int(img_path.stem)
 
             try:
-                logprob = evaluate_single_image(
-                    str(img_path),
-                    class_id,
-                    vlm_model,
-                    vlm_processor,
-                    sam_model,
-                    sam_processor,
-                    sam_device,
-                    hue_range=hue_range,
-                    blend_strength=1.0  # Fixed
-                )
+                # Check if this is a sample image
+                is_sample = img_path in sample_files
+
+                if is_sample:
+                    logprob, img_modified = evaluate_single_image_with_image(
+                        str(img_path), class_id, vlm_model, vlm_processor,
+                        sam_model, sam_processor, sam_device,
+                        hue_range=hue_range, blend_strength=1.0
+                    )
+                    # Save sample image
+                    img_modified.save(os.path.join(samples_dir, f"exp1_hue{hue_val}_{img_path.stem}.png"))
+                else:
+                    logprob, _ = evaluate_single_image_with_image(
+                        str(img_path), class_id, vlm_model, vlm_processor,
+                        sam_model, sam_processor, sam_device,
+                        hue_range=hue_range, blend_strength=1.0
+                    )
+
                 hue_results[hue_val].append(logprob)
+                hue_detailed[hue_val].append({"image_id": class_id, "logprob": logprob})
             except Exception as e:
                 print(f"Error processing {img_path.name} with hue={hue_val}: {e}")
                 continue
+
+    # Save detailed results
+    with open(os.path.join(output_dir, "exp1_hue_detailed.json"), "w") as f:
+        json.dump(hue_detailed, f, indent=2)
 
     # ========== Experiment 2: Vary blend_strength (fix hue_range=(180,180)) ==========
     print("\n" + "="*80)
@@ -242,27 +313,77 @@ def run_experiment(
     print("="*80)
 
     blend_results = {blend: [] for blend in blend_values}
+    blend_detailed = {str(blend): [] for blend in blend_values}
 
     for blend_val in tqdm(blend_values, desc="Blend values"):
-        for img_path in tqdm(image_files, desc=f"Images (blend={blend_val})", leave=False):
+        for idx, img_path in enumerate(tqdm(image_files, desc=f"Images (blend={blend_val})", leave=False)):
             class_id = int(img_path.stem)
 
             try:
-                logprob = evaluate_single_image(
-                    str(img_path),
-                    class_id,
-                    vlm_model,
-                    vlm_processor,
-                    sam_model,
-                    sam_processor,
-                    sam_device,
-                    hue_range=(180, 180),  # Fixed
-                    blend_strength=blend_val
-                )
+                is_sample = img_path in sample_files
+
+                if is_sample:
+                    logprob, img_modified = evaluate_single_image_with_image(
+                        str(img_path), class_id, vlm_model, vlm_processor,
+                        sam_model, sam_processor, sam_device,
+                        hue_range=(180, 180), blend_strength=blend_val
+                    )
+                    img_modified.save(os.path.join(samples_dir, f"exp2_blend{blend_val}_{img_path.stem}.png"))
+                else:
+                    logprob, _ = evaluate_single_image_with_image(
+                        str(img_path), class_id, vlm_model, vlm_processor,
+                        sam_model, sam_processor, sam_device,
+                        hue_range=(180, 180), blend_strength=blend_val
+                    )
+
                 blend_results[blend_val].append(logprob)
+                blend_detailed[str(blend_val)].append({"image_id": class_id, "logprob": logprob})
             except Exception as e:
                 print(f"Error processing {img_path.name} with blend={blend_val}: {e}")
                 continue
+
+    # Save detailed results
+    with open(os.path.join(output_dir, "exp2_blend_detailed.json"), "w") as f:
+        json.dump(blend_detailed, f, indent=2)
+
+    # ========== Experiment 3: Vary Gaussian noise_std ==========
+    print("\n" + "="*80)
+    print("Experiment 3: Varying Gaussian noise")
+    print("="*80)
+
+    noise_results = {noise: [] for noise in noise_values}
+    noise_detailed = {str(noise): [] for noise in noise_values}
+
+    for noise_val in tqdm(noise_values, desc="Noise values"):
+        for idx, img_path in enumerate(tqdm(image_files, desc=f"Images (noise={noise_val})", leave=False)):
+            class_id = int(img_path.stem)
+
+            try:
+                is_sample = img_path in sample_files
+
+                if is_sample:
+                    logprob, img_modified = evaluate_single_image_with_image(
+                        str(img_path), class_id, vlm_model, vlm_processor,
+                        sam_model, sam_processor, sam_device,
+                        noise_std=noise_val
+                    )
+                    img_modified.save(os.path.join(samples_dir, f"exp3_noise{noise_val}_{img_path.stem}.png"))
+                else:
+                    logprob, _ = evaluate_single_image_with_image(
+                        str(img_path), class_id, vlm_model, vlm_processor,
+                        sam_model, sam_processor, sam_device,
+                        noise_std=noise_val
+                    )
+
+                noise_results[noise_val].append(logprob)
+                noise_detailed[str(noise_val)].append({"image_id": class_id, "logprob": logprob})
+            except Exception as e:
+                print(f"Error processing {img_path.name} with noise={noise_val}: {e}")
+                continue
+
+    # Save detailed results
+    with open(os.path.join(output_dir, "exp3_noise_detailed.json"), "w") as f:
+        json.dump(noise_detailed, f, indent=2)
 
     # ========== Compute averages ==========
     print("\n" + "="*80)
@@ -275,7 +396,7 @@ def run_experiment(
 
     print("\nHue Range Results:")
     for hue in sorted(hue_avg.keys()):
-        print(f"  Hue {hue:3d}: {hue_avg[hue]:.4f} � {hue_std[hue]:.4f} (n={len(hue_results[hue])})")
+        print(f"  Hue {hue:3d}: {hue_avg[hue]:.4f} ± {hue_std[hue]:.4f} (n={len(hue_results[hue])})")
 
     # Blend results
     blend_avg = {blend: np.mean(logprobs) for blend, logprobs in blend_results.items() if len(logprobs) > 0}
@@ -283,7 +404,15 @@ def run_experiment(
 
     print("\nBlend Strength Results:")
     for blend in sorted(blend_avg.keys()):
-        print(f"  Blend {blend:.1f}: {blend_avg[blend]:.4f} � {blend_std[blend]:.4f} (n={len(blend_results[blend])})")
+        print(f"  Blend {blend:.1f}: {blend_avg[blend]:.4f} ± {blend_std[blend]:.4f} (n={len(blend_results[blend])})")
+
+    # Noise results
+    noise_avg = {noise: np.mean(logprobs) for noise, logprobs in noise_results.items() if len(logprobs) > 0}
+    noise_std = {noise: np.std(logprobs) for noise, logprobs in noise_results.items() if len(logprobs) > 0}
+
+    print("\nGaussian Noise Results:")
+    for noise in sorted(noise_avg.keys()):
+        print(f"  Noise {noise:3d}: {noise_avg[noise]:.4f} ± {noise_std[noise]:.4f} (n={len(noise_results[noise])})")
 
     # ========== Plot results ==========
     print("\n" + "="*80)
@@ -292,58 +421,63 @@ def run_experiment(
 
     # Plot 1: Hue range effect
     fig, ax = plt.subplots(figsize=(10, 6))
-
     hues = sorted(hue_avg.keys())
     avgs = [hue_avg[h] for h in hues]
     stds = [hue_std[h] for h in hues]
-
     ax.plot(hues, avgs, marker='o', linewidth=2, markersize=8, label='Mean logprob')
-    ax.fill_between(hues,
-                     [a - s for a, s in zip(avgs, stds)],
-                     [a + s for a, s in zip(avgs, stds)],
-                     alpha=0.3)
-
+    ax.fill_between(hues, [a - s for a, s in zip(avgs, stds)], [a + s for a, s in zip(avgs, stds)], alpha=0.3)
     ax.set_xlabel('Hue Range Value', fontsize=12)
     ax.set_ylabel('Log Probability', fontsize=12)
     ax.set_title('Effect of Hue Range on Object Recognition\n(blend_strength=1.0)', fontsize=14)
     ax.grid(True, alpha=0.3)
     ax.legend()
-
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "hue_range_effect.png"), dpi=150, bbox_inches='tight')
     plt.close()
 
     # Plot 2: Blend strength effect
     fig, ax = plt.subplots(figsize=(10, 6))
-
     blends = sorted(blend_avg.keys())
     avgs = [blend_avg[b] for b in blends]
     stds = [blend_std[b] for b in blends]
-
     ax.plot(blends, avgs, marker='o', linewidth=2, markersize=8, label='Mean logprob', color='coral')
-    ax.fill_between(blends,
-                     [a - s for a, s in zip(avgs, stds)],
-                     [a + s for a, s in zip(avgs, stds)],
-                     alpha=0.3, color='coral')
-
+    ax.fill_between(blends, [a - s for a, s in zip(avgs, stds)], [a + s for a, s in zip(avgs, stds)], alpha=0.3, color='coral')
     ax.set_xlabel('Blend Strength', fontsize=12)
     ax.set_ylabel('Log Probability', fontsize=12)
     ax.set_title('Effect of Blend Strength on Object Recognition\n(hue_range=(180, 180))', fontsize=14)
     ax.grid(True, alpha=0.3)
     ax.legend()
-
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "blend_strength_effect.png"), dpi=150, bbox_inches='tight')
+    plt.close()
+
+    # Plot 3: Gaussian noise effect
+    fig, ax = plt.subplots(figsize=(10, 6))
+    noises = sorted(noise_avg.keys())
+    avgs = [noise_avg[n] for n in noises]
+    stds = [noise_std[n] for n in noises]
+    ax.plot(noises, avgs, marker='o', linewidth=2, markersize=8, label='Mean logprob', color='green')
+    ax.fill_between(noises, [a - s for a, s in zip(avgs, stds)], [a + s for a, s in zip(avgs, stds)], alpha=0.3, color='green')
+    ax.set_xlabel('Gaussian Noise Std', fontsize=12)
+    ax.set_ylabel('Log Probability', fontsize=12)
+    ax.set_title('Effect of Gaussian Noise on Object Recognition', fontsize=14)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "gaussian_noise_effect.png"), dpi=150, bbox_inches='tight')
     plt.close()
 
     # Save raw results
     results = {
         'hue_results': {k: v for k, v in hue_results.items()},
         'blend_results': {k: v for k, v in blend_results.items()},
+        'noise_results': {k: v for k, v in noise_results.items()},
         'hue_avg': hue_avg,
         'hue_std': hue_std,
         'blend_avg': blend_avg,
         'blend_std': blend_std,
+        'noise_avg': noise_avg,
+        'noise_std': noise_std,
     }
 
     torch.save(results, os.path.join(output_dir, "results.pt"))
@@ -351,11 +485,16 @@ def run_experiment(
     print(f"\nResults saved to {output_dir}/")
     print(f"  - hue_range_effect.png")
     print(f"  - blend_strength_effect.png")
+    print(f"  - gaussian_noise_effect.png")
+    print(f"  - exp1_hue_detailed.json")
+    print(f"  - exp2_blend_detailed.json")
+    print(f"  - exp3_noise_detailed.json")
+    print(f"  - sample_images/ ({len(sample_files)} × 3 experiments = {len(sample_files) * 3 * len(hue_values)} images)")
     print(f"  - results.pt")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Analyze color noise effect on LVLM")
+    parser = argparse.ArgumentParser(description="Analyze color and gaussian noise effect on LVLM")
     parser.add_argument(
         "--image_dir",
         type=str,
