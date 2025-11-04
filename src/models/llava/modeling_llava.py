@@ -263,7 +263,7 @@ class CustomLlavaModel(CustomLlavaPreTrainedModel):
             else self.config.vision_feature_select_strategy
         )
 
-        if (input_ids is None) ^ (inputs_embeds is not None):
+        if (input_ids is None) == (inputs_embeds is None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
         if inputs_embeds is None:
@@ -283,7 +283,7 @@ class CustomLlavaModel(CustomLlavaPreTrainedModel):
             inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
         outputs = self.language_model(
-            input_ids=input_ids,
+            input_ids=None,  # We already have inputs_embeds, don't pass input_ids
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,

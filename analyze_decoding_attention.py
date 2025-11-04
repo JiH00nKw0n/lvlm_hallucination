@@ -18,7 +18,7 @@ def compute_decoding_attention_weights(
     last_layer_idx: int = 31
 ) -> Tuple[List[float], List[float]]:
     """
-    Compute attention weights to info tokens and prompt tokens at each decoding step.
+    Compute total attention weights to info tokens and prompt tokens at each decoding step.
 
     Args:
         attentions: Attention tensor (batch, layers, heads, seq_len, seq_len)
@@ -27,7 +27,8 @@ def compute_decoding_attention_weights(
         last_layer_idx: Which layer to analyze (default 31)
 
     Returns:
-        Tuple of (info_weights, prompt_weights) lists for each generation step
+        Tuple of (info_weights, prompt_weights) lists for each generation step.
+        Each value is the sum (not average) of attention to the respective token range.
     """
     info_start, info_end = info_token_range
 
@@ -46,13 +47,13 @@ def compute_decoding_attention_weights(
         # Attention from current generated token to all previous tokens
         attn_from_step = avg_attn[step_idx, :]  # (seq_len,)
 
-        # Average attention to info tokens (fixed range)
-        info_attn = attn_from_step[info_start:info_end].mean()
+        # Total attention to info tokens (fixed range)
+        info_attn = attn_from_step[info_start:info_end].sum()
         info_weights.append(float(info_attn))
 
-        # Average attention to prompt tokens (from info_end to current step)
+        # Total attention to prompt tokens (from info_end to current step)
         # This changes at each step - includes all tokens from info_end to step_idx
-        prompt_attn = attn_from_step[info_end:step_idx].mean()
+        prompt_attn = attn_from_step[info_end:step_idx].sum()
         prompt_weights.append(float(prompt_attn))
 
     return info_weights, prompt_weights
@@ -144,7 +145,7 @@ def plot_attention_weights(
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, 'image_attention_weights_decoding_steps.png'),
-                    dpi=300, bbox_inches='tight')
+                    dpi=150, bbox_inches='tight')
         plt.close()
         print(f"Saved: image_attention_weights_decoding_steps.png")
 
@@ -164,7 +165,7 @@ def plot_attention_weights(
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, 'text_attention_weights_decoding_steps.png'),
-                    dpi=300, bbox_inches='tight')
+                    dpi=150, bbox_inches='tight')
         plt.close()
         print(f"Saved: text_attention_weights_decoding_steps.png")
 
@@ -194,7 +195,7 @@ def plot_attention_weights(
 
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, 'combined_attention_weights_decoding_steps.png'),
-                    dpi=300, bbox_inches='tight')
+                    dpi=150, bbox_inches='tight')
         plt.close()
         print(f"Saved: combined_attention_weights_decoding_steps.png")
 

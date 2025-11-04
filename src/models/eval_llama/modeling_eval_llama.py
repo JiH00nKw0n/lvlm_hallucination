@@ -21,7 +21,6 @@ from typing import Optional, Union, Any
 
 import torch
 from torch import nn, Tensor
-from transformers import AutoModel
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationMixin
 from transformers.masking_utils import create_causal_mask
@@ -112,7 +111,7 @@ class EvalLlamaModel(LlamaPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs()
+    @check_model_inputs
     @auto_docstring
     def forward(
             self,
@@ -125,7 +124,7 @@ class EvalLlamaModel(LlamaPreTrainedModel):
             use_cache: Optional[bool] = None,
             **kwargs: Unpack[TransformersKwargs],
     ) -> CausalLMOutputWithPast:
-        if (input_ids is None) ^ (inputs_embeds is not None):
+        if (input_ids is None) == (inputs_embeds is None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
         if inputs_embeds is None:
@@ -264,7 +263,7 @@ __all__ = [
 ]
 
 ## AutoModel Register
-AutoModel.register(LlamaConfig, EvalLlamaModel)
+# AutoModel.register(LlamaConfig, EvalLlamaModel)  # Already registered in transformers
 
 ## Register for auto class
-EvalLlamaForCausalLM.register_for_auto_class("EvalLlamaForCausalLM")
+# EvalLlamaForCausalLM.register_for_auto_class("EvalLlamaForCausalLM")  # Not needed with auto_map

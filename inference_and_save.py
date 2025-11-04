@@ -1,6 +1,6 @@
 """
 Inference script for LLaVA with EvalLlama backend.
-Processes dataset_question/test with both image+question and caption+question.
+Processes Mayfull/Long-DCI-QA dataset (test split) with both image+question and caption+question.
 Saves input_ids, attention_mask, attention_weights, and model outputs.
 """
 
@@ -8,7 +8,7 @@ import os
 import argparse
 import json
 import torch
-from datasets import load_from_disk
+from datasets import load_dataset
 from transformers import AutoProcessor, LlavaConfig
 from tqdm import tqdm
 
@@ -68,7 +68,7 @@ def process_single_sample(
     caption,
     question,
     device,
-    max_new_tokens=512
+    max_new_tokens=256
 ):
     """
     Process a single sample with both image+question and caption+question.
@@ -79,13 +79,16 @@ def process_single_sample(
         image: PIL Image
         caption: Caption text
         question: Question text
-        device: torch device
+        device: torch device (ignored if model uses device_map)
         max_new_tokens: Maximum number of tokens to generate
 
     Returns:
         Dictionary containing results for both image and caption modes
     """
     results = {}
+
+    # Get model's device (for device_map="auto", use first parameter's device)
+    model_device = next(model.parameters()).device
 
     # ========== Image + Question ==========
     messages_with_image = create_chat_messages(question, include_image=True)
@@ -98,24 +101,26 @@ def process_single_sample(
         images=image,
         text=prompt_with_image,
         return_tensors="pt"
-    ).to(device)
+    ).to(model_device)
 
-    # Generate with greedy decoding
+    # Generate with greedy decoding (use_cache=True for speed)
     with torch.no_grad():
         generated_ids = model.generate(
             **inputs_with_image,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=128,
             do_sample=False,  # greedy decoding
-            use_cache=False,
+            use_cache=True,
         )
 
         # Forward pass with full generated sequence to get attentions
-        # Create new inputs with generated sequence
+        # (use_cache=False to get full attention weights)
         full_outputs = model(
             input_ids=generated_ids,
             pixel_values=inputs_with_image['pixel_values'],
             output_attentions=True,
             use_cache=False,
+            return_dict=True,
         )
 
     # Decode generated text (only the newly generated tokens)
@@ -132,14 +137,20 @@ def process_single_sample(
     else:
         vision_token_range = None
 
-    # attentions from EvalLlama: (batch, num_layers, num_heads, seq_len, seq_len)
+    # attentions from EvalLlama: tuple of 32 layers, each (batch, num_heads, seq_len, seq_len)
+    # Stack to get (batch, num_layers, num_heads, seq_len, seq_len)
+    if full_outputs.attentions is not None:
+        stacked_attentions = torch.stack(full_outputs.attentions, dim=1)
+    else:
+        stacked_attentions = None
+
     results['image_mode'] = {
-        'input_ids': inputs_with_image['input_ids'].cpu(),
-        'attention_mask': inputs_with_image['attention_mask'].cpu(),
-        'pixel_values': inputs_with_image['pixel_values'].cpu(),
-        'generated_ids': generated_ids.cpu(),
+        'input_ids': inputs_with_image['input_ids'],
+        'attention_mask': inputs_with_image['attention_mask'],
+        'pixel_values': inputs_with_image['pixel_values'],
+        'generated_ids': generated_ids,
         'generated_text': generated_text_image,
-        'attentions': full_outputs.attentions.cpu() if full_outputs.attentions is not None else None,
+        'attentions': stacked_attentions,
         'vision_token_range': vision_token_range,
     }
 
@@ -148,31 +159,32 @@ def process_single_sample(
     caption_only_ids = processor.tokenizer.encode(caption, add_special_tokens=False)
     caption_length = len(caption_only_ids)
 
-    messages_text_only = create_chat_messages(caption + "\n\n" + question, include_image=False)
-    prompt_text_only = processor.apply_chat_template(
-        messages_text_only,
-        add_generation_prompt=True
-    )
+    # Create direct text prompt (without chat template for text-only)
+    # Use same format as image mode but with caption instead of <image>
+    text_prompt = f"USER: Answer the question based on the following description:\n{caption}\n\n{question} ASSISTANT:"
 
-    inputs_text_only = processor(
-        text=prompt_text_only,
+    inputs_text_only = processor.tokenizer(
+        text_prompt,
         return_tensors="pt"
-    ).to(device)
+    ).to(model_device)
 
-    # Generate with greedy decoding
+    # Generate with greedy decoding (use_cache=True for speed)
     with torch.no_grad():
         generated_ids_text = model.generate(
             **inputs_text_only,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=128,
             do_sample=False,  # greedy decoding
-            use_cache=False,
+            use_cache=True,
         )
 
         # Forward pass with full generated sequence to get attentions
+        # (use_cache=False to get full attention weights)
         full_outputs_text = model(
             input_ids=generated_ids_text,
             output_attentions=True,
             use_cache=False,
+            return_dict=True,
         )
 
     # Decode generated text (only the newly generated tokens)
@@ -198,13 +210,19 @@ def process_single_sample(
         prompt_length = inputs_text_only['input_ids'].shape[1]
         prompt_token_range = (0, min(caption_length + 10, prompt_length))
 
-    # attentions from EvalLlama: (batch, num_layers, num_heads, seq_len, seq_len)
+    # attentions from EvalLlama: tuple of 32 layers, each (batch, num_heads, seq_len, seq_len)
+    # Stack to get (batch, num_layers, num_heads, seq_len, seq_len)
+    if full_outputs_text.attentions is not None:
+        stacked_attentions_text = torch.stack(full_outputs_text.attentions, dim=1)
+    else:
+        stacked_attentions_text = None
+
     results['text_mode'] = {
-        'input_ids': inputs_text_only['input_ids'].cpu(),
-        'attention_mask': inputs_text_only['attention_mask'].cpu(),
-        'generated_ids': generated_ids_text.cpu(),
+        'input_ids': inputs_text_only['input_ids'],
+        'attention_mask': inputs_text_only['attention_mask'],
+        'generated_ids': generated_ids_text,
         'generated_text': generated_text_text,
-        'attentions': full_outputs_text.attentions.cpu() if full_outputs_text.attentions is not None else None,
+        'attentions': stacked_attentions_text,
         'prompt_token_range': prompt_token_range,
         'caption_length': caption_length,
     }
@@ -219,23 +237,23 @@ def main():
                         help="Number of samples to process (default: all samples)")
     parser.add_argument("--model_name", type=str, default="llava-hf/llava-1.5-7b-hf",
                         help="Model name or path")
-    parser.add_argument("--dataset_path", type=str, default="dataset_question/test",
-                        help="Path to dataset")
+    parser.add_argument("--dataset_name", type=str, default="Mayfull/Long-DCI-QA",
+                        help="Dataset name from HuggingFace Hub")
     parser.add_argument("--output_dir", type=str, default="inference_results",
                         help="Output directory")
     args = parser.parse_args()
 
     # Configuration
     model_name = args.model_name
-    dataset_path = args.dataset_path
+    dataset_name = args.dataset_name
     output_dir = args.output_dir
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"Using device: {device}")
 
     # Load dataset
-    print(f"Loading dataset from {dataset_path}...")
-    dataset = load_from_disk(dataset_path)
+    print(f"Loading dataset from {dataset_name} (split=test)...")
+    dataset = load_dataset(dataset_name, split="test")
     total_samples = len(dataset)
     print(f"Dataset loaded: {total_samples} samples")
 
@@ -264,7 +282,8 @@ def main():
         model_name,
         config=config,
         torch_dtype=torch.float16,
-        device_map="auto"
+        device_map="auto",
+        attn_implementation="eager"  # Required for output_attentions=True
     )
     model.eval()
 
@@ -276,6 +295,9 @@ def main():
 
     # Process each sample
     all_results = []
+    checkpoint_files = []
+    save_interval = 10  # Save and clear memory every N samples
+
     print(f"\nProcessing {len(dataset)} samples...")
 
     for idx, sample in enumerate(tqdm(dataset, desc="Inference")):
@@ -291,7 +313,7 @@ def main():
                 caption=caption,
                 question=question,
                 device=device,
-                max_new_tokens=512
+                max_new_tokens=256
             )
 
             # Add sample metadata
@@ -301,23 +323,44 @@ def main():
 
             all_results.append(results)
 
-            # Save intermediate results every 10 samples
-            if (idx + 1) % 10 == 0:
+            # Save intermediate results every N samples and clear memory
+            if (idx + 1) % save_interval == 0:
                 checkpoint_path = os.path.join(output_dir, f"checkpoint_{idx + 1}.pt")
                 torch.save(all_results, checkpoint_path)
-                print(f"Saved checkpoint at sample {idx + 1}")
+                checkpoint_files.append(checkpoint_path)
+                print(f"Saved checkpoint at sample {idx + 1}, clearing memory...")
+                all_results.clear()  # Clear memory
+                torch.cuda.empty_cache()  # Clear CUDA cache
 
         except Exception as e:
             print(f"Error processing sample {idx}: {e}")
             continue
 
-    # Save final results
+    # Save remaining results if any
+    if all_results:
+        checkpoint_path = os.path.join(output_dir, f"checkpoint_{len(dataset)}.pt")
+        torch.save(all_results, checkpoint_path)
+        checkpoint_files.append(checkpoint_path)
+        print(f"Saved final checkpoint with {len(all_results)} samples")
+        all_results.clear()
+
+    # Merge all checkpoints into final results
+    print(f"\nMerging {len(checkpoint_files)} checkpoint files...")
+    all_results = []
+    for checkpoint_path in checkpoint_files:
+        print(f"Loading {checkpoint_path}...")
+        checkpoint_results = torch.load(checkpoint_path)
+        all_results.extend(checkpoint_results)
+        del checkpoint_results  # Free memory
+
+    # Save final merged results
     final_path = os.path.join(output_dir, "all_results.pt")
     torch.save(all_results, final_path)
     print(f"\nAll results saved to {final_path}")
     print(f"Total samples processed: {len(all_results)}")
 
     # Save generated texts as JSON
+    print("Generating JSON with generated texts...")
     json_results = {
         "image_mode": {},
         "text_mode": {}
@@ -333,6 +376,13 @@ def main():
         json.dump(json_results, f, ensure_ascii=False, indent=2)
 
     print(f"Generated texts saved to {json_path}")
+
+    # Clean up checkpoint files (optional)
+    # Uncomment the following lines if you want to delete checkpoint files after merging
+    # print("Cleaning up checkpoint files...")
+    # for checkpoint_path in checkpoint_files:
+    #     os.remove(checkpoint_path)
+    # print("Checkpoint files removed")
 
 
 if __name__ == "__main__":
