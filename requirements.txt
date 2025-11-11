@@ -26,7 +26,7 @@ requests==2.32.5
 numpy==2.2.6
 trl==0.23.1
 wandb==0.22.2
-opencv-python==4.12.0.88
+opencv-python-headless==4.12.0.88
 
 # Quantization
 bitsandbytes==0.48.0

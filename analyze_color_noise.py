@@ -1,5 +1,5 @@
 """
-Analyze the impact of color noise and gaussian noise on LVLM object recognition.
+Analyze the impact of color noise on LVLM object recognition.
 
 Tests how different parameters affect the model's confidence (logprobs):
 1. hue_range - Color gradient variation
@@ -16,20 +16,21 @@ Experiment:
 """
 
 import argparse
+import json
+import math
 import os
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
+import random
 from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
 from PIL import Image
 from tqdm import tqdm
-from transformers import AutoProcessor, SamModel, SamProcessor
-from typing import Dict, List
-import json
-import random
+from transformers import SamModel, SamProcessor
 
-from test import CLASS_NAMES
 from colorize_with_sam import get_sam_mask_auto
+from test import CLASS_NAMES
 from test.test_utils import colorize_subject
 
 
@@ -57,9 +58,9 @@ def load_sam_model(sam_model_name: str, device: str):
 
 
 def apply_gaussian_noise(
-    image: Image.Image,
-    mask: Image.Image,
-    noise_std: float
+        image: Image.Image,
+        mask: Image.Image,
+        noise_std: float
 ) -> Image.Image:
     """
     Apply Gaussian noise to masked region of the image.
@@ -89,81 +90,183 @@ def apply_gaussian_noise(
     return Image.fromarray(img_noisy)
 
 
+def precompute_class_tokens(processor, all_class_names: dict) -> dict:
+    """
+    Precompute token IDs for all class names (without space prefix).
+
+    Args:
+        processor: VLM processor
+        all_class_names: Dictionary of class names {class_id: class_name}
+
+    Returns:
+        Dictionary mapping class_id to list of token IDs
+    """
+    class_tokens_dict = {}
+    for class_id, class_name in all_class_names.items():
+        # No space prefix since "An image of " ends with a space
+        tokens = processor.tokenizer.encode(class_name, add_special_tokens=False)
+        class_tokens_dict[class_id] = tokens
+    return class_tokens_dict
+
+
+@torch.no_grad()
 def get_logprobs_for_token(
-    model,
-    processor,
-    image,
-    target_text: str,
-    max_new_tokens: int = 1
+        model,
+        processor,
+        image,
+        target_text: str,
+        all_class_names: dict = None,
+        class_tokens_dict: dict = None,
 ) -> float:
     """
-    Get log probability of the target token being predicted.
+    Get conditional log probability: log(P(target_class) / sum(P(all_classes))).
+
+    Uses batch processing with left padding for efficiency.
 
     Args:
         model: VLM model
         processor: VLM processor
         image: PIL Image
-        target_text: Target token text (e.g., "apple")
-        max_new_tokens: Number of tokens to generate
+        target_text: Target class name (e.g., "apple")
+        all_class_names: Dictionary of all class names {class_id: class_name}.
+                        If None, uses CLASS_NAMES from test module.
+        class_tokens_dict: Precomputed token IDs for all classes.
+                          If None, will compute on the fly.
 
     Returns:
-        Log probability of target token
+        Conditional log probability
     """
-    # Prepare prompt
-    prompt = f"USER: <image>\n An image of ASSISTANT: "
+    # Get all class names
+    if all_class_names is None:
+        all_class_names = CLASS_NAMES
 
-    # Prepare inputs
-    inputs = processor(text=prompt, images=image, return_tensors="pt")
+    # Precompute class tokens if not provided
+    if class_tokens_dict is None:
+        class_tokens_dict = precompute_class_tokens(processor, all_class_names)
+
+    # Base prompt
+    base_prompt = "USER: <image>\n ASSISTANT: An image of"
+
+    # Create batch of prompts
+    batch_prompts = []
+    class_ids_list = []
+    for class_id in sorted(all_class_names.keys()):
+        class_name = all_class_names[class_id]
+        full_prompt = base_prompt + " " + class_name
+        batch_prompts.append(full_prompt)
+        class_ids_list.append(class_id)
+
+    # Set left padding for batch processing
+    original_padding_side = processor.tokenizer.padding_side
+    processor.tokenizer.padding_side = 'left'
+
+    # Batch tokenization
+    # Note: We need to pass the same image multiple times
+    inputs = processor(
+        text=batch_prompts,
+        images=[image] * len(batch_prompts),
+        return_tensors="pt",
+        padding=True
+    )
+
+    # Restore original padding side
+    processor.tokenizer.padding_side = original_padding_side
 
     # Move to model device
     model_device = next(model.parameters()).device
     inputs = {k: v.to(model_device) for k, v in inputs.items()}
 
-    # Generate with output_scores to get logits
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            return_dict_in_generate=True,
-            output_scores=True,
-        )
+    # Batch forward pass
+    outputs = model(use_cache=False, **inputs)
+    logits = outputs.logits  # (batch_size, seq_len, vocab_size)
 
-    # Get logits for first generated token
-    # scores[0] is logits for first generated token: (batch, vocab_size)
-    first_token_logits = outputs.scores[0][0]  # (vocab_size,)
+    # Get base prompt length (without padding)
+    base_inputs = processor(text=base_prompt, images=image, return_tensors="pt")
+    base_length = base_inputs['input_ids'].shape[1]
 
-    # Get log probabilities
-    log_probs = torch.log_softmax(first_token_logits, dim=-1)
+    # Extract log probabilities for each class
+    all_log_probs = {}
+    pad_token_id = processor.tokenizer.pad_token_id
 
-    # Tokenize target text to get target token ID
-    # We only care about the first token of the target
-    target_tokens = processor.tokenizer.encode(target_text, add_special_tokens=False)
-    if len(target_tokens) == 0:
-        # Try with space prefix (common for first token)
-        target_tokens = processor.tokenizer.encode(f" {target_text}", add_special_tokens=False)
+    for i, class_id in enumerate(class_ids_list):
+        # Find actual sequence length (excluding padding)
+        input_ids = inputs['input_ids'][i]
+        seq_len = (input_ids != pad_token_id).sum().item()
 
-    if len(target_tokens) > 0:
-        target_token_id = target_tokens[0]
-        target_logprob = log_probs[target_token_id].item()
-    else:
-        # Fallback: return very low probability
-        target_logprob = -100.0
+        # Calculate where class tokens start and end
+        # The sequence is: [padding] + base_prompt + class_tokens
+        padding_length = logits.shape[1] - seq_len
+        class_start_pos = padding_length + base_length
+        class_end_pos = padding_length + seq_len
 
-    return target_logprob
+        # Extract actual class tokens from the batch input
+        # This is safer than pre-computing tokens separately,
+        # because tokenization can differ based on context (whitespace, template, etc.)
+        actual_class_tokens = input_ids[class_start_pos:class_end_pos].tolist()
+
+        if len(actual_class_tokens) == 0:
+            all_log_probs[class_id] = -100.0
+            continue
+
+        # Compute log probability for all tokens in class_name
+        sum_log_prob = 0.0
+
+        for j, token_id in enumerate(actual_class_tokens):
+            # Position to get logits that predict this token
+            # logits[i, pos, :] predicts token at position pos+1
+            logit_pos = class_start_pos + j - 1
+
+            if logit_pos < 0 or logit_pos >= logits.shape[1]:
+                sum_log_prob = -100.0
+                break
+
+            # Get log probability of this token
+            log_probs = torch.log_softmax(logits[i, logit_pos, :], dim=-1)
+            log_prob_token = log_probs[token_id].item()
+
+            sum_log_prob += log_prob_token
+
+        all_log_probs[class_id] = sum_log_prob
+
+    # Find target class ID
+    target_class_id = None
+    for cid, cname in all_class_names.items():
+        if cname == target_text:
+            target_class_id = cid
+            break
+
+    if target_class_id is None or target_class_id not in all_log_probs:
+        return -100.0
+
+    # Get target log probability
+    target_log_prob = all_log_probs[target_class_id]
+
+    # Convert to conditional log probability using log-sum-exp trick
+    log_probs_array = np.array(list(all_log_probs.values()))
+    max_log_prob = np.max(log_probs_array)
+
+    # log(sum(exp(log_probs))) = max_log_prob + log(sum(exp(log_probs - max_log_prob)))
+    log_sum_probs = max_log_prob + np.log(np.sum(np.exp(log_probs_array - max_log_prob)))
+
+    # Conditional log probability: log(P(target) / sum(P(all)))
+    conditional_log_prob = target_log_prob - log_sum_probs
+
+    return conditional_log_prob
 
 
 def evaluate_single_image_with_image(
-    image_path: str,
-    class_id: int,
-    vlm_model,
-    vlm_processor,
-    sam_model,
-    sam_processor,
-    sam_device: str,
-    hue_range: tuple = None,
-    blend_strength: float = 0.0,
-    noise_std: float = 0.0,
-    grid_size: int = 5
+        image_path: str,
+        class_id: int,
+        vlm_model,
+        vlm_processor,
+        sam_model,
+        sam_processor,
+        sam_device: str,
+        class_tokens_dict: dict = None,
+        hue_range: tuple = None,
+        blend_strength: float = 0.0,
+        noise_std: float = 0.0,
+        grid_size: int = 5
 ):
     """
     Evaluate a single image and return both logprob and modified image.
@@ -204,19 +307,20 @@ def evaluate_single_image_with_image(
         vlm_model,
         vlm_processor,
         img_modified,
-        object_name
+        object_name,
+        class_tokens_dict=class_tokens_dict
     )
 
     return logprob, img_modified
 
 
 def run_experiment(
-    image_dir: str,
-    vlm_model_name: str,
-    sam_model_name: str,
-    output_dir: str,
-    num_samples: int = 100,
-    device: str = "auto"
+        image_dir: str,
+        vlm_model_name: str,
+        sam_model_name: str,
+        output_dir: str,
+        num_samples: int = 100,
+        device: str = "auto"
 ):
     """
     Run the main experiment.
@@ -242,6 +346,10 @@ def run_experiment(
     sam_device = "cuda" if torch.cuda.is_available() and device != "cpu" else "cpu"
     sam_model, sam_processor = load_sam_model(sam_model_name, sam_device)
 
+    # Precompute class tokens once for efficiency
+    print("Precomputing class tokens...")
+    class_tokens_dict = precompute_class_tokens(vlm_processor, CLASS_NAMES)
+
     # Get image files
     image_path = Path(image_dir)
     image_files = sorted(image_path.glob("*.png"))[:num_samples]
@@ -256,18 +364,16 @@ def run_experiment(
     print(f"Selected {len(sample_files)} random samples for visualization: {[f.stem for f in sample_files]}")
 
     # Define parameter ranges
-    hue_values = list(range(0, 181, 30))  # [0, 30, 60, 90, 120, 150, 180]
+    hue_values = list(range(30, 181, 30))  # [30, 60, 90, 120, 150, 180]
     blend_values = [round(x * 0.2, 1) for x in range(6)]  # [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
-    noise_values = [0, 10, 20, 30, 40, 50]  # Gaussian noise std values
 
     print(f"Hue values: {hue_values}")
     print(f"Blend values: {blend_values}")
-    print(f"Noise values: {noise_values}")
 
     # ========== Experiment 1: Vary hue_range (fix blend_strength=1.0) ==========
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("Experiment 1: Varying hue_range")
-    print("="*80)
+    print("=" * 80)
 
     hue_results = {hue: [] for hue in hue_values}
     hue_detailed = {hue: [] for hue in hue_values}  # Store (image_id, logprob)
@@ -286,6 +392,7 @@ def run_experiment(
                     logprob, img_modified = evaluate_single_image_with_image(
                         str(img_path), class_id, vlm_model, vlm_processor,
                         sam_model, sam_processor, sam_device,
+                        class_tokens_dict=class_tokens_dict,
                         hue_range=hue_range, blend_strength=1.0
                     )
                     # Save sample image
@@ -294,6 +401,7 @@ def run_experiment(
                     logprob, _ = evaluate_single_image_with_image(
                         str(img_path), class_id, vlm_model, vlm_processor,
                         sam_model, sam_processor, sam_device,
+                        class_tokens_dict=class_tokens_dict,
                         hue_range=hue_range, blend_strength=1.0
                     )
 
@@ -308,9 +416,9 @@ def run_experiment(
         json.dump(hue_detailed, f, indent=2)
 
     # ========== Experiment 2: Vary blend_strength (fix hue_range=(180,180)) ==========
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("Experiment 2: Varying blend_strength")
-    print("="*80)
+    print("=" * 80)
 
     blend_results = {blend: [] for blend in blend_values}
     blend_detailed = {str(blend): [] for blend in blend_values}
@@ -326,6 +434,7 @@ def run_experiment(
                     logprob, img_modified = evaluate_single_image_with_image(
                         str(img_path), class_id, vlm_model, vlm_processor,
                         sam_model, sam_processor, sam_device,
+                        class_tokens_dict=class_tokens_dict,
                         hue_range=(180, 180), blend_strength=blend_val
                     )
                     img_modified.save(os.path.join(samples_dir, f"exp2_blend{blend_val}_{img_path.stem}.png"))
@@ -333,6 +442,7 @@ def run_experiment(
                     logprob, _ = evaluate_single_image_with_image(
                         str(img_path), class_id, vlm_model, vlm_processor,
                         sam_model, sam_processor, sam_device,
+                        class_tokens_dict=class_tokens_dict,
                         hue_range=(180, 180), blend_strength=blend_val
                     )
 
@@ -346,49 +456,10 @@ def run_experiment(
     with open(os.path.join(output_dir, "exp2_blend_detailed.json"), "w") as f:
         json.dump(blend_detailed, f, indent=2)
 
-    # ========== Experiment 3: Vary Gaussian noise_std ==========
-    print("\n" + "="*80)
-    print("Experiment 3: Varying Gaussian noise")
-    print("="*80)
-
-    noise_results = {noise: [] for noise in noise_values}
-    noise_detailed = {str(noise): [] for noise in noise_values}
-
-    for noise_val in tqdm(noise_values, desc="Noise values"):
-        for idx, img_path in enumerate(tqdm(image_files, desc=f"Images (noise={noise_val})", leave=False)):
-            class_id = int(img_path.stem)
-
-            try:
-                is_sample = img_path in sample_files
-
-                if is_sample:
-                    logprob, img_modified = evaluate_single_image_with_image(
-                        str(img_path), class_id, vlm_model, vlm_processor,
-                        sam_model, sam_processor, sam_device,
-                        noise_std=noise_val
-                    )
-                    img_modified.save(os.path.join(samples_dir, f"exp3_noise{noise_val}_{img_path.stem}.png"))
-                else:
-                    logprob, _ = evaluate_single_image_with_image(
-                        str(img_path), class_id, vlm_model, vlm_processor,
-                        sam_model, sam_processor, sam_device,
-                        noise_std=noise_val
-                    )
-
-                noise_results[noise_val].append(logprob)
-                noise_detailed[str(noise_val)].append({"image_id": class_id, "logprob": logprob})
-            except Exception as e:
-                print(f"Error processing {img_path.name} with noise={noise_val}: {e}")
-                continue
-
-    # Save detailed results
-    with open(os.path.join(output_dir, "exp3_noise_detailed.json"), "w") as f:
-        json.dump(noise_detailed, f, indent=2)
-
     # ========== Compute averages ==========
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("Computing averages...")
-    print("="*80)
+    print("=" * 80)
 
     # Hue results
     hue_avg = {hue: np.mean(logprobs) for hue, logprobs in hue_results.items() if len(logprobs) > 0}
@@ -406,18 +477,10 @@ def run_experiment(
     for blend in sorted(blend_avg.keys()):
         print(f"  Blend {blend:.1f}: {blend_avg[blend]:.4f} ± {blend_std[blend]:.4f} (n={len(blend_results[blend])})")
 
-    # Noise results
-    noise_avg = {noise: np.mean(logprobs) for noise, logprobs in noise_results.items() if len(logprobs) > 0}
-    noise_std = {noise: np.std(logprobs) for noise, logprobs in noise_results.items() if len(logprobs) > 0}
-
-    print("\nGaussian Noise Results:")
-    for noise in sorted(noise_avg.keys()):
-        print(f"  Noise {noise:3d}: {noise_avg[noise]:.4f} ± {noise_std[noise]:.4f} (n={len(noise_results[noise])})")
-
     # ========== Plot results ==========
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("Plotting results...")
-    print("="*80)
+    print("=" * 80)
 
     # Plot 1: Hue range effect
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -426,6 +489,9 @@ def run_experiment(
     stds = [hue_std[h] for h in hues]
     ax.plot(hues, avgs, marker='o', linewidth=2, markersize=8, label='Mean logprob')
     ax.fill_between(hues, [a - s for a, s in zip(avgs, stds)], [a + s for a, s in zip(avgs, stds)], alpha=0.3)
+    # Set y-axis limits based on avg values only
+    y_min, y_max = math.floor(min(avgs)), math.ceil(max(avgs))
+    ax.set_ylim(y_min, y_max)
     ax.set_xlabel('Hue Range Value', fontsize=12)
     ax.set_ylabel('Log Probability', fontsize=12)
     ax.set_title('Effect of Hue Range on Object Recognition\n(blend_strength=1.0)', fontsize=14)
@@ -441,7 +507,12 @@ def run_experiment(
     avgs = [blend_avg[b] for b in blends]
     stds = [blend_std[b] for b in blends]
     ax.plot(blends, avgs, marker='o', linewidth=2, markersize=8, label='Mean logprob', color='coral')
-    ax.fill_between(blends, [a - s for a, s in zip(avgs, stds)], [a + s for a, s in zip(avgs, stds)], alpha=0.3, color='coral')
+    ax.fill_between(
+        blends, [a - s for a, s in zip(avgs, stds)], [a + s for a, s in zip(avgs, stds)], alpha=0.3, color='coral'
+        )
+    # Set y-axis limits based on avg values only
+    y_min, y_max = math.floor(min(avgs)), math.ceil(max(avgs))
+    ax.set_ylim(y_min, y_max)
     ax.set_xlabel('Blend Strength', fontsize=12)
     ax.set_ylabel('Log Probability', fontsize=12)
     ax.set_title('Effect of Blend Strength on Object Recognition\n(hue_range=(180, 180))', fontsize=14)
@@ -451,33 +522,14 @@ def run_experiment(
     plt.savefig(os.path.join(output_dir, "blend_strength_effect.png"), dpi=150, bbox_inches='tight')
     plt.close()
 
-    # Plot 3: Gaussian noise effect
-    fig, ax = plt.subplots(figsize=(10, 6))
-    noises = sorted(noise_avg.keys())
-    avgs = [noise_avg[n] for n in noises]
-    stds = [noise_std[n] for n in noises]
-    ax.plot(noises, avgs, marker='o', linewidth=2, markersize=8, label='Mean logprob', color='green')
-    ax.fill_between(noises, [a - s for a, s in zip(avgs, stds)], [a + s for a, s in zip(avgs, stds)], alpha=0.3, color='green')
-    ax.set_xlabel('Gaussian Noise Std', fontsize=12)
-    ax.set_ylabel('Log Probability', fontsize=12)
-    ax.set_title('Effect of Gaussian Noise on Object Recognition', fontsize=14)
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "gaussian_noise_effect.png"), dpi=150, bbox_inches='tight')
-    plt.close()
-
     # Save raw results
     results = {
         'hue_results': {k: v for k, v in hue_results.items()},
         'blend_results': {k: v for k, v in blend_results.items()},
-        'noise_results': {k: v for k, v in noise_results.items()},
         'hue_avg': hue_avg,
         'hue_std': hue_std,
         'blend_avg': blend_avg,
         'blend_std': blend_std,
-        'noise_avg': noise_avg,
-        'noise_std': noise_std,
     }
 
     torch.save(results, os.path.join(output_dir, "results.pt"))
@@ -485,11 +537,11 @@ def run_experiment(
     print(f"\nResults saved to {output_dir}/")
     print(f"  - hue_range_effect.png")
     print(f"  - blend_strength_effect.png")
-    print(f"  - gaussian_noise_effect.png")
     print(f"  - exp1_hue_detailed.json")
     print(f"  - exp2_blend_detailed.json")
-    print(f"  - exp3_noise_detailed.json")
-    print(f"  - sample_images/ ({len(sample_files)} × 3 experiments = {len(sample_files) * 3 * len(hue_values)} images)")
+    print(
+        f"  - sample_images/ ({len(sample_files)} × 2 experiments = {len(sample_files) * 2 * len(hue_values) + len(sample_files) * len(blend_values)} images)"
+        )
     print(f"  - results.pt")
 
 
