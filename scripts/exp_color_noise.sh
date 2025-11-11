@@ -52,7 +52,7 @@ if CUDA_VISIBLE_DEVICES=$GPU_ID python "$PROJECT_DIR/analyze_color_noise.py" \
     --num_samples $NUM_SAMPLES \
     --vlm_model "$VLM_MODEL" \
     --sam_model "$SAM_MODEL" \
-    --image_dir "$PROJECT_DIR/images/images" \
+    --image_dir "$PROJECT_DIR/images" \
     --output_dir "$PROJECT_DIR/analysis_color_noise" \
     --device "auto" 2>&1 | tee -a "$LOG_FILE"; then
     echo "✓ Color noise analysis completed successfully" | tee -a "$LOG_FILE"

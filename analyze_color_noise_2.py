@@ -76,61 +76,46 @@ def precompute_class_tokens(processor, all_class_names: dict) -> dict:
 
 
 @torch.no_grad()
-def get_logprobs_for_token(
+def get_logprobs_for_batch(
         model,
         processor,
-        image,
-        target_text: str,
-        all_class_names: dict = None,
-        class_tokens_dict: dict = None,
-) -> float:
+        images: list,
+        target_texts: list,
+) -> list:
     """
-    Get conditional log probability: log(P(target_class) / sum(P(all_classes))).
+    Get log probabilities for a batch of images with their target classes.
 
-    Uses batch processing with left padding for efficiency.
+    Much more efficient than processing one image at a time with all classes.
+    Processes N images x their respective target classes in one forward pass.
 
     Args:
         model: VLM model
         processor: VLM processor
-        image: PIL Image
-        target_text: Target class name (e.g., "apple")
-        all_class_names: Dictionary of all class names {class_id: class_name}.
-                        If None, uses CLASS_NAMES from test module.
-        class_tokens_dict: Precomputed token IDs for all classes.
-                          If None, will compute on the fly.
+        images: List of PIL Images
+        target_texts: List of target class names (same length as images)
 
     Returns:
-        Conditional log probability
+        List of log probabilities (one per image)
     """
-    # Get all class names
-    if all_class_names is None:
-        all_class_names = CLASS_NAMES
-
-    # Precompute class tokens if not provided
-    if class_tokens_dict is None:
-        class_tokens_dict = precompute_class_tokens(processor, all_class_names)
+    assert len(images) == len(target_texts), "Number of images and target texts must match"
 
     # Base prompt
-    base_prompt = "USER: <image>\n ASSISTANT: An image of"
+    base_prompt = "USER: <image>\n Identify the name of the object. ASSISTANT: An image of"
 
-    # Create batch of prompts
+    # Create batch of prompts (one per image with its target class)
     batch_prompts = []
-    class_ids_list = []
-    for class_id in sorted(all_class_names.keys()):
-        class_name = all_class_names[class_id]
-        full_prompt = base_prompt + " " + class_name
+    for target_text in target_texts:
+        full_prompt = base_prompt + " " + target_text
         batch_prompts.append(full_prompt)
-        class_ids_list.append(class_id)
 
     # Set left padding for batch processing
     original_padding_side = processor.tokenizer.padding_side
     processor.tokenizer.padding_side = 'left'
 
     # Batch tokenization
-    # Note: We need to pass the same image multiple times
     inputs = processor(
         text=batch_prompts,
-        images=[image] * len(batch_prompts),
+        images=images,
         return_tensors="pt",
         padding=True
     )
@@ -146,32 +131,29 @@ def get_logprobs_for_token(
     outputs = model(use_cache=False, **inputs)
     logits = outputs.logits  # (batch_size, seq_len, vocab_size)
 
-    # Get base prompt length (without padding)
-    base_inputs = processor(text=base_prompt, images=image, return_tensors="pt")
+    # Get base prompt length (without padding) - use first image for reference
+    base_inputs = processor(text=base_prompt, images=images[0], return_tensors="pt")
     base_length = base_inputs['input_ids'].shape[1]
 
-    # Extract log probabilities for each class
-    all_log_probs = {}
+    # Extract log probabilities for each image
+    batch_log_probs = []
     pad_token_id = processor.tokenizer.pad_token_id
 
-    for i, class_id in enumerate(class_ids_list):
+    for i, target_text in enumerate(target_texts):
         # Find actual sequence length (excluding padding)
         input_ids = inputs['input_ids'][i]
         seq_len = (input_ids != pad_token_id).sum().item()
 
         # Calculate where class tokens start and end
-        # The sequence is: [padding] + base_prompt + class_tokens
         padding_length = logits.shape[1] - seq_len
         class_start_pos = padding_length + base_length
         class_end_pos = padding_length + seq_len
 
         # Extract actual class tokens from the batch input
-        # This is safer than pre-computing tokens separately,
-        # because tokenization can differ based on context (whitespace, template, etc.)
         actual_class_tokens = input_ids[class_start_pos:class_end_pos].tolist()
 
         if len(actual_class_tokens) == 0:
-            all_log_probs[class_id] = -100.0
+            batch_log_probs.append(-100.0)
             continue
 
         # Compute log probability for all tokens in class_name
@@ -179,7 +161,6 @@ def get_logprobs_for_token(
 
         for j, token_id in enumerate(actual_class_tokens):
             # Position to get logits that predict this token
-            # logits[i, pos, :] predicts token at position pos+1
             logit_pos = class_start_pos + j - 1
 
             if logit_pos < 0 or logit_pos >= logits.shape[1]:
@@ -192,37 +173,42 @@ def get_logprobs_for_token(
 
             sum_log_prob += log_prob_token
 
-        all_log_probs[class_id] = sum_log_prob
+        batch_log_probs.append(sum_log_prob)
 
-    # Find target class ID
-    target_class_id = None
-    for cid, cname in all_class_names.items():
-        if cname == target_text:
-            target_class_id = cid
-            break
+    # Log summary
+    print(f"[get_logprobs_for_batch] Processed {len(images)} images, "
+          f"avg log P = {np.mean(batch_log_probs):.4f}")
 
-    if target_class_id is None or target_class_id not in all_log_probs:
-        return -100.0
+    return batch_log_probs
 
-    # Get target log probability
-    target_log_prob = all_log_probs[target_class_id]
 
-    # Convert to conditional log probability using log-sum-exp trick
-    log_probs_array = np.array(list(all_log_probs.values()))
-    max_log_prob = np.max(log_probs_array)
+@torch.no_grad()
+def get_logprobs_for_token(
+        model,
+        processor,
+        image,
+        target_text: str,
+        all_class_names: dict = None,
+        class_tokens_dict: dict = None,
+) -> float:
+    """
+    Get log probability of the target class for a single image.
 
-    # log(sum(exp(log_probs))) = max_log_prob + log(sum(exp(log_probs - max_log_prob)))
-    log_sum_probs = max_log_prob + np.log(np.sum(np.exp(log_probs_array - max_log_prob)))
+    This is a wrapper around get_logprobs_for_batch for backward compatibility.
 
-    # Conditional log probability: log(P(target) / sum(P(all)))
-    conditional_log_prob = target_log_prob - log_sum_probs
+    Args:
+        model: VLM model
+        processor: VLM processor
+        image: PIL Image
+        target_text: Target class name (e.g., "apple")
+        all_class_names: Unused (kept for compatibility)
+        class_tokens_dict: Unused (kept for compatibility)
 
-    # Log the results
-    print(f"[get_logprobs_for_token] target='{target_text}' (id={target_class_id}), "
-          f"log P(target)={target_log_prob:.4f}, log sum(P(all))={log_sum_probs:.4f}, "
-          f"conditional log prob={conditional_log_prob:.4f}")
-
-    return conditional_log_prob
+    Returns:
+        Log probability of target class
+    """
+    batch_results = get_logprobs_for_batch(model, processor, [image], [target_text])
+    return batch_results[0]
 
 
 def evaluate_single_image_with_image(
@@ -347,35 +333,59 @@ def run_experiment(
     for hue_val in tqdm(hue_values, desc="Hue values"):
         hue_range = (hue_val, hue_val)
 
-        for idx, img_path in enumerate(tqdm(image_files, desc=f"Images (hue={hue_val})", leave=False)):
+        # Load and process all images in batch
+        batch_images = []
+        batch_target_texts = []
+        batch_class_ids = []
+        batch_paths = []
+
+        print(f"\nProcessing images for hue={hue_val}...")
+        for img_path in tqdm(image_files, desc=f"Loading & modifying images (hue={hue_val})", leave=False):
             class_id = int(img_path.stem)
 
             try:
-                # Check if this is a sample image
-                is_sample = img_path in sample_files
+                # Load image
+                img = Image.open(img_path).convert("RGB")
 
-                if is_sample:
-                    logprob, img_modified = evaluate_single_image_with_image(
-                        str(img_path), class_id, vlm_model, vlm_processor,
-                        sam_model, sam_processor, sam_device,
-                        class_tokens_dict=class_tokens_dict,
-                        hue_range=hue_range, blend_strength=1.0
-                    )
-                    # Save sample image
+                # Generate mask and apply colorization
+                mask = get_sam_mask_auto(img, sam_processor, sam_model, sam_device, grid_size=5)
+                img_modified = colorize_subject(
+                    img, mask,
+                    saturation=230,
+                    hue_range=hue_range,
+                    blend_strength=1.0
+                )
+
+                # Save sample images
+                if img_path in sample_files:
                     img_modified.save(os.path.join(samples_dir, f"exp1_hue{hue_val}_{img_path.stem}.png"))
-                else:
-                    logprob, _ = evaluate_single_image_with_image(
-                        str(img_path), class_id, vlm_model, vlm_processor,
-                        sam_model, sam_processor, sam_device,
-                        class_tokens_dict=class_tokens_dict,
-                        hue_range=hue_range, blend_strength=1.0
-                    )
 
+                # Add to batch
+                batch_images.append(img_modified)
+                batch_target_texts.append(CLASS_NAMES[class_id])
+                batch_class_ids.append(class_id)
+                batch_paths.append(img_path)
+            except Exception as e:
+                print(f"Error processing {img_path.name}: {e}")
+                continue
+
+        # Batch inference
+        print(f"Running batch inference for {len(batch_images)} images...")
+        try:
+            batch_logprobs = get_logprobs_for_batch(
+                vlm_model,
+                vlm_processor,
+                batch_images,
+                batch_target_texts
+            )
+
+            # Store results
+            for class_id, logprob in zip(batch_class_ids, batch_logprobs):
                 hue_results[hue_val].append(logprob)
                 hue_detailed[hue_val].append({"image_id": class_id, "logprob": logprob})
-            except Exception as e:
-                print(f"Error processing {img_path.name} with hue={hue_val}: {e}")
-                continue
+        except Exception as e:
+            print(f"Error in batch inference for hue={hue_val}: {e}")
+            continue
 
     # Save detailed results
     with open(os.path.join(output_dir, "exp1_hue_detailed.json"), "w") as f:
@@ -390,33 +400,62 @@ def run_experiment(
     blend_detailed = {str(blend): [] for blend in blend_values}
 
     for blend_val in tqdm(blend_values, desc="Blend values"):
-        for idx, img_path in enumerate(tqdm(image_files, desc=f"Images (blend={blend_val})", leave=False)):
+        # Load and process all images in batch
+        batch_images = []
+        batch_target_texts = []
+        batch_class_ids = []
+        batch_paths = []
+
+        print(f"\nProcessing images for blend={blend_val}...")
+        for img_path in tqdm(image_files, desc=f"Loading & modifying images (blend={blend_val})", leave=False):
             class_id = int(img_path.stem)
 
             try:
-                is_sample = img_path in sample_files
+                # Load image
+                img = Image.open(img_path).convert("RGB")
 
-                if is_sample:
-                    logprob, img_modified = evaluate_single_image_with_image(
-                        str(img_path), class_id, vlm_model, vlm_processor,
-                        sam_model, sam_processor, sam_device,
-                        class_tokens_dict=class_tokens_dict,
-                        hue_range=(180, 180), blend_strength=blend_val
+                # Apply colorization if blend_strength > 0
+                if blend_val > 0:
+                    mask = get_sam_mask_auto(img, sam_processor, sam_model, sam_device, grid_size=5)
+                    img_modified = colorize_subject(
+                        img, mask,
+                        saturation=230,
+                        hue_range=(180, 180),
+                        blend_strength=blend_val
                     )
-                    img_modified.save(os.path.join(samples_dir, f"exp2_blend{blend_val}_{img_path.stem}.png"))
                 else:
-                    logprob, _ = evaluate_single_image_with_image(
-                        str(img_path), class_id, vlm_model, vlm_processor,
-                        sam_model, sam_processor, sam_device,
-                        class_tokens_dict=class_tokens_dict,
-                        hue_range=(180, 180), blend_strength=blend_val
-                    )
+                    img_modified = img
 
+                # Save sample images
+                if img_path in sample_files:
+                    img_modified.save(os.path.join(samples_dir, f"exp2_blend{blend_val}_{img_path.stem}.png"))
+
+                # Add to batch
+                batch_images.append(img_modified)
+                batch_target_texts.append(CLASS_NAMES[class_id])
+                batch_class_ids.append(class_id)
+                batch_paths.append(img_path)
+            except Exception as e:
+                print(f"Error processing {img_path.name}: {e}")
+                continue
+
+        # Batch inference
+        print(f"Running batch inference for {len(batch_images)} images...")
+        try:
+            batch_logprobs = get_logprobs_for_batch(
+                vlm_model,
+                vlm_processor,
+                batch_images,
+                batch_target_texts
+            )
+
+            # Store results
+            for class_id, logprob in zip(batch_class_ids, batch_logprobs):
                 blend_results[blend_val].append(logprob)
                 blend_detailed[str(blend_val)].append({"image_id": class_id, "logprob": logprob})
-            except Exception as e:
-                print(f"Error processing {img_path.name} with blend={blend_val}: {e}")
-                continue
+        except Exception as e:
+            print(f"Error in batch inference for blend={blend_val}: {e}")
+            continue
 
     # Save detailed results
     with open(os.path.join(output_dir, "exp2_blend_detailed.json"), "w") as f:
