@@ -1,13 +1,12 @@
 """
-Analyze the impact of color noise on LVLM object recognition.
+Analyze the impact of color variations on LVLM object recognition.
 
 Tests how different parameters affect the model's confidence (logprobs):
 1. hue_range - Color gradient variation
 2. blend_strength - Color blending intensity
-3. gaussian_noise - Random pixel noise on masked region
 
 Experiment:
-1. Apply SAM segmentation + noise/colorization with varying parameters
+1. Apply SAM segmentation + colorization with varying parameters
 2. Prompt: "USER: <image>\n An image of ASSISTANT: "
 3. Measure logprobs for the first predicted token (target object)
 4. Average over 100 samples
@@ -35,13 +34,13 @@ from test.test_utils import colorize_subject
 
 
 def load_vlm_model(model_name: str, device: str = "auto"):
-    """Load vision-language model and processor."""
+    """Load vision-language model and processor with 8-bit quantization."""
     from transformers import LlavaForConditionalGeneration, AutoProcessor
 
-    print(f"Loading VLM model: {model_name}")
+    print(f"Loading VLM model: {model_name} (8-bit)")
     model = LlavaForConditionalGeneration.from_pretrained(
         model_name,
-        torch_dtype=torch.float16,
+        load_in_8bit=True,
         device_map=device,
     )
     processor = AutoProcessor.from_pretrained(model_name)
@@ -55,39 +54,6 @@ def load_sam_model(sam_model_name: str, device: str):
     model = SamModel.from_pretrained(sam_model_name).to(device)
     processor = SamProcessor.from_pretrained(sam_model_name)
     return model, processor
-
-
-def apply_gaussian_noise(
-        image: Image.Image,
-        mask: Image.Image,
-        noise_std: float
-) -> Image.Image:
-    """
-    Apply Gaussian noise to masked region of the image.
-
-    Args:
-        image: PIL Image (RGB)
-        mask: PIL Image (grayscale, 0-255)
-        noise_std: Standard deviation of Gaussian noise (in pixel units 0-255)
-
-    Returns:
-        PIL Image with noise applied to masked region
-    """
-    # Convert to numpy arrays
-    img_np = np.array(image).astype(np.float32)
-    mask_np = np.array(mask).astype(np.float32) / 255.0  # Normalize to 0-1
-
-    # Generate Gaussian noise (mean=0, std=noise_std)
-    noise = np.random.normal(0, noise_std, img_np.shape).astype(np.float32)
-
-    # Apply noise only to masked region
-    mask_3d = np.stack([mask_np] * 3, axis=2)  # (H, W, 3)
-    img_noisy = img_np + noise * mask_3d
-
-    # Clip to valid range [0, 255]
-    img_noisy = np.clip(img_noisy, 0, 255).astype(np.uint8)
-
-    return Image.fromarray(img_noisy)
 
 
 def precompute_class_tokens(processor, all_class_names: dict) -> dict:
@@ -265,7 +231,6 @@ def evaluate_single_image_with_image(
         class_tokens_dict: dict = None,
         hue_range: tuple = None,
         blend_strength: float = 0.0,
-        noise_std: float = 0.0,
         grid_size: int = 5
 ):
     """
@@ -280,8 +245,8 @@ def evaluate_single_image_with_image(
     # Get object name
     object_name = CLASS_NAMES.get(class_id, "object")
 
-    # Generate mask with SAM (needed for both noise and colorization)
-    if blend_strength > 0 or noise_std > 0:
+    # Generate mask with SAM (needed for colorization)
+    if blend_strength > 0:
         mask = get_sam_mask_auto(img, sam_processor, sam_model, sam_device, grid_size=grid_size)
     else:
         mask = None
@@ -289,7 +254,7 @@ def evaluate_single_image_with_image(
     # Apply modifications
     img_modified = img
 
-    # 1. Apply colorization if requested
+    # Apply colorization if requested
     if blend_strength > 0 and hue_range is not None:
         img_modified = colorize_subject(
             img_modified, mask,
@@ -297,10 +262,6 @@ def evaluate_single_image_with_image(
             hue_range=hue_range,
             blend_strength=blend_strength
         )
-
-    # 2. Apply Gaussian noise if requested
-    if noise_std > 0 and mask is not None:
-        img_modified = apply_gaussian_noise(img_modified, mask, noise_std)
 
     # Get logprobs
     logprob = get_logprobs_for_token(
@@ -546,7 +507,7 @@ def run_experiment(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Analyze color and gaussian noise effect on LVLM")
+    parser = argparse.ArgumentParser(description="Analyze color variations effect on LVLM")
     parser.add_argument(
         "--image_dir",
         type=str,
