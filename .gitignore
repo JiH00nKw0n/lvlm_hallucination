@@ -12,3 +12,5 @@ requirements_temp.txt
 .env
 test/read_dataset.py
 test/upload_existing_dataset.py
+analysis_color_noise/*
+analysis_color_noise_2/*

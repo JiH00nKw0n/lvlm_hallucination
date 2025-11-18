@@ -66,11 +66,11 @@ class MMEDatasetBuilder(BaseBuilder):
         >>> dataset = builder.build_dataset()
         >>> print(dataset[0])
         {
-            'question_id': 'existence_001',
+            'question_id': 'artwork/10002',
             'image': <PIL.Image>,
-            'question': 'Is there a person in the image?',
+            'question': 'Does this artwork exist in the form of painting? Please answer yes or no.',
             'answer': 'yes',
-            'category': 'existence'
+            'category': 'artwork'
         }
     """
     split: Optional[str] = 'test'
