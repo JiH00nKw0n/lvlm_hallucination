@@ -1,5 +1,5 @@
 """
-Analyze logit-lens behavior of LLaVA on FrankCCCCC/colored_mnist_28.
+Analyze logit-lens behavior of LLaVA on local Colored MNIST-style images.
 
 For each test image we compare colored vs. grayscale variants by:
 1. Running a forward pass with a fixed "What digit is shown?" prompt
@@ -25,15 +25,24 @@ import argparse
 import json
 import os
 from collections import defaultdict
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch
-from datasets import load_dataset
 from PIL import Image, ImageOps
 from tqdm import tqdm
 from transformers import AutoProcessor, LlavaConfig
 
 from src.models.llava.modeling_llava import CustomLlavaForConditionalGeneration
+
+
+LABEL_PREFIX_TO_LABEL = {
+    "blue": 0,
+    "green": 9,
+    "red": 4,
+}
+TARGET_LABELS = set(LABEL_PREFIX_TO_LABEL.values())
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,16 +54,10 @@ def parse_args() -> argparse.Namespace:
         help="Hugging Face model identifier for LLaVA.",
     )
     parser.add_argument(
-        "--dataset-name",
+        "--data-dir",
         type=str,
-        default="FrankCCCCC/colored_mnist_28",
-        help="Hugging Face dataset identifier.",
-    )
-    parser.add_argument(
-        "--split",
-        type=str,
-        default="test",
-        help="Dataset split to analyze.",
+        default="test_2",
+        help="Directory containing local Colored MNIST images (PNG/JPG).",
     )
     parser.add_argument(
         "--num-samples",
@@ -113,6 +116,70 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def infer_label_from_filename(filename: str) -> Optional[int]:
+    lower = filename.lower()
+    for prefix, label in LABEL_PREFIX_TO_LABEL.items():
+        if lower.startswith(prefix):
+            return label
+    return None
+
+
+def load_local_entries(data_dir: str) -> List[Dict]:
+    data_path = Path(data_dir)
+    if not data_path.exists():
+        raise FileNotFoundError(f"Data directory '{data_dir}' does not exist.")
+
+    entries: List[Dict] = []
+    for idx, path in enumerate(sorted(data_path.glob("*"))):
+        if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        label = infer_label_from_filename(path.name)
+        if label is None:
+            continue
+        entries.append({"idx": idx, "path": path, "label": label})
+
+    if not entries:
+        raise RuntimeError(f"No valid image files found in '{data_dir}'.")
+
+    return entries
+
+
+def select_sample_entries(
+    entries: List[Dict],
+    start_index: int,
+    num_samples: int,
+    samples_per_label: int,
+) -> List[Dict]:
+    if start_index >= len(entries):
+        raise ValueError(f"start-index {start_index} is >= dataset size {len(entries)}")
+
+    subset = entries[start_index:]
+
+    if samples_per_label <= 0:
+        count = len(subset) if num_samples == -1 else min(num_samples, len(subset))
+        return subset[:count]
+
+    counts = defaultdict(int)
+    selected: List[Dict] = []
+
+    def quota_met() -> bool:
+        return all(counts.get(label, 0) >= samples_per_label for label in TARGET_LABELS)
+
+    for entry in subset:
+        label = entry["label"]
+        if counts[label] >= samples_per_label:
+            continue
+        counts[label] += 1
+        selected.append(entry)
+
+        if num_samples > 0 and len(selected) >= num_samples:
+            break
+        if quota_met():
+            break
+
+    return selected
+
+
 def load_llava(model_name: str):
     """
     Load LLaVA with EvalLlama backend so we can request hidden states.
@@ -149,7 +216,7 @@ def make_prompt(processor, question: str) -> str:
             "role": "user",
             "content": [
                 {"type": "image"},
-                {"type": "text", "text": question},
+                {"type": "text", "text": ""},
             ],
         }
     ]
@@ -256,75 +323,6 @@ def analyze_variant(
     return patch_dict
 
 
-def extract_label(sample: Dict) -> Optional[int]:
-    """
-    Retrieve the class label from a dataset sample.
-    """
-    for key in ("label", "digit", "class", "target"):
-        if key in sample:
-            value = sample[key]
-            if isinstance(value, (list, tuple)):
-                value = value[0]
-            if hasattr(value, "item"):
-                value = value.item()
-            if isinstance(value, (int, float)):
-                return int(value)
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return None
-    return None
-
-
-def select_sample_indices(
-    dataset,
-    start_index: int,
-    num_samples: int,
-    samples_per_label: int,
-) -> List[int]:
-    """
-    Determine which dataset indices to analyze based on per-label filtering.
-    """
-    total_len = len(dataset)
-    if start_index >= total_len:
-        raise ValueError(f"start-index {start_index} is >= dataset size {total_len}")
-
-    if samples_per_label <= 0:
-        available = total_len - start_index
-        count = available if num_samples == -1 else min(num_samples, available)
-        return list(range(start_index, start_index + count))
-
-    label_feature = dataset.features.get("label") if hasattr(dataset, "features") else None
-    expected_labels = len(label_feature.names) if label_feature and hasattr(label_feature, "names") else None
-
-    counts = defaultdict(int)
-    selected = []
-
-    def label_quota_satisfied() -> bool:
-        if not counts:
-            return False
-        if expected_labels is not None and len(counts) < expected_labels:
-            return False
-        return all(val >= samples_per_label for val in counts.values())
-
-    for idx in range(start_index, total_len):
-        sample = dataset[idx]
-        label = extract_label(sample)
-        if label is None:
-            continue
-        if counts[label] >= samples_per_label:
-            continue
-        counts[label] += 1
-        selected.append(idx)
-
-        if num_samples > 0 and len(selected) >= num_samples:
-            break
-        if label_quota_satisfied():
-            break
-
-    return selected
-
-
 def main():
     args = parse_args()
     output_dir = os.path.dirname(args.output_path)
@@ -339,31 +337,29 @@ def main():
     model, processor = load_llava(args.model_name)
     prompt = make_prompt(processor, args.question)
 
-    print(f"Loading dataset {args.dataset_name} ({args.split})...")
-    dataset = load_dataset(args.dataset_name, split=args.split)
-    total_len = len(dataset)
+    print(f"Loading local dataset from {args.data_dir}...")
+    all_entries = load_local_entries(args.data_dir)
 
-    selected_indices = select_sample_indices(
-        dataset=dataset,
+    selected_entries = select_sample_entries(
+        entries=all_entries,
         start_index=args.start_index,
         num_samples=args.num_samples,
         samples_per_label=args.samples_per_label,
     )
 
-    if not selected_indices:
+    if not selected_entries:
         raise RuntimeError("No samples selected. Check sampling parameters.")
 
     print(
-        f"Processing {len(selected_indices)} samples "
+        f"Processing {len(selected_entries)} samples "
         f"(start_index={args.start_index}, samples_per_label={args.samples_per_label})"
     )
 
     results = []
 
-    for ds_idx in tqdm(selected_indices, desc="Colored MNIST samples"):
-        sample = dataset[ds_idx]
-
-        image: Image.Image = sample["image"].convert("RGB")
+    for entry in tqdm(selected_entries, desc="Colored MNIST samples"):
+        ds_idx = entry["idx"]
+        image = Image.open(entry["path"]).convert("RGB")
         grayscale_image = convert_to_grayscale(image)
 
         colored_path = os.path.join(image_output_dir, f"idx_{ds_idx}_colored.png")

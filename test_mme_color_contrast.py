@@ -19,10 +19,9 @@ import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
-from transformers import AutoProcessor, LlavaConfig
+from transformers import AutoProcessor, LlavaConfig, LlavaForConditionalGeneration
 
 from src.datasets.mme import MMEDatasetBuilder
-from src.models.llava.modeling_llava import CustomLlavaForConditionalGeneration
 
 
 @dataclass
@@ -111,7 +110,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_model_and_processor(model_name: str):
-    processor = AutoProcessor.from_pretrained(model_name)
+    processor = AutoProcessor.from_pretrained(model_name, load_in_8bit=True)
 
     config = LlavaConfig.from_pretrained(model_name)
     config.text_config.auto_map = {
@@ -122,7 +121,7 @@ def load_model_and_processor(model_name: str):
     torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
     device_map = "auto" if torch.cuda.is_available() else None
 
-    model = CustomLlavaForConditionalGeneration.from_pretrained(
+    model = LlavaForConditionalGeneration.from_pretrained(
         model_name,
         config=config,
         torch_dtype=torch_dtype,
@@ -212,7 +211,7 @@ class DiffusionNoiseGenerator:
         noisy_arr = (noisy.squeeze(0).permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
         return Image.fromarray(noisy_arr), step
 
-
+@torch.no_grad()
 def greedy_decode(model, inputs: Dict[str, torch.Tensor], max_new_tokens: int, tokenizer) -> str:
     generated_ids = model.generate(
         **inputs,
@@ -223,7 +222,7 @@ def greedy_decode(model, inputs: Dict[str, torch.Tensor], max_new_tokens: int, t
     new_tokens = generated_ids[0][inputs["input_ids"].shape[1]:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
-
+@torch.no_grad()
 def contrastive_greedy_decode(
     model,
     clean_inputs: Dict[str, torch.Tensor],
@@ -287,7 +286,7 @@ def contrastive_greedy_decode(
     gen_ids = torch.cat(generated_tokens, dim=-1)
     return tokenizer.decode(gen_ids[0], skip_special_tokens=True).strip()
 
-
+@torch.no_grad()
 def vcd_decode(
     model,
     clean_inputs: Dict[str, torch.Tensor],
