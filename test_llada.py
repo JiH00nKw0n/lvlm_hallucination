@@ -72,11 +72,11 @@ def fill_masks_with_model(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate multiple mask-and-fill captions for LLaDA-8B.")
-    parser.add_argument("--sample-count", type=int, default=100, help="Number of dataset examples to process.")
+    parser.add_argument("--sample-count", type=int, default=1, help="Number of dataset examples to process.")
     parser.add_argument(
         "--generations-per-sample",
         type=int,
-        default=100,
+        default=1,
         help="How many masked generations to create for each example.",
     )
     parser.add_argument("--mask-percent", type=int, default=None, help="Override mask percent for all runs.")
@@ -98,6 +98,18 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="llada_mask_generations.json",
         help="Path to save generated captions JSON.",
+    )
+    parser.add_argument(
+        "--print-examples",
+        type=int,
+        default=1,
+        help="How many originals to log with masked/generated examples.",
+    )
+    parser.add_argument(
+        "--print-generations",
+        type=int,
+        default=3,
+        help="How many generations per printed original to show.",
     )
     parser.add_argument("--seed", type=int, default=None, help="Optional random seed for reproducibility.")
     return parser.parse_args()
@@ -183,7 +195,7 @@ def main() -> None:
         input_ids = tokenizer.encode(original, add_special_tokens=False)
 
         generated_captions: List[str] = []
-        for _ in tqdm(range(args.generations_per_sample), leave=False, desc="Generations"):
+        for gen_idx in tqdm(range(args.generations_per_sample), leave=False, desc="Generations"):
             percent, span = choose_mask_config(args.mask_percent, args.mask_span)
             masked_ids, _ = mask_tokens(
                 input_ids,
@@ -191,6 +203,7 @@ def main() -> None:
                 percent,
                 span,
             )
+            masked_text = tokenizer.decode(masked_ids, skip_special_tokens=False)
             generated = fill_masks_with_model(
                 model,
                 tokenizer,
@@ -200,15 +213,17 @@ def main() -> None:
             )
             generated_captions.append(generated)
 
-        results[str(out_idx)] = {
-            "original": original,
-            "generated": generated_captions,
-        }
-        print(f"Processed sample {out_idx + 1}/{args.sample_count} (dataset idx {ds_idx})")
-
-    with open(args.output_json, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
-    print(f"Saved results to {args.output_json}")
+            if out_idx < args.print_examples and gen_idx < args.print_generations:
+                print("\n------------------------------")
+                print(f"[Sample {out_idx} | Generation {gen_idx}]")
+                print(f"Mask percent: {percent}%, span: {span}")
+                print("Original :")
+                print(original)
+                print("\nMasked   :")
+                print(masked_text)
+                print("\nGenerated:")
+                print(generated)
+                print("------------------------------\n")
 
 
 if __name__ == "__main__":
