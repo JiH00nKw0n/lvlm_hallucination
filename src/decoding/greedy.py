@@ -20,13 +20,14 @@ class GreedyDecoder(DecodingStrategy):
         *,
         clean_inputs: Dict[str, torch.Tensor],
         max_new_tokens: int,
+        use_cache: bool = False,
         **kwargs,
     ) -> DecodeResult:
         generated_ids = model.generate(
             **clean_inputs,
             max_new_tokens=max_new_tokens,
             do_sample=False,
-            use_cache=True,
+            use_cache=use_cache,
         )
         prompt_len = clean_inputs["input_ids"].shape[1]
         new_tokens = generated_ids[0][prompt_len:]

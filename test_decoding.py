@@ -8,7 +8,7 @@ import argparse
 import json
 import os
 import random
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import torch
@@ -23,7 +23,7 @@ from src.decoding.rotation import InstructionRotationDecoder
 
 
 def load_model_and_processor(model_name: str):
-    processor = AutoProcessor.from_pretrained(model_name, load_in_8bit=True)
+    processor = AutoProcessor.from_pretrained(model_name, use_fast=True)
 
     config = LlavaConfig.from_pretrained(model_name)
     config.text_config.auto_map = {
@@ -31,13 +31,13 @@ def load_model_and_processor(model_name: str):
         "AutoModelForCausalLM": "src.models.eval_llama.modeling_eval_llama.EvalLlamaForCausalLM",
     }
 
-    torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
     device_map = "auto" if torch.cuda.is_available() else None
 
     model = LlavaForConditionalGeneration.from_pretrained(
         model_name,
         config=config,
-        torch_dtype=torch_dtype,
+        dtype=dtype,
         device_map=device_map,
         attn_implementation="eager",
     )
@@ -114,7 +114,9 @@ def evaluate_mme(
     max_new_tokens: int,
     noise_scale: float,
     output_json: Optional[str] = None,
+    use_cache: bool = False,
 ) -> None:
+    torch.set_grad_enabled(False)
     tokenizer = processor.tokenizer
     device = next(model.parameters()).device
     builder = MMEDatasetBuilder(split=split)
@@ -129,7 +131,12 @@ def evaluate_mme(
     totals_per_cat: Dict[str, int] = {}
     total_seen = 0
 
-    for idx in tqdm(range(max_samples), desc="Evaluating MME"):
+    strategy_names = [s.name for s in strategies]
+    print(f"MME evaluation | strategies: {strategy_names} | max_samples: {max_samples}")
+
+    log_every = 100
+
+    for idx in tqdm(range(max_samples), desc=f"MME [{', '.join(strategy_names)}]"):
         sample = dataset[idx]
         image: Image.Image = sample["image"].convert("RGB")
         answer: str = sample["answer"].strip().lower()
@@ -157,11 +164,15 @@ def evaluate_mme(
                 noisy_inputs=noisy_inputs,
                 max_new_tokens=max_new_tokens,
                 noise_scale=noise_scale,
+                use_cache=use_cache,
             )
             pred = normalize_yes_no(result.text)
             correct = int(pred == answer)
             cat_counts = correct_counts.setdefault(strat.name, {})
             cat_counts[category] = cat_counts.get(category, 0) + correct
+
+        if (idx + 1) % log_every == 0:
+            print(f"[MME] processed {idx+1}/{max_samples} samples with strategies {strategy_names}")
 
     summary = {
         "config": {
@@ -273,6 +284,8 @@ def pca_on_pico_text(model, tokenizer, jsonl_path: str, output_dir: str, batch_s
     except FileNotFoundError as e:
         print(f"[PCA text] {e}")
         return
+    print(f"[PCA text] Loaded {len(entries)} entries from {jsonl_path}")
+    print("[PCA text] Encoding instructions...")
     instructions: List[str] = []
     for entry in entries:
         prompts = entry.get("metadata_edit_turn_prompts") or []
@@ -282,6 +295,7 @@ def pca_on_pico_text(model, tokenizer, jsonl_path: str, output_dir: str, batch_s
         print("No instructions found for PCA text analysis.")
         return
 
+    print(f"[PCA text] Total instructions: {len(instructions)}")
     means = compute_text_hidden_means(model, tokenizer, instructions, batch_size=batch_size)
     num_layers = len(means[0])
     os.makedirs(output_dir, exist_ok=True)
@@ -302,6 +316,8 @@ def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str) -> No
     except FileNotFoundError as e:
         print(f"[PCA image] {e}")
         return
+    print(f"[PCA image] Loaded {len(entries)} entries from {jsonl_path}")
+    print("[PCA image] Gathering image feature differences...")
     device = next(model.parameters()).device
     diffs: List[torch.Tensor] = []
 
@@ -350,7 +366,7 @@ def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str) -> No
         {"components": components, "mean": mean_vec},
         os.path.join(output_dir, "image_pca.pt"),
     )
-    print(f"Saved image PCA components to {os.path.join(output_dir, 'image_pca.pt')}")
+    print(f"[PCA image] Used {len(diffs)} pairs | saved to {os.path.join(output_dir, 'image_pca.pt')}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -363,7 +379,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rotation-degrees", type=str, default="5,10,15", help="Comma-separated degrees")
     parser.add_argument("--question-suffix", type=str, default="Please answer with Yes or No.")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output-json", type=str, default="results/test_decoding_summary.json")
+    parser.add_argument("--output-json", type=str, default="result/test_decoding_summary.json")
+    parser.add_argument(
+        "--use-cache",
+        action="store_true",
+        help="Enable generation cache during decoding (faster, higher memory).",
+    )
     parser.add_argument("--run-greedy", action="store_true")
     parser.add_argument("--run-noise-contrastive", action="store_true")
     parser.add_argument("--run-simple-rotation", action="store_true")
@@ -401,6 +422,11 @@ def main() -> None:
             strategies.append(InstructionRotationDecoder(degrees=deg, contrast_scale=1.0))
 
     if strategies:
+        print(f"Enabled strategies: {[s.name for s in strategies]}")
+    else:
+        print("No decoding strategies enabled; skipping MME evaluation.")
+
+    if strategies:
         evaluate_mme(
             model=model,
             processor=processor,
@@ -411,6 +437,7 @@ def main() -> None:
             max_new_tokens=args.max_new_tokens,
             noise_scale=args.noise_scale,
             output_json=args.output_json,
+            use_cache=args.use_cache,
         )
     else:
         print("No decoding strategies enabled; skipping MME evaluation.")

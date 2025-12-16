@@ -45,6 +45,7 @@ class InstructionRotationDecoder(DecodingStrategy):
         *,
         clean_inputs: Dict[str, torch.Tensor],
         max_new_tokens: int,
+        use_cache: bool = False,
         **kwargs,
     ) -> DecodeResult:
         device = next(model.parameters()).device
@@ -101,7 +102,7 @@ class InstructionRotationDecoder(DecodingStrategy):
         generated_tokens = []
 
         for _ in range(max_new_tokens):
-            kwargs_common = {"use_cache": False, "return_dict": True}
+            kwargs_common = {"use_cache": use_cache, "return_dict": True}
             out_toward = model(
                 inputs_embeds=embeds_toward,
                 attention_mask=attn_toward,

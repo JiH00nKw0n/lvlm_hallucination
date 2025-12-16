@@ -57,6 +57,7 @@ CMD=(python "$PROJECT_DIR/test_decoding.py"
   --pca-output-dir "$PCA_OUTPUT_DIR"
   --text-batch-size "$TEXT_BATCH_SIZE"
   --output-json "$OUTPUT_JSON"
+  --use-cache
 )
 
 [[ "$RUN_GREEDY" == "1" ]] && CMD+=(--run-greedy)

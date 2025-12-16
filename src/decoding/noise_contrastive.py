@@ -25,6 +25,7 @@ class NoiseContrastiveDecoder(DecodingStrategy):
         noisy_inputs: Dict[str, torch.Tensor],
         max_new_tokens: int,
         noise_scale: float = None,
+        use_cache: bool = False,
         **kwargs,
     ) -> DecodeResult:
         scale = self.noise_scale if noise_scale is None else noise_scale
@@ -41,21 +42,27 @@ class NoiseContrastiveDecoder(DecodingStrategy):
         for _ in range(max_new_tokens):
             clean_kwargs = {
                 "input_ids": clean_ids,
-                "pixel_values": clean_pixels,
+                "pixel_values": clean_pixels if not use_cache or clean_past is None else None,
                 "attention_mask": clean_mask,
-                "use_cache": False,
+                "use_cache": use_cache,
+                "past_key_values": clean_past,
                 "return_dict": True,
             }
             noisy_kwargs = {
                 "input_ids": noisy_ids,
-                "pixel_values": noisy_pixels,
+                "pixel_values": noisy_pixels if not use_cache or noisy_past is None else None,
                 "attention_mask": noisy_mask,
-                "use_cache": False,
+                "use_cache": use_cache,
+                "past_key_values": noisy_past,
                 "return_dict": True,
             }
 
-            clean_logits = model(**clean_kwargs).logits[:, -1, :]
-            noisy_logits = model(**noisy_kwargs).logits[:, -1, :]
+            clean_out = model(**clean_kwargs)
+            noisy_out = model(**noisy_kwargs)
+            clean_logits = clean_out.logits[:, -1, :]
+            noisy_logits = noisy_out.logits[:, -1, :]
+            clean_past = clean_out.past_key_values if use_cache else None
+            noisy_past = noisy_out.past_key_values if use_cache else None
 
             contrastive_logits = clean_logits - scale * noisy_logits
             next_token = torch.argmax(contrastive_logits, dim=-1, keepdim=True)
