@@ -23,7 +23,7 @@ if [[ "$RAW_MAX_SAMPLES" == "all" ]]; then
 fi
 MAX_NEW_TOKENS=${3:-32}
 NOISE_SCALE=${4:-0.5}
-ROTATION_DEGREES=${5:-"5,10,15"}
+ROTATION_DEGREES=${5:-"5,10"}
 
 MODEL_NAME=${MODEL_NAME:-"llava-hf/llava-1.5-7b-hf"}
 QUESTION_SUFFIX=${QUESTION_SUFFIX:-"Please answer with Yes or No."}
@@ -31,13 +31,17 @@ PICO_JSONL=${PICO_JSONL:-"$PROJECT_DIR/pico_banana/multi_turn_with_local_source_
 PCA_OUTPUT_DIR=${PCA_OUTPUT_DIR:-"$PROJECT_DIR/results/pico_pca"}
 TEXT_BATCH_SIZE=${TEXT_BATCH_SIZE:-2}
 OUTPUT_JSON=${OUTPUT_JSON:-"$PROJECT_DIR/results/test_decoding_summary.json"}
+USE_CACHE=${USE_CACHE:-0}
+PCA_STEERING_MODE=${PCA_STEERING_MODE:-"both"}
+CATEGORY_FRACTION=${CATEGORY_FRACTION:-0.2}
 
 # Toggle strategies (1 = enabled, 0 = disabled)
 RUN_GREEDY=${RUN_GREEDY:-1}
 RUN_NOISE_CONTRASTIVE=${RUN_NOISE_CONTRASTIVE:-1}
-RUN_SIMPLE_ROTATION=${RUN_SIMPLE_ROTATION:-1}
+RUN_SIMPLE_ROTATION=${RUN_SIMPLE_ROTATION:-0}
 RUN_PCA_TEXT=${RUN_PCA_TEXT:-1}
 RUN_PCA_IMAGE=${RUN_PCA_IMAGE:-1}
+RUN_PCA_STEERING=${RUN_PCA_STEERING:-1}
 
 export HF_HOME="$PROJECT_DIR/.cache"
 export HF_DATASETS_CACHE="$PROJECT_DIR/.cache"
@@ -57,14 +61,17 @@ CMD=(python "$PROJECT_DIR/test_decoding.py"
   --pca-output-dir "$PCA_OUTPUT_DIR"
   --text-batch-size "$TEXT_BATCH_SIZE"
   --output-json "$OUTPUT_JSON"
-  --use-cache
+  --category-fraction "$CATEGORY_FRACTION"
 )
+
+[[ "$USE_CACHE" == "1" ]] && CMD+=(--use-cache)
 
 [[ "$RUN_GREEDY" == "1" ]] && CMD+=(--run-greedy)
 [[ "$RUN_NOISE_CONTRASTIVE" == "1" ]] && CMD+=(--run-noise-contrastive)
 [[ "$RUN_SIMPLE_ROTATION" == "1" ]] && CMD+=(--run-simple-rotation)
 [[ "$RUN_PCA_TEXT" == "1" ]] && CMD+=(--run-pca-text)
 [[ "$RUN_PCA_IMAGE" == "1" ]] && CMD+=(--run-pca-image)
+[[ "$RUN_PCA_STEERING" == "1" ]] && CMD+=(--run-pca-steering --pca-steering-mode "$PCA_STEERING_MODE")
 
 {
   echo "Logging to: $LOG_FILE"
@@ -80,6 +87,7 @@ CMD=(python "$PROJECT_DIR/test_decoding.py"
   echo "  Run rotation:      $RUN_SIMPLE_ROTATION"
   echo "  Run PCA text:      $RUN_PCA_TEXT"
   echo "  Run PCA image:     $RUN_PCA_IMAGE"
+  echo "  Run PCA steering:  $RUN_PCA_STEERING (mode=$PCA_STEERING_MODE)"
   echo "  Output JSON:       $OUTPUT_JSON"
   echo ""
 } | tee "$LOG_FILE"
