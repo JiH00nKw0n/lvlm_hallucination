@@ -1,5 +1,4 @@
-import json
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import torch
 
@@ -21,13 +20,13 @@ class PcaSteeringDecoder(DecodingStrategy):
     name = "pca_steering"
 
     def __init__(
-        self,
-        pca_path: str,
-        pca_layer: Optional[int] = None,
-        top_k: int = 4,
-        contrast_scale: float = 1.0,
-        use_cache: bool = False,
-        source: str = "text",
+            self,
+            pca_path: str,
+            pca_layer: Optional[int] = None,
+            top_k: int = 4,
+            contrast_scale: float = 1.0,
+            use_cache: bool = False,
+            source: str = "text",
     ):
         self.pca_path = pca_path
         self.pca_layer = pca_layer
@@ -66,10 +65,10 @@ class PcaSteeringDecoder(DecodingStrategy):
         return max(self.components.keys())
 
     def _steer_image_tokens(
-        self,
-        image_tokens: torch.Tensor,
-        instr_vec: torch.Tensor,
-        layer_idx: int,
+            self,
+            image_tokens: torch.Tensor,
+            instr_vec: torch.Tensor,
+            layer_idx: int,
     ) -> torch.Tensor:
         comps = self.components[layer_idx]  # (num_pc, hidden)
         mean = self.means[layer_idx]  # (hidden,)
@@ -77,25 +76,34 @@ class PcaSteeringDecoder(DecodingStrategy):
         instr_center = instr_vec - mean
         weights = torch.matmul(instr_center, comps.T).squeeze(0)
         topk = min(self.top_k, comps.shape[0])
+        if topk == 0:
+            return image_tokens
         _, idx = torch.topk(weights.abs(), k=topk)
         pcs = comps[idx]  # (k, hidden), orthonormal from PCA
 
         img_center = image_tokens - mean
         proj = torch.matmul(img_center, pcs.T)  # (num_img, k)
         recon = torch.matmul(proj, pcs)  # (num_img, hidden)
-        steered = img_center - recon + mean
+        steered_center = img_center - recon
+
+        # preserve per-token norm
+        orig_norm = img_center.norm(dim=-1, keepdim=True)
+        steered_norm = steered_center.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        steered_center = steered_center * (orig_norm / steered_norm)
+
+        steered = steered_center + mean
         return steered
 
     @torch.no_grad()
     def decode(
-        self,
-        model,
-        tokenizer,
-        *,
-        clean_inputs: Dict[str, torch.Tensor],
-        max_new_tokens: int,
-        use_cache: Optional[bool] = None,
-        **kwargs,
+            self,
+            model,
+            tokenizer,
+            *,
+            clean_inputs: Dict[str, torch.Tensor],
+            max_new_tokens: int,
+            use_cache: Optional[bool] = None,
+            **kwargs,
     ) -> DecodeResult:
         device = next(model.parameters()).device
         dtype = next(model.parameters()).dtype

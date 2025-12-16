@@ -326,12 +326,36 @@ def pca_on_pico_text(model, tokenizer, jsonl_path: str, output_dir: str, batch_s
     os.makedirs(output_dir, exist_ok=True)
     all_components = {}
     all_means = {}
+    nearest: Dict[int, List[Dict]] = {}
     for layer_idx in range(num_layers):
         layer_stack = torch.stack([m[layer_idx] for m in means], dim=0)
         comps, mean_vec = run_pca(layer_stack)
         all_components[layer_idx] = comps
         all_means[layer_idx] = mean_vec
+        # top-5 PCs, nearest 5 by absolute projection
+        centered = layer_stack - mean_vec
+        coords = torch.matmul(centered, comps.T)
+        top_pc = min(5, comps.shape[0])
+        layer_near: List[Dict] = []
+        for pc_idx in range(top_pc):
+            scores = coords[:, pc_idx]
+            topk = min(5, scores.shape[0])
+            vals, idxs = torch.topk(scores.abs(), k=topk)
+            for rank, (v, ix) in enumerate(zip(vals.tolist(), idxs.tolist())):
+                layer_near.append(
+                    {
+                        "layer": layer_idx,
+                        "pc_index": pc_idx,
+                        "rank": rank,
+                        "score": v,
+                        "instruction_index": ix,
+                        "instruction": instructions[ix],
+                    }
+                )
+        nearest[layer_idx] = layer_near
     torch.save({"components": all_components, "means": all_means}, os.path.join(output_dir, "text_pca.pt"))
+    with open(os.path.join(output_dir, "text_pca_nearest.json"), "w", encoding="utf-8") as f:
+        json.dump(nearest, f, ensure_ascii=False, indent=2)
     print(f"Saved text PCA components to {os.path.join(output_dir, 'text_pca.pt')}")
 
 
@@ -347,7 +371,7 @@ def project_single_layer(hs: torch.Tensor, projector, slice_idx: int, hidden_siz
     return x
 
 
-def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str) -> None:
+def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str, save_images: bool = False) -> None:
     try:
         entries = load_pico_entries(jsonl_path)
     except FileNotFoundError as e:
@@ -365,6 +389,10 @@ def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str) -> No
         layers_to_use = list(vision_layers_cfg)
 
     diffs_per_layer: Dict[int, List[torch.Tensor]] = {layer: [] for layer in layers_to_use}
+    metas_per_layer: Dict[int, List[Dict]] = {layer: [] for layer in layers_to_use}
+    saved_dir = os.path.join(output_dir, "nearest_images")
+    if save_images:
+        os.makedirs(saved_dir, exist_ok=True)
 
     for entry in tqdm(entries, desc="Pico image PCA"):
         local_input = entry.get("local_input_image")
@@ -412,6 +440,23 @@ def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str) -> No
             final_vec = final_proj.mean(dim=1).cpu()
             diff_vec = (final_vec - orig_vec).squeeze(0)
             diffs_per_layer[layer_idx].append(diff_vec)
+            meta_entry = {
+                "local_input_image": local_input,
+                "final_image": final_path,
+                "prompts": entry.get("metadata_edit_turn_prompts") or [],
+            }
+            if save_images:
+                base = f"layer{layer_idx}_idx{len(metas_per_layer[layer_idx])}"
+                local_out = os.path.join(saved_dir, f"{base}_orig.png")
+                final_out = os.path.join(saved_dir, f"{base}_final.png")
+                try:
+                    orig_img.save(local_out)
+                    final_img.save(final_out)
+                    meta_entry["saved_local_image"] = local_out
+                    meta_entry["saved_final_image"] = final_out
+                except Exception:
+                    pass
+            metas_per_layer[layer_idx].append(meta_entry)
 
     any_diff = any(len(v) > 0 for v in diffs_per_layer.values())
     if not any_diff:
@@ -421,6 +466,7 @@ def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str) -> No
     os.makedirs(output_dir, exist_ok=True)
     comps_dict: Dict[int, torch.Tensor] = {}
     means_dict: Dict[int, torch.Tensor] = {}
+    nearest: Dict[int, List[Dict]] = {}
     for layer_idx, vecs in diffs_per_layer.items():
         if not vecs:
             continue
@@ -428,11 +474,37 @@ def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str) -> No
         components, mean_vec = run_pca(diff_tensor)
         comps_dict[layer_idx] = components
         means_dict[layer_idx] = mean_vec
+        centered = diff_tensor - mean_vec
+        coords = torch.matmul(centered, components.T)
+        top_pc = min(5, components.shape[0])
+        layer_near: List[Dict] = []
+        for pc_idx in range(top_pc):
+            scores = coords[:, pc_idx]
+            topk = min(5, scores.shape[0])
+            vals, idxs = torch.topk(scores.abs(), k=topk)
+            for rank, (v, ix) in enumerate(zip(vals.tolist(), idxs.tolist())):
+                meta = metas_per_layer[layer_idx][ix]
+                entry = {
+                    "layer": layer_idx,
+                    "pc_index": pc_idx,
+                    "rank": rank,
+                    "score": v,
+                    "local_input_image": meta.get("local_input_image"),
+                    "final_image": meta.get("final_image"),
+                    "prompts": meta.get("prompts", []),
+                }
+                if save_images:
+                    entry["saved_local_image"] = meta.get("saved_local_image")
+                    entry["saved_final_image"] = meta.get("saved_final_image")
+                layer_near.append(entry)
+        nearest[layer_idx] = layer_near
 
     torch.save(
         {"components": comps_dict, "means": means_dict},
         os.path.join(output_dir, "image_pca.pt"),
     )
+    with open(os.path.join(output_dir, "image_pca_nearest.json"), "w", encoding="utf-8") as f:
+        json.dump(nearest, f, ensure_ascii=False, indent=2)
     used_counts = {k: len(v) for k, v in diffs_per_layer.items() if v}
     print(f"[PCA image] Layer-wise pairs used: {used_counts} | saved to {os.path.join(output_dir, 'image_pca.pt')}")
 
@@ -491,6 +563,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1.0,
         help="Fraction of each category to evaluate (0-1].",
+    )
+    parser.add_argument(
+        "--pca-save-images",
+        action="store_true",
+        help="When running image PCA, save nearest-pair images into pca-output-dir/nearest_images.",
     )
     return parser.parse_args()
 
@@ -578,6 +655,7 @@ def main() -> None:
             processor=processor,
             jsonl_path=args.pico_jsonl,
             output_dir=args.pca_output_dir,
+            save_images=args.pca_save_images,
         )
 
 

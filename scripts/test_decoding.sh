@@ -34,6 +34,7 @@ OUTPUT_JSON=${OUTPUT_JSON:-"$PROJECT_DIR/results/test_decoding_summary.json"}
 USE_CACHE=${USE_CACHE:-0}
 PCA_STEERING_MODE=${PCA_STEERING_MODE:-"both"}
 CATEGORY_FRACTION=${CATEGORY_FRACTION:-0.2}
+PCA_SAVE_IMAGES=${PCA_SAVE_IMAGES:-0}
 
 # Toggle strategies (1 = enabled, 0 = disabled)
 RUN_GREEDY=${RUN_GREEDY:-1}
@@ -65,6 +66,7 @@ CMD=(python "$PROJECT_DIR/test_decoding.py"
 )
 
 [[ "$USE_CACHE" == "1" ]] && CMD+=(--use-cache)
+[[ "$PCA_SAVE_IMAGES" == "1" ]] && CMD+=(--pca-save-images)
 
 [[ "$RUN_GREEDY" == "1" ]] && CMD+=(--run-greedy)
 [[ "$RUN_NOISE_CONTRASTIVE" == "1" ]] && CMD+=(--run-noise-contrastive)
@@ -88,6 +90,7 @@ CMD=(python "$PROJECT_DIR/test_decoding.py"
   echo "  Run PCA text:      $RUN_PCA_TEXT"
   echo "  Run PCA image:     $RUN_PCA_IMAGE"
   echo "  Run PCA steering:  $RUN_PCA_STEERING (mode=$PCA_STEERING_MODE)"
+  echo "  PCA save images:   $PCA_SAVE_IMAGES"
   echo "  Output JSON:       $OUTPUT_JSON"
   echo ""
 } | tee "$LOG_FILE"

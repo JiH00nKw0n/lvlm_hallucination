@@ -38,6 +38,8 @@ class NoiseContrastiveDecoder(DecodingStrategy):
 
         eos_token_id = tokenizer.eos_token_id or tokenizer.pad_token_id
         generated_tokens = []
+        clean_past = None
+        noisy_past = None
 
         for _ in range(max_new_tokens):
             clean_kwargs = {
