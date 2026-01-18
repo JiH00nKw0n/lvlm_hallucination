@@ -10,6 +10,10 @@ import os
 import random
 import math
 from typing import Dict, List, Tuple, Optional
+import requests
+import asyncio
+import aiohttp
+from tqdm.asyncio import tqdm_asyncio
 
 import numpy as np
 import torch
@@ -127,7 +131,7 @@ def evaluate_mme(
 
     total_samples = len(dataset)
 
-    # build category-wise indices
+    # build category-wise indices (preserve order)
     cat_to_indices: Dict[str, List[int]] = {}
     for idx in range(total_samples):
         cat = dataset[idx]["category"]
@@ -153,6 +157,7 @@ def evaluate_mme(
 
     noise_generator = VibrantHueNoise()
     correct_counts: Dict[str, Dict[str, int]] = {}
+    seen_counts: Dict[str, Dict[str, int]] = {}
 
     strategy_names = [s.name for s in strategies]
     print(
@@ -160,8 +165,67 @@ def evaluate_mme(
         f"category_fraction={category_fraction}"
     )
 
+    summary_config = {
+        "split": split,
+        "max_samples": max_samples,
+        "max_new_tokens": max_new_tokens,
+        "noise_scale": noise_scale,
+        "question_suffix": question_suffix,
+    }
+
+    def build_summary() -> Dict:
+        summary = {
+            "config": summary_config,
+            "totals_per_category": totals_per_cat,
+            "strategies": {},
+            "total_seen": total_seen,
+        }
+        for strat in strategies:
+            cat_counts = correct_counts.get(strat.name, {})
+            cat_seen = seen_counts.get(strat.name, {})
+            per_cat = {}
+            total_correct = 0
+            total_seen_so_far = 0
+            for cat, total_cat in totals_per_cat.items():
+                seen = cat_seen.get(cat, 0)
+                correct = cat_counts.get(cat, 0)
+                acc = correct / seen if seen else 0.0
+                per_cat[cat] = {
+                    "correct": correct,
+                    "seen": seen,
+                    "total": total_cat,
+                    "accuracy": acc,
+                }
+                total_correct += correct
+                total_seen_so_far += seen
+            overall_acc = total_correct / total_seen_so_far if total_seen_so_far else 0.0
+            summary["strategies"][strat.name] = {
+                "overall": {
+                    "correct": total_correct,
+                    "seen": total_seen_so_far,
+                    "total": total_seen,
+                    "accuracy": overall_acc,
+                },
+                "per_category": per_cat,
+            }
+        return summary
+
+    def write_summary() -> None:
+        if not output_json:
+            return
+        out_dir = os.path.dirname(output_json)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        summary = build_summary()
+        with open(output_json, "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+
     for strat in strategies:
+        if isinstance(strat, PcaSteeringDecoder) and not os.path.exists(strat.pca_path):
+            print(f"[MME] Skipping {strat.name}: PCA file not found -> {strat.pca_path}")
+            continue
         strat_counts: Dict[str, int] = {}
+        strat_seen: Dict[str, int] = {}
         pbar = tqdm(range(total_seen), desc=f"MME [{strat.name}]")
         for idx in pbar:
             sample = samples[idx]
@@ -196,49 +260,39 @@ def evaluate_mme(
             pred = normalize_yes_no(result.text)
             correct = int(pred == answer)
             strat_counts[category] = strat_counts.get(category, 0) + correct
+            strat_seen[category] = strat_seen.get(category, 0) + 1
+
+            # Persist partial progress so long runs keep intermediate results.
+            correct_counts[strat.name] = strat_counts
+            seen_counts[strat.name] = strat_seen
+            write_summary()
 
         correct_counts[strat.name] = strat_counts
+        seen_counts[strat.name] = strat_seen
 
-    summary = {
-        "config": {
-            "split": split,
-            "max_samples": max_samples,
-            "max_new_tokens": max_new_tokens,
-            "noise_scale": noise_scale,
-            "question_suffix": question_suffix,
-        },
-        "totals_per_category": totals_per_cat,
-        "strategies": {},
-        "total_seen": total_seen,
-    }
+    summary = build_summary()
 
     print("\n=== MME results ===")
     for strat in strategies:
         print(f"\nStrategy: {strat.name}")
-        cat_counts = correct_counts.get(strat.name, {})
-        total_correct = 0
-        total_seen = 0
-        per_cat = {}
+        strat_summary = summary["strategies"].get(strat.name, {})
+        per_cat = strat_summary.get("per_category", {})
+        overall_stats = strat_summary.get("overall", {})
         for cat, total_cat in totals_per_cat.items():
-            c = cat_counts.get(cat, 0)
-            acc = c / total_cat if total_cat else 0.0
-            total_correct += c
-            total_seen += total_cat
-            print(f"  {cat:20s} acc={acc:.3f} ({c}/{total_cat})")
-            per_cat[cat] = {"correct": c, "total": total_cat, "accuracy": acc}
-        overall = total_correct / total_seen if total_seen else 0.0
-        print(f"  Overall acc={overall:.3f} ({total_correct}/{total_seen})")
-        summary["strategies"][strat.name] = {
-            "overall": {"correct": total_correct, "total": total_seen, "accuracy": overall},
-            "per_category": per_cat,
-        }
+            cat_stats = per_cat.get(cat, {})
+            c = cat_stats.get("correct", 0)
+            seen = cat_stats.get("seen", 0)
+            acc = cat_stats.get("accuracy", 0.0)
+            suffix = f" of {total_cat} total" if seen != total_cat else ""
+            print(f"  {cat:20s} acc={acc:.3f} ({c}/{seen}{suffix})")
+        overall_acc = overall_stats.get("accuracy", 0.0)
+        overall_seen = overall_stats.get("seen", 0)
+        overall_correct = overall_stats.get("correct", 0)
+        suffix = f" of {total_seen} planned" if overall_seen != total_seen else ""
+        print(f"  Overall acc={overall_acc:.3f} ({overall_correct}/{overall_seen}{suffix})")
 
     if output_json:
-        out_dir = os.path.dirname(output_json)
-        if out_dir:
-            os.makedirs(out_dir, exist_ok=True)
-        with open(output_json, "w", encoding="utf-8") as f:
-            json.dump(summary, f, ensure_ascii=False, indent=2)
+        write_summary()
         print(f"\nSaved summary to {output_json}")
 
 
@@ -259,10 +313,12 @@ def compute_text_hidden_means(
     model,
     tokenizer,
     texts: List[str],
-    batch_size: int = 2,
-) -> List[List[torch.Tensor]]:
+    batch_size: int = 1,
+) -> Tuple[List[List[torch.Tensor]], List[str], int]:
     device = next(model.parameters()).device
     all_means: List[List[torch.Tensor]] = []
+    valid_texts: List[str] = []
+    skipped_nonfinite = 0
     for start in tqdm(range(0, len(texts), batch_size), desc="Encoding text", leave=False):
         batch = texts[start : start + batch_size]
         tokenized = tokenizer(
@@ -270,6 +326,7 @@ def compute_text_hidden_means(
             return_tensors="pt",
             padding=True,
             truncation=True,
+            max_length=2048,
         )
         tokenized = {k: v.to(device) for k, v in tokenized.items()}
         attention = tokenized["attention_mask"].unsqueeze(-1)
@@ -285,32 +342,56 @@ def compute_text_hidden_means(
             layer_means: List[torch.Tensor] = []
             attn_mask = attention[b_idx]
             denom = attn_mask.sum(dim=0, keepdim=True).clamp(min=1)
+            bad_sample = False
             for layer_hidden in hidden_states:
-                masked = layer_hidden[b_idx] * attn_mask
-                mean_vec = masked.sum(dim=0) / denom
+                masked = layer_hidden[b_idx].float() * attn_mask
+                mean_vec = masked.sum(dim=0) / denom.squeeze()
+                mean_vec = mean_vec.squeeze()
+                if not torch.isfinite(mean_vec).all():
+                    bad_sample = True
+                    break
                 layer_means.append(mean_vec.detach().cpu())
+            if bad_sample:
+                skipped_nonfinite += 1
+                continue
             all_means.append(layer_means)
-    return all_means
+            valid_texts.append(batch[b_idx])
+    return all_means, valid_texts, skipped_nonfinite
 
 
 def run_pca(matrix: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     matrix = matrix.float()
+    # Drop non-finite rows defensively
+    mask = torch.isfinite(matrix).all(dim=1)
+    if mask.sum() == 0:
+        return torch.empty(0, matrix.shape[1]), torch.zeros(matrix.shape[1], dtype=matrix.dtype)
+    matrix = matrix[mask]
     mean = matrix.mean(dim=0, keepdim=True)
     centered = matrix - mean
     q = min(centered.shape[0], centered.shape[1])
+    if q == 0:
+        return torch.empty(0, matrix.shape[1]), mean.squeeze(0)
     _, _, v = torch.pca_lowrank(centered, q=q)
     components = v.T
     return components, mean.squeeze(0)
 
 
-def pca_on_pico_text(model, tokenizer, jsonl_path: str, output_dir: str, batch_size: int = 2) -> None:
+def pca_on_pico_text(
+    model, tokenizer, jsonl_path: str, output_dir: str, batch_size: int = 2, sample_fraction: float = 1.0
+) -> None:
     try:
         entries = load_pico_entries(jsonl_path)
     except FileNotFoundError as e:
         print(f"[PCA text] {e}")
         return
     print(f"[PCA text] Loaded {len(entries)} entries from {jsonl_path}")
+    # subsample entries if requested (preserve order)
+    if sample_fraction < 1.0:
+        keep = max(1, int(len(entries) * sample_fraction))
+        entries = entries[:keep]
+        print(f"[PCA text] Subsampled to {len(entries)} entries (fraction={sample_fraction})")
     print("[PCA text] Encoding instructions...")
+
     instructions: List[str] = []
     for entry in entries:
         prompts = entry.get("metadata_edit_turn_prompts") or []
@@ -319,28 +400,54 @@ def pca_on_pico_text(model, tokenizer, jsonl_path: str, output_dir: str, batch_s
     if not instructions:
         print("No instructions found for PCA text analysis.")
         return
-
-    print(f"[PCA text] Total instructions: {len(instructions)}")
-    means = compute_text_hidden_means(model, tokenizer, instructions, batch_size=batch_size)
+    instructions = list(set(instructions))
+    print(f"[PCA text] Total instructions collected: {len(instructions)}")
+    means, valid_instructions, skipped_nf = compute_text_hidden_means(
+        model, tokenizer, instructions, batch_size=batch_size
+    )
+    print(f"[PCA text] Encoded instructions (finite): {len(means)} | skipped non-finite: {skipped_nf}")
+    if not means:
+        print("[PCA text] No valid instructions to encode; aborting text PCA.")
+        return
     num_layers = len(means[0])
     os.makedirs(output_dir, exist_ok=True)
     all_components = {}
     all_means = {}
     nearest: Dict[int, List[Dict]] = {}
-    for layer_idx in range(num_layers):
+    empty_layers: Dict[int, int] = {}
+    for layer_idx in tqdm(range(num_layers), desc="PCA text layers", leave=False):
         layer_stack = torch.stack([m[layer_idx] for m in means], dim=0)
+        # Drop rows with any non-finite values
+        mask = torch.isfinite(layer_stack).all(dim=1)
+        if mask.sum() != layer_stack.shape[0]:
+            print(
+                f"[PCA text] Layer {layer_idx}: removed {layer_stack.shape[0]-mask.sum().item()} non-finite samples "
+                f"(kept {mask.sum().item()})"
+            )
+        layer_stack = layer_stack[mask]
         comps, mean_vec = run_pca(layer_stack)
         all_components[layer_idx] = comps
         all_means[layer_idx] = mean_vec
         # top-5 PCs, nearest 5 by absolute projection
+        if comps.numel() == 0 or layer_stack.shape[0] == 0:
+            empty_layers[layer_idx] = layer_stack.shape[0]
+            continue
         centered = layer_stack - mean_vec
         coords = torch.matmul(centered, comps.T)
         top_pc = min(5, comps.shape[0])
         layer_near: List[Dict] = []
         for pc_idx in range(top_pc):
             scores = coords[:, pc_idx]
-            topk = min(5, scores.shape[0])
-            vals, idxs = torch.topk(scores.abs(), k=topk)
+            n = scores.numel()
+            if n <= 0:
+                print(f"[PCA text] Layer {layer_idx} PC {pc_idx} has 0 samples; skipping.")
+                continue
+            topk = min(5, n)
+            try:
+                vals, idxs = torch.topk(scores.abs(), k=topk)
+            except RuntimeError as e:
+                print(f"[PCA text] topk failed at layer {layer_idx}, pc {pc_idx}, n={n}: {e}")
+                continue
             for rank, (v, ix) in enumerate(zip(vals.tolist(), idxs.tolist())):
                 layer_near.append(
                     {
@@ -349,13 +456,15 @@ def pca_on_pico_text(model, tokenizer, jsonl_path: str, output_dir: str, batch_s
                         "rank": rank,
                         "score": v,
                         "instruction_index": ix,
-                        "instruction": instructions[ix],
+                        "instruction": valid_instructions[ix],
                     }
                 )
         nearest[layer_idx] = layer_near
     torch.save({"components": all_components, "means": all_means}, os.path.join(output_dir, "text_pca.pt"))
     with open(os.path.join(output_dir, "text_pca_nearest.json"), "w", encoding="utf-8") as f:
         json.dump(nearest, f, ensure_ascii=False, indent=2)
+    if empty_layers:
+        print(f"[PCA text] Layers with 0 valid instructions: {sorted(empty_layers.keys())}")
     print(f"Saved text PCA components to {os.path.join(output_dir, 'text_pca.pt')}")
 
 
@@ -371,13 +480,76 @@ def project_single_layer(hs: torch.Tensor, projector, slice_idx: int, hidden_siz
     return x
 
 
-def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str, save_images: bool = False) -> None:
+def download_if_needed(path: str, url_candidates: List[str]) -> Optional[str]:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    for url in url_candidates:
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                with open(path, "wb") as f:
+                    f.write(resp.content)
+                return path
+        except Exception:
+            continue
+    return None
+
+
+async def _download_file(session, sem, path: str, urls: List[str]) -> bool:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    async with sem:
+        for url in urls:
+            try:
+                async with session.get(url, timeout=15) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.read()
+                    with open(path, "wb") as f:
+                        f.write(data)
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+async def download_many(missing: Dict[str, List[str]], max_concurrency: int = 64) -> List[str]:
+    if not missing:
+        return []
+    sem = asyncio.Semaphore(max_concurrency)
+    downloaded = []
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        keys = []
+        for path, urls in missing.items():
+            if os.path.exists(path):
+                continue
+            tasks.append(_download_file(session, sem, path, urls))
+            keys.append(path)
+        results = await tqdm_asyncio.gather(*tasks, desc="Downloading missing images")
+        for path, ok in zip(keys, results):
+            if ok:
+                downloaded.append(path)
+    return downloaded
+
+
+def pca_on_pico_images(
+    model,
+    processor,
+    jsonl_path: str,
+    output_dir: str,
+    save_images: bool = False,
+    sample_fraction: float = 1.0,
+    image_base_url: str = "",
+) -> None:
     try:
         entries = load_pico_entries(jsonl_path)
     except FileNotFoundError as e:
         print(f"[PCA image] {e}")
         return
     print(f"[PCA image] Loaded {len(entries)} entries from {jsonl_path}")
+    if sample_fraction < 1.0:
+        keep = max(1, int(len(entries) * sample_fraction))
+        entries = entries[:keep]
+        print(f"[PCA image] Subsampled to {len(entries)} entries (fraction={sample_fraction})")
     print("[PCA image] Gathering image feature differences...")
     device = next(model.parameters()).device
     vision_cfg = model.config.vision_config
@@ -394,7 +566,52 @@ def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str, save_
     if save_images:
         os.makedirs(saved_dir, exist_ok=True)
 
+    # prepare download list
+    missing: Dict[str, List[str]] = {}
+
     for entry in tqdm(entries, desc="Pico image PCA"):
+        local_input = entry.get("local_input_image")
+        files = entry.get("files", [])
+        final_path = None
+        for f in files:
+            if f.get("id") == "final_image":
+                final_path = f.get("url")
+                break
+        if not local_input or not final_path:
+            continue
+        # prepare download candidates if missing
+        if not os.path.exists(local_input):
+            orig_url = None
+            for f in files:
+                if f.get("id") == "original_input_image":
+                    orig_url = f.get("url")
+                    break
+            candidates = []
+            if orig_url:
+                candidates.append(orig_url)
+            if image_base_url and local_input:
+                candidates.append(image_base_url.rstrip("/") + "/" + local_input)
+            if candidates:
+                missing[local_input] = candidates
+        if not os.path.exists(final_path):
+            candidates = []
+            if image_base_url and final_path.startswith("images/"):
+                candidates.append(image_base_url.rstrip("/") + "/" + final_path)
+            for f in files:
+                if f.get("id") == "final_image":
+                    url = f.get("url")
+                    if url:
+                        candidates.append(url)
+            if candidates:
+                missing[final_path] = candidates
+
+    # download missing files concurrently
+    downloaded = asyncio.run(download_many(missing))
+    if downloaded:
+        print(f"[PCA image] Downloaded {len(downloaded)} missing files.")
+
+    # restart loop now that downloads attempted
+    for entry in tqdm(entries, desc="Pico image PCA (with downloads)"):
         local_input = entry.get("local_input_image")
         files = entry.get("files", [])
         final_path = None
@@ -406,7 +623,6 @@ def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str, save_
             continue
         if not (os.path.exists(local_input) and os.path.exists(final_path)):
             continue
-
         try:
             orig_img = Image.open(local_input).convert("RGB")
             final_img = Image.open(final_path).convert("RGB")
@@ -466,14 +682,19 @@ def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str, save_
     os.makedirs(output_dir, exist_ok=True)
     comps_dict: Dict[int, torch.Tensor] = {}
     means_dict: Dict[int, torch.Tensor] = {}
+    empty_layers: Dict[int, int] = {}
     nearest: Dict[int, List[Dict]] = {}
     for layer_idx, vecs in diffs_per_layer.items():
         if not vecs:
+            print(f"[PCA image] Layer {layer_idx} has 0 valid pairs; skipping.")
+            empty_layers[layer_idx] = 0
             continue
         diff_tensor = torch.stack(vecs, dim=0)
         components, mean_vec = run_pca(diff_tensor)
         comps_dict[layer_idx] = components
         means_dict[layer_idx] = mean_vec
+        if components.numel() == 0:
+            continue
         centered = diff_tensor - mean_vec
         coords = torch.matmul(centered, components.T)
         top_pc = min(5, components.shape[0])
@@ -481,6 +702,8 @@ def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str, save_
         for pc_idx in range(top_pc):
             scores = coords[:, pc_idx]
             topk = min(5, scores.shape[0])
+            if topk == 0:
+                continue
             vals, idxs = torch.topk(scores.abs(), k=topk)
             for rank, (v, ix) in enumerate(zip(vals.tolist(), idxs.tolist())):
                 meta = metas_per_layer[layer_idx][ix]
@@ -505,6 +728,8 @@ def pca_on_pico_images(model, processor, jsonl_path: str, output_dir: str, save_
     )
     with open(os.path.join(output_dir, "image_pca_nearest.json"), "w", encoding="utf-8") as f:
         json.dump(nearest, f, ensure_ascii=False, indent=2)
+    if empty_layers:
+        print(f"[PCA image] Layers with 0 valid pairs skipped: {sorted(empty_layers.keys())}")
     used_counts = {k: len(v) for k, v in diffs_per_layer.items() if v}
     print(f"[PCA image] Layer-wise pairs used: {used_counts} | saved to {os.path.join(output_dir, 'image_pca.pt')}")
 
@@ -569,6 +794,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="When running image PCA, save nearest-pair images into pca-output-dir/nearest_images.",
     )
+    parser.add_argument(
+        "--pico-image-base-url",
+        type=str,
+        default="",
+        help="Base URL prefix to download images if local files are missing (e.g., https://ml-site.cdn-apple.com/datasets/pico-banana-300k/nb).",
+    )
+    parser.add_argument(
+        "--pca-sample-fraction",
+        type=float,
+        default=1.0,
+        help="Fraction of entries to use when computing PCA (0-1].",
+    )
     return parser.parse_args()
 
 
@@ -577,11 +814,51 @@ def main() -> None:
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     model, processor = load_model_and_processor(args.model_name)
     tokenizer = processor.tokenizer
     device = next(model.parameters()).device
     print(f"Loaded model on {device}")
+
+    # Determine steering modes list up front
+    steering_modes: List[str] = []
+    modes_raw = [m.strip() for m in args.pca_steering_mode.split(",") if m.strip()]
+    for m in modes_raw:
+        if m.lower() == "both":
+            steering_modes.extend(["text", "image"])
+        else:
+            steering_modes.append(m.lower())
+    if not steering_modes:
+        steering_modes = ["text"]
+
+    # Auto-run PCA if missing and steering requested
+    if args.run_pca_steering:
+        if "text" in steering_modes and not os.path.exists(args.pca_components_path):
+            print(f"[PCA text] Not found at {args.pca_components_path}, computing...")
+            pca_on_pico_text(
+                model=model,
+                tokenizer=tokenizer,
+                jsonl_path=args.pico_jsonl,
+                output_dir=args.pca_output_dir,
+                batch_size=args.text_batch_size,
+                sample_fraction=args.pca_sample_fraction,
+            )
+        if "image" in steering_modes:
+            image_pca_path = os.path.join(args.pca_output_dir, "image_pca.pt")
+            if not os.path.exists(image_pca_path):
+                print(f"[PCA image] Not found at {image_pca_path}, computing...")
+                pca_on_pico_images(
+                    model=model,
+                    processor=processor,
+                    jsonl_path=args.pico_jsonl,
+                    output_dir=args.pca_output_dir,
+                    save_images=args.pca_save_images,
+                    sample_fraction=args.pca_sample_fraction,
+                    image_base_url=args.pico_image_base_url,
+                )
 
     strategies = []
     if args.run_greedy:
@@ -593,14 +870,7 @@ def main() -> None:
         for deg in degrees:
             strategies.append(InstructionRotationDecoder(degrees=deg, contrast_scale=1.0))
     if args.run_pca_steering:
-        modes_raw = [m.strip() for m in args.pca_steering_mode.split(",") if m.strip()]
-        modes = []
-        for m in modes_raw:
-            if m.lower() == "both":
-                modes.extend(["text", "image"])
-            else:
-                modes.append(m.lower())
-        for mode in modes:
+        for mode in steering_modes:
             if mode == "text":
                 pca_path = args.pca_components_path
             elif mode == "image":
@@ -656,6 +926,8 @@ def main() -> None:
             jsonl_path=args.pico_jsonl,
             output_dir=args.pca_output_dir,
             save_images=args.pca_save_images,
+            sample_fraction=args.pca_sample_fraction,
+            image_base_url=args.pico_image_base_url,
         )
 
 

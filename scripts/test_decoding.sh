@@ -29,17 +29,19 @@ MODEL_NAME=${MODEL_NAME:-"llava-hf/llava-1.5-7b-hf"}
 QUESTION_SUFFIX=${QUESTION_SUFFIX:-"Please answer with Yes or No."}
 PICO_JSONL=${PICO_JSONL:-"$PROJECT_DIR/pico_banana/multi_turn_with_local_source_image_path.jsonl"}
 PCA_OUTPUT_DIR=${PCA_OUTPUT_DIR:-"$PROJECT_DIR/results/pico_pca"}
-TEXT_BATCH_SIZE=${TEXT_BATCH_SIZE:-2}
+TEXT_BATCH_SIZE=${TEXT_BATCH_SIZE:-1}
 OUTPUT_JSON=${OUTPUT_JSON:-"$PROJECT_DIR/results/test_decoding_summary.json"}
 USE_CACHE=${USE_CACHE:-0}
 PCA_STEERING_MODE=${PCA_STEERING_MODE:-"both"}
 CATEGORY_FRACTION=${CATEGORY_FRACTION:-0.2}
-PCA_SAVE_IMAGES=${PCA_SAVE_IMAGES:-0}
+PCA_SAVE_IMAGES=${PCA_SAVE_IMAGES:-1}
+PCA_SAMPLE_FRACTION=${PCA_SAMPLE_FRACTION:-0.2}
+PICO_IMAGE_BASE_URL=${PICO_IMAGE_BASE_URL:-""}
 
 # Toggle strategies (1 = enabled, 0 = disabled)
 RUN_GREEDY=${RUN_GREEDY:-1}
 RUN_NOISE_CONTRASTIVE=${RUN_NOISE_CONTRASTIVE:-1}
-RUN_SIMPLE_ROTATION=${RUN_SIMPLE_ROTATION:-0}
+RUN_SIMPLE_ROTATION=${RUN_SIMPLE_ROTATION:-1}
 RUN_PCA_TEXT=${RUN_PCA_TEXT:-1}
 RUN_PCA_IMAGE=${RUN_PCA_IMAGE:-1}
 RUN_PCA_STEERING=${RUN_PCA_STEERING:-1}
@@ -63,6 +65,8 @@ CMD=(python "$PROJECT_DIR/test_decoding.py"
   --text-batch-size "$TEXT_BATCH_SIZE"
   --output-json "$OUTPUT_JSON"
   --category-fraction "$CATEGORY_FRACTION"
+  --pca-sample-fraction "$PCA_SAMPLE_FRACTION"
+  --pico-image-base-url "$PICO_IMAGE_BASE_URL"
 )
 
 [[ "$USE_CACHE" == "1" ]] && CMD+=(--use-cache)
@@ -91,6 +95,7 @@ CMD=(python "$PROJECT_DIR/test_decoding.py"
   echo "  Run PCA image:     $RUN_PCA_IMAGE"
   echo "  Run PCA steering:  $RUN_PCA_STEERING (mode=$PCA_STEERING_MODE)"
   echo "  PCA save images:   $PCA_SAVE_IMAGES"
+  echo "  PCA sample frac:   $PCA_SAMPLE_FRACTION"
   echo "  Output JSON:       $OUTPUT_JSON"
   echo ""
 } | tee "$LOG_FILE"

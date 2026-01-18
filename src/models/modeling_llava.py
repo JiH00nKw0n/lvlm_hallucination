@@ -19,17 +19,17 @@ from typing import Optional, Union
 
 import torch
 from torch import nn
-from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache
-from transformers.generation import GenerationMixin
-from transformers.modeling_outputs import BaseModelOutputWithPast, ModelOutput
-from transformers.modeling_utils import PreTrainedModel
-from transformers.models.auto import AutoModel
-from transformers.models.llava.configuration_llava import LlavaConfig
-from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 
-from src.common import registry
+from ...activations import ACT2FN
+from ...cache_utils import Cache
+from ...generation import GenerationMixin
+from ...modeling_outputs import BaseModelOutputWithPast, ModelOutput
+from ...modeling_utils import PreTrainedModel
+from ...processing_utils import Unpack
+from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
+from ..auto import AutoModel
+from .configuration_llava import LlavaConfig
+
 
 logger = logging.get_logger(__name__)
 
@@ -108,7 +108,7 @@ class LlavaMultiModalProjector(nn.Module):
 
 
 @auto_docstring
-class CustomLlavaPreTrainedModel(PreTrainedModel):
+class LlavaPreTrainedModel(PreTrainedModel):
     config: LlavaConfig
     base_model_prefix = ""
     supports_gradient_checkpointing = True
@@ -127,7 +127,7 @@ class CustomLlavaPreTrainedModel(PreTrainedModel):
     The Llava model which consists of a vision backbone and a language model, without a language modeling head.
     """
 )
-class CustomLlavaModel(CustomLlavaPreTrainedModel):
+class LlavaModel(LlavaPreTrainedModel):
     _checkpoint_conversion_mapping = {"language_model.model": "language_model"}
 
     def __init__(self, config: LlavaConfig):
@@ -151,11 +151,11 @@ class CustomLlavaModel(CustomLlavaPreTrainedModel):
         return self.language_model
 
     def get_image_features(
-            self,
-            pixel_values: torch.FloatTensor,
-            vision_feature_layer: Optional[Union[int, list[int]]] = None,
-            vision_feature_select_strategy: Optional[str] = None,
-            **kwargs,
+        self,
+        pixel_values: torch.FloatTensor,
+        vision_feature_layer: Optional[Union[int, list[int]]] = None,
+        vision_feature_select_strategy: Optional[str] = None,
+        **kwargs,
     ):
         """
         Obtains image last hidden states from the vision tower and apply multimodal projection.
@@ -215,7 +215,7 @@ class CustomLlavaModel(CustomLlavaPreTrainedModel):
         return image_features
 
     def get_placeholder_mask(
-            self, input_ids: torch.LongTensor, inputs_embeds: torch.FloatTensor, image_features: torch.FloatTensor
+        self, input_ids: torch.LongTensor, inputs_embeds: torch.FloatTensor, image_features: torch.FloatTensor
     ):
         """
         Obtains multimodal placeholder mask from `input_ids` or `inputs_embeds`, and checks that the placeholder token count is
@@ -241,18 +241,18 @@ class CustomLlavaModel(CustomLlavaPreTrainedModel):
     @can_return_tuple
     @auto_docstring
     def forward(
-            self,
-            input_ids: Optional[torch.LongTensor] = None,
-            pixel_values: Optional[torch.FloatTensor] = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[Cache] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            vision_feature_layer: Optional[Union[int, list[int]]] = None,
-            vision_feature_select_strategy: Optional[str] = None,
-            cache_position: Optional[torch.LongTensor] = None,
-            image_sizes: Optional[torch.Tensor] = None,
-            **kwargs: Unpack[TransformersKwargs],
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        pixel_values: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        vision_feature_layer: Optional[Union[int, list[int]]] = None,
+        vision_feature_select_strategy: Optional[str] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        image_sizes: Optional[torch.Tensor] = None,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> Union[tuple, LlavaModelOutputWithPast]:
         vision_feature_layer = (
             vision_feature_layer if vision_feature_layer is not None else self.config.vision_feature_layer
@@ -263,7 +263,7 @@ class CustomLlavaModel(CustomLlavaPreTrainedModel):
             else self.config.vision_feature_select_strategy
         )
 
-        if (input_ids is None) == (inputs_embeds is None):
+        if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
         if inputs_embeds is None:
@@ -283,7 +283,6 @@ class CustomLlavaModel(CustomLlavaPreTrainedModel):
             inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
         outputs = self.language_model(
-            input_ids=None,  # We already have inputs_embeds, don't pass input_ids
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
@@ -306,8 +305,7 @@ class CustomLlavaModel(CustomLlavaPreTrainedModel):
     The LLAVA model which consists of a vision backbone and a language model.
     """
 )
-@registry.register_model("CustomLlavaForConditionalGeneration")
-class CustomLlavaForConditionalGeneration(CustomLlavaPreTrainedModel, GenerationMixin):
+class LlavaForConditionalGeneration(LlavaPreTrainedModel, GenerationMixin):
     _checkpoint_conversion_mapping = {
         "^language_model.model": "model.language_model",
         "^vision_tower": "model.vision_tower",
@@ -318,7 +316,7 @@ class CustomLlavaForConditionalGeneration(CustomLlavaPreTrainedModel, Generation
 
     def __init__(self, config: LlavaConfig):
         super().__init__(config)
-        self.model = CustomLlavaModel(config)
+        self.model = LlavaModel(config)
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
         self.post_init()
 
@@ -338,11 +336,11 @@ class CustomLlavaForConditionalGeneration(CustomLlavaPreTrainedModel, Generation
         return self.model.get_decoder()
 
     def get_image_features(
-            self,
-            pixel_values: torch.FloatTensor,
-            vision_feature_layer: Optional[Union[int, list[int]]] = None,
-            vision_feature_select_strategy: Optional[str] = None,
-            **kwargs,
+        self,
+        pixel_values: torch.FloatTensor,
+        vision_feature_layer: Optional[Union[int, list[int]]] = None,
+        vision_feature_select_strategy: Optional[str] = None,
+        **kwargs,
     ):
         return self.model.get_image_features(
             pixel_values=pixel_values,
@@ -367,24 +365,24 @@ class CustomLlavaForConditionalGeneration(CustomLlavaPreTrainedModel, Generation
     @can_return_tuple
     @auto_docstring
     def forward(
-            self,
-            input_ids: Optional[torch.LongTensor] = None,
-            pixel_values: Optional[torch.FloatTensor] = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[Cache] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            vision_feature_layer: Optional[Union[int, list[int]]] = None,
-            vision_feature_select_strategy: Optional[str] = None,
-            labels: Optional[torch.LongTensor] = None,
-            cache_position: Optional[torch.LongTensor] = None,
-            logits_to_keep: Union[int, torch.Tensor] = 0,
-            image_sizes: Optional[torch.Tensor] = None,
-            **kwargs: Unpack[TransformersKwargs],
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        pixel_values: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        vision_feature_layer: Optional[Union[int, list[int]]] = None,
+        vision_feature_select_strategy: Optional[str] = None,
+        labels: Optional[torch.LongTensor] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        logits_to_keep: Union[int, torch.Tensor] = 0,
+        image_sizes: Optional[torch.Tensor] = None,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> Union[tuple, LlavaCausalLMOutputWithPast]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Labels for computing the masked language modeling loss. Indices should either be in `[0, transformers.,
+            Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
             config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
             (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
 
@@ -453,15 +451,15 @@ class CustomLlavaForConditionalGeneration(CustomLlavaPreTrainedModel, Generation
         )
 
     def prepare_inputs_for_generation(
-            self,
-            input_ids,
-            past_key_values=None,
-            inputs_embeds=None,
-            pixel_values=None,
-            attention_mask=None,
-            cache_position=None,
-            logits_to_keep=None,
-            **kwargs,
+        self,
+        input_ids,
+        past_key_values=None,
+        inputs_embeds=None,
+        pixel_values=None,
+        attention_mask=None,
+        cache_position=None,
+        logits_to_keep=None,
+        **kwargs,
     ):
         # Overwritten -- in specific circumstances we don't want to forward image inputs to the model
 
@@ -483,4 +481,4 @@ class CustomLlavaForConditionalGeneration(CustomLlavaPreTrainedModel, Generation
         return model_inputs
 
 
-__all__ = ["CustomLlavaForConditionalGeneration", "CustomLlavaPreTrainedModel", "CustomLlavaModel"]
+__all__ = ["LlavaForConditionalGeneration", "LlavaPreTrainedModel", "LlavaModel"]
