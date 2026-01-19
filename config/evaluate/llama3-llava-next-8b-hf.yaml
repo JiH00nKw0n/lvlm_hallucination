@@ -1,0 +1,88 @@
+# Evaluation configuration for LLaVA-1.5-7B-HF
+# Evaluates on POPE and MME benchmarks
+
+run:
+  task: MultiDatasetEvaluateTaskWithPretrainedModel
+  seed: 2025
+
+model:
+  model_cls: LlavaNextForConditionalGeneration
+  config:
+    pretrained_model_name_or_path: llava-hf/llama3-llava-next-8b-hf
+    dtype: float16
+    # Note: device will be set by Accelerate PartialState in evaluator
+
+processor:
+  config:
+    pretrained_model_name_or_path: llava-hf/llama3-llava-next-8b-hf
+    use_fast: true
+
+dataset:
+  - POPEDatasetBuilder:
+      split: test
+  - MMEDatasetBuilder:
+      split: test
+
+# Run all mitigators for each evaluator
+mitigators:
+  - name: AvisCMitigator
+    model_type: llava-hf/llama3-llava-next-8b-hf
+    config:
+      alpha: 1.0
+      beta: 0.1
+      layer_gamma: 0.5
+      lamb: 100.0
+      masking_scheme: zeros
+  - name: DecoMitigator
+    model_type: llava-hf/llama3-llava-next-8b-hf
+    config:
+      alpha: 0.6
+      threshold_top_k: 20
+      threshold_top_p: 0.9
+  - name: FarSightMitigator
+    model_type: llava-hf/llama3-llava-next-8b-hf
+    config:
+      decay_factor: 0.8
+      use_alibi: true
+  - name: MiddleLayersMitigator
+    model_type: llava-hf/llama3-llava-next-8b-hf
+    config:
+      alpha: 0.5
+      aggregation: mean
+  - name: OPERAMitigator
+    model_type: llava-hf/llama3-llava-next-8b-hf
+    config:
+      num_beams: 5
+      scale_factor: 50.0
+      threshold: 15
+      num_attn_candidates: 5
+      penalty_weights: 1.0
+      window_size: 512
+  - name: VCDMitigator
+    model_type: llava-hf/llama3-llava-next-8b-hf
+    config:
+      alpha: 0.5
+      beta: 0.1
+      noise_step: 500
+
+evaluator:
+  - POPEEvaluator:
+      collator:
+        collator_cls: DummyImageCollator
+        config: { }
+      batch_size: 32
+      output_dir: ./results/llama3-llava-next-8b-hf/pope
+      generation_config:
+        max_new_tokens: 10
+        temperature: 0.0
+        do_sample: false
+  - MMEEvaluator:
+      collator:
+        collator_cls: DummyImageCollator
+        config: { }
+      batch_size: 32
+      output_dir: ./results/llama3-llava-next-8b-hf/mme
+      generation_config:
+        max_new_tokens: 10
+        temperature: 0.0
+        do_sample: false

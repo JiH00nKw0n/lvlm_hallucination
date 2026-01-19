@@ -1,4 +1,6 @@
+import copy
 import logging
+import os
 from typing import Optional, Dict, Type, List
 
 from datasets import Dataset, DatasetDict
@@ -131,6 +133,8 @@ class MultiDatasetEvaluateTask(BaseEvaluateTask):
         container = EvaluatorContainer()
         model = self.build_model()
         processor = self.build_processor()
+        mitigators_config = getattr(self.config, "mitigators", None) or []
+        use_mitigators = len(mitigators_config) > 0
 
         # Move model to distributed device (PartialState is singleton, safe to create here)
         distributed_state = PartialState()
@@ -145,7 +149,8 @@ class MultiDatasetEvaluateTask(BaseEvaluateTask):
             evaluator_cls = registry.get_evaluator_class(evaluator_cls_name)
             assert evaluator_cls is not None, f"Evaluator {evaluator_cls_name} not properly registered."
 
-            collator_config = OmegaConf.create(config.pop('collator'))
+            base_config = copy.deepcopy(config)
+            collator_config = OmegaConf.create(base_config.pop('collator'))
             collator_cls = registry.get_collator_class(collator_config.collator_cls)
             assert collator_cls is not None, f"Collator {collator_cls} not properly registered."
 
@@ -162,14 +167,33 @@ class MultiDatasetEvaluateTask(BaseEvaluateTask):
                     f"or `datasets.DatasetDict` but got {type(evaluate_dataset)} instead."
                 )
 
-            container.add(
-                evaluator=evaluator_cls(
-                    model=model,
-                    evaluate_dataset=evaluate_dataset,
-                    data_collator=collator,
-                    **config
+            if use_mitigators:
+                base_output_dir = base_config.get("output_dir")
+                for mitigator_cfg in mitigators_config:
+                    eval_config = copy.deepcopy(base_config)
+                    eval_config["decoding_config"] = mitigator_cfg
+                    if base_output_dir:
+                        mitigator_name = mitigator_cfg.get("name")
+                        if mitigator_name and not base_output_dir.endswith(mitigator_name):
+                            eval_config["output_dir"] = os.path.join(base_output_dir, mitigator_name)
+
+                    container.add(
+                        evaluator=evaluator_cls(
+                            model=model,
+                            evaluate_dataset=evaluate_dataset,
+                            data_collator=collator,
+                            **eval_config
+                        )
+                    )
+            else:
+                container.add(
+                    evaluator=evaluator_cls(
+                        model=model,
+                        evaluate_dataset=evaluate_dataset,
+                        data_collator=collator,
+                        **base_config
+                    )
                 )
-            )
 
         return container
 

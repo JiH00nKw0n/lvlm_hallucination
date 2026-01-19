@@ -30,7 +30,7 @@ Usage:
         output = mitigator.generate(input_ids, pixel_values=pixel_values)
 
     # Via registry
-    mitigator = get_mitigator('vcd', model, model_type="llava", alpha=1.0)
+    mitigator = get_mitigator('VCDMitigator', model, model_type="llava", alpha=1.0)
     with mitigator:
         output = mitigator.generate(input_ids, pixel_values=pixel_values)
 """
@@ -57,20 +57,22 @@ from .farsight import FarSightMitigator
 from .deco import DecoMitigator
 from .opera import OPERAMitigator
 from .octopus import OctopusMitigator, OctopusClassifier
+from src.common.registry import registry
 
 
-# Registry of all mitigators
-MITIGATOR_REGISTRY: Dict[str, Type[BaseMitigator]] = {
-    'vcd': VCDMitigator,
-    'avisc': AvisCMitigator,
-    'vista': VISTAMitigator,
-    'vti': VTIMitigator,
-    'middle_layers': MiddleLayersMitigator,
-    'farsight': FarSightMitigator,
-    'deco': DecoMitigator,
-    'opera': OPERAMitigator,
-    'octopus': OctopusMitigator,
-}
+# Register mitigators in the global registry
+registry.register_mitigator('VCDMitigator')(VCDMitigator)
+registry.register_mitigator('AvisCMitigator')(AvisCMitigator)
+registry.register_mitigator('VISTAMitigator')(VISTAMitigator)
+registry.register_mitigator('VTIMitigator')(VTIMitigator)
+registry.register_mitigator('MiddleLayersMitigator')(MiddleLayersMitigator)
+registry.register_mitigator('FarSightMitigator')(FarSightMitigator)
+registry.register_mitigator('DecoMitigator')(DecoMitigator)
+registry.register_mitigator('OPERAMitigator')(OPERAMitigator)
+registry.register_mitigator('OctopusMitigator')(OctopusMitigator)
+
+# Backward-compatible alias
+MITIGATOR_REGISTRY: Dict[str, Type[BaseMitigator]] = registry.mapping["mitigator_name_mapping"]
 
 
 def get_mitigator(
@@ -93,16 +95,16 @@ def get_mitigator(
         ValueError: If name is not in registry
 
     Example:
-        >>> mitigator = get_mitigator('vcd', model, model_type="llava", alpha=1.0)
+        >>> mitigator = get_mitigator('VCDMitigator', model, model_type="llava", alpha=1.0)
         >>> with mitigator:
         ...     output = mitigator.generate(input_ids, pixel_values=pixel_values)
     """
-    name = name.lower()
-    if name not in MITIGATOR_REGISTRY:
-        available = ', '.join(sorted(MITIGATOR_REGISTRY.keys()))
+    mitigator_cls = registry.get_mitigator_class(name)
+    if mitigator_cls is None:
+        available = ', '.join(registry.list_mitigators())
         raise ValueError(f"Unknown mitigator: {name}. Available: {available}")
 
-    return MITIGATOR_REGISTRY[name](model, **kwargs)
+    return mitigator_cls(model, **kwargs)
 
 
 def list_mitigators() -> Dict[str, str]:
@@ -112,9 +114,10 @@ def list_mitigators() -> Dict[str, str]:
     Returns:
         Dictionary mapping mitigator names to their docstrings
     """
+    mitigators = registry.mapping["mitigator_name_mapping"]
     return {
         name: cls.__doc__.split('\n')[1].strip() if cls.__doc__ else "No description"
-        for name, cls in MITIGATOR_REGISTRY.items()
+        for name, cls in mitigators.items()
     }
 
 
@@ -128,7 +131,7 @@ def register_mitigator(name: str):
             ...
     """
     def decorator(cls: Type[BaseMitigator]):
-        MITIGATOR_REGISTRY[name.lower()] = cls
+        registry.register_mitigator(name)(cls)
         return cls
     return decorator
 

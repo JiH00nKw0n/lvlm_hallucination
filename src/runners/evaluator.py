@@ -95,6 +95,7 @@ class LVLMEvaluator(BaseEvaluator):
             "do_sample": False,
         }
     )
+    decoding_config: Optional[Dict] = None
     decode_fn: Optional["Callable"] = None  # type: ignore
     distributed_state: Optional[PartialState] = None  # type: ignore
 
@@ -172,6 +173,73 @@ class LVLMEvaluator(BaseEvaluator):
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
         return inputs
+
+    def _build_mitigator(self):
+        """
+        Build a decoding mitigator from config, if provided.
+
+        Expected decoding_config format:
+            {
+                "name": "VCDMitigator",
+                "model_type": "llava-hf/llava-1.5-7b-hf",
+                "config": { ... }  # mitigator kwargs
+            }
+        """
+        if not self.decoding_config:
+            return None
+
+        name = self.decoding_config.get("name")
+        if not name:
+            raise ValueError("decoding_config requires 'name'")
+
+        mitigator_cls = registry.get_mitigator_class(name)
+        if mitigator_cls is None:
+            available = ", ".join(registry.list_mitigators())
+            raise ValueError(f"Unknown mitigator: {name}. Available: {available}")
+
+        model_type_raw = self.decoding_config.get("model_type", "llava-hf/llava-1.5-7b-hf")
+        model_type = self._resolve_model_type(model_type_raw)
+        mitigator_kwargs = dict(self.decoding_config.get("config", {}))
+        mitigator_kwargs["model_type"] = model_type
+
+        # Map generation_config to mitigator config defaults when not specified
+        gen_cfg = self.generation_config or {}
+        for key in ("max_new_tokens", "temperature", "top_p", "top_k", "do_sample"):
+            if key not in mitigator_kwargs and key in gen_cfg:
+                mitigator_kwargs[key] = gen_cfg[key]
+
+        return mitigator_cls(self.model, **mitigator_kwargs)
+
+    @staticmethod
+    def _resolve_model_type(model_type: str) -> str:
+        """
+        Resolve internal model_type from a HuggingFace repo id.
+
+        Examples:
+            llava-hf/llava-1.5-7b-hf -> llava
+            llava-hf/llava-next-7b   -> llava_next
+            Qwen/Qwen2-VL-7B-Instruct -> qwen2_vl
+            Qwen/Qwen2.5-VL-7B-Instruct -> qwen2_5_vl
+        """
+        model_type_norm = model_type.lower()
+
+        if "llava-next" in model_type_norm or "llava_next" in model_type_norm:
+            return "llava_next"
+        if "llava" in model_type_norm:
+            return "llava"
+        if "qwen2.5-vl" in model_type_norm or "qwen2_5_vl" in model_type_norm:
+            return "qwen2_5_vl"
+        if "qwen2-vl" in model_type_norm or "qwen2_vl" in model_type_norm:
+            return "qwen2_vl"
+
+        # Allow internal model_type directly
+        if model_type_norm in ("llava", "llava_next", "qwen2_vl", "qwen2_5_vl"):
+            return model_type_norm
+
+        raise ValueError(
+            "Unsupported model_type. Use a HuggingFace repo id such as "
+            "'llava-hf/llava-1.5-7b-hf' or 'Qwen/Qwen2-VL-7B-Instruct'."
+        )
 
     def _decode_outputs(self, output_ids: torch.Tensor, input_ids: torch.Tensor) -> List[str]:
         """
@@ -268,6 +336,7 @@ class LVLMEvaluator(BaseEvaluator):
                 apply_padding=True  # Pad to make lengths equal for gathering
         ) as process_dataset:
             results = []
+            mitigator = self._build_mitigator()
 
             # Create dataloader for batch processing
             dataloader = DataLoader(
@@ -277,25 +346,18 @@ class LVLMEvaluator(BaseEvaluator):
                 collate_fn=default_collate_fn
             )
 
-            for batch in tqdm(
-                    dataloader,
-                    desc=f"Generating answers for {self.dataset_name} (GPU {self.distributed_state.process_index})",
-                    disable=not self.distributed_state.is_main_process
-            ):
-                # Prepare inputs
-                inputs = self._prepare_batch(batch)
+            def run_batch(batch_inputs, batch_samples):
+                if mitigator is None:
+                    output_ids = self.model.generate(
+                        **batch_inputs,
+                        **self.generation_config
+                    )
+                else:
+                    output_ids = mitigator.generate(**batch_inputs)
 
-                # Generate outputs
-                output_ids = self.model.generate(
-                    **inputs,
-                    **self.generation_config
-                )
+                generated_texts = self._decode_outputs(output_ids, batch_inputs['input_ids'])
 
-                # Decode outputs
-                generated_texts = self._decode_outputs(output_ids, inputs['input_ids'])
-
-                # Parse answers and store results
-                for sample, generated_text in zip(batch, generated_texts):
+                for sample, generated_text in zip(batch_samples, generated_texts):
                     parsed_answer = self._parse_answer(generated_text, sample)
 
                     results.append(
@@ -305,6 +367,24 @@ class LVLMEvaluator(BaseEvaluator):
                             'parsed_answer': parsed_answer
                         }
                     )
+
+            if mitigator is None:
+                for batch in tqdm(
+                        dataloader,
+                        desc=f"Generating answers for {self.dataset_name} (GPU {self.distributed_state.process_index})",
+                        disable=not self.distributed_state.is_main_process
+                ):
+                    inputs = self._prepare_batch(batch)
+                    run_batch(inputs, batch)
+            else:
+                with mitigator:
+                    for batch in tqdm(
+                            dataloader,
+                            desc=f"Generating answers for {self.dataset_name} (GPU {self.distributed_state.process_index})",
+                            disable=not self.distributed_state.is_main_process
+                    ):
+                        inputs = self._prepare_batch(batch)
+                        run_batch(inputs, batch)
 
         # Gather results from all processes
         all_results = gather_object(results)

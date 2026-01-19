@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from omegaconf import OmegaConf, DictConfig
 from pydantic import ConfigDict
@@ -65,6 +65,7 @@ class EvaluateConfig(BaseConfig):
     """
     dataset: List
     evaluator: List
+    mitigators: Optional[List] = None
 
     @property
     def evaluator_config(self) -> List:

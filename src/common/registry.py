@@ -10,6 +10,7 @@ ModelConfigType = Type[PretrainedConfig]
 TrainerType = TypeVar("TrainerType", bound="BaseTrainer")
 BuilderType = TypeVar("BuilderType", bound="BaseBuilder")
 EvaluatorType = TypeVar("EvaluatorType", bound="BaseEvaluator")
+MitigatorType = TypeVar("MitigatorType", bound="BaseMitigator")
 
 
 class Registry:
@@ -34,6 +35,7 @@ class Registry:
         "model_config_name_mapping": {},
         "trainer_name_mapping": {},
         "evaluator_name_mapping": {},
+        "mitigator_name_mapping": {},
     }
 
     @classmethod
@@ -264,6 +266,35 @@ class Registry:
         return wrap
 
     @classmethod
+    def register_mitigator(cls, name):
+        """
+        Registers a mitigator class by its name.
+
+        Args:
+            name (`str`): The name to register the mitigator class with.
+
+        Returns:
+            A decorator that registers the mitigator class.
+        """
+
+        def wrap(mitigator_cls) -> MitigatorType:
+            from src.decoding.base import BaseMitigator
+
+            assert issubclass(
+                mitigator_cls, BaseMitigator
+            ), "All mitigators must inherit BaseMitigator"
+
+            if name in cls.mapping["mitigator_name_mapping"]:
+                raise KeyError(
+                    f"Name '{name}' already registered for {cls.mapping['mitigator_name_mapping'][name]}."
+                )
+            cls.mapping["mitigator_name_mapping"][name] = mitigator_cls
+
+            return mitigator_cls
+
+        return wrap
+
+    @classmethod
     def get_builder_class(cls, name):
         """
         Retrieves the builder class registered under the given name.
@@ -368,6 +399,19 @@ class Registry:
         return cls.mapping["evaluator_name_mapping"].get(name, None)
 
     @classmethod
+    def get_mitigator_class(cls, name):
+        """
+        Retrieves the mitigator class registered under the given name.
+
+        Args:
+            name (`str`): The name of the mitigator class to retrieve.
+
+        Returns:
+            The mitigator class if registered, otherwise `None`.
+        """
+        return cls.mapping["mitigator_name_mapping"].get(name, None)
+
+    @classmethod
     def list_trainers(cls):
         """
         Lists all registered trainer class names.
@@ -446,6 +490,16 @@ class Registry:
             A sorted list of dataset builder class names.
         """
         return sorted(cls.mapping["builder_name_mapping"].keys())
+
+    @classmethod
+    def list_mitigators(cls):
+        """
+        Lists all registered mitigator class names.
+
+        Returns:
+            A sorted list of mitigator class names.
+        """
+        return sorted(cls.mapping["mitigator_name_mapping"].keys())
 
 
 registry = Registry()
