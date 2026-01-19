@@ -9,7 +9,7 @@ Key Implementation Notes:
     2. Model-specific attention implementations for LLaMA and Qwen2-VL
     3. Boost formula: attn[:,-1,img_start:img_end] += alpha * mean(attn[:,-1,img_start:img_end])
 
-Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL, InstructBLIP
+Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL
 """
 
 import math
@@ -31,7 +31,7 @@ class MiddleLayersMitigator(BaseMitigator):
 
     Args:
         model: The VLM model
-        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl, instructblip
+        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl
         target_layers: Layers to modify (default: 5-17 for middle layers)
         alpha: Boost scaling factor (default: 0.5)
         aggregation: How to compute boost - "mean" (default: "mean")
@@ -184,6 +184,8 @@ class MiddleLayersMitigator(BaseMitigator):
         Create modified attention forward for Qwen2-VL style models.
 
         Handles 3D RoPE and GQA specific to Qwen architecture.
+
+        Reference: transformers/models/qwen2_vl/modeling_qwen2_vl.py:491-541
         """
         mitigator = self
 
@@ -192,9 +194,10 @@ class MiddleLayersMitigator(BaseMitigator):
             hidden_states: torch.Tensor,
             attention_mask: Optional[torch.Tensor] = None,
             position_ids: Optional[torch.LongTensor] = None,
-            past_key_value=None,
+            past_key_values=None,  # Changed: past_key_value -> past_key_values
             output_attentions: bool = False,
             use_cache: bool = False,
+            cache_position: Optional[torch.LongTensor] = None,  # Added: cache_position
             position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
             **kwargs,
         ):
@@ -209,23 +212,26 @@ class MiddleLayersMitigator(BaseMitigator):
             value_states = value_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
 
             # Apply RoPE
+            # Reference: modeling_qwen2_vl.py:513-516
             if position_embeddings is not None:
                 cos, sin = position_embeddings
-                # Qwen uses multimodal 3D RoPE
+                # Qwen uses multimodal 3D RoPE with mrope_section
                 from transformers.models.qwen2_vl.modeling_qwen2_vl import apply_multimodal_rotary_pos_emb
-                query_states, key_states = apply_multimodal_rotary_pos_emb(
-                    query_states, key_states, cos, sin, None, None
-                )
+                # Get mrope_section from rope_scaling config
+                mrope_section = self.rope_scaling["mrope_section"] if hasattr(self, 'rope_scaling') and self.rope_scaling else None
+                if mrope_section is not None:
+                    query_states, key_states = apply_multimodal_rotary_pos_emb(
+                        query_states, key_states, cos, sin, mrope_section
+                    )
 
             # KV cache
-            if past_key_value is not None:
-                if hasattr(past_key_value, 'update'):
-                    key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, {})
-                else:
-                    key_states = torch.cat([past_key_value[0], key_states], dim=2)
-                    value_states = torch.cat([past_key_value[1], value_states], dim=2)
+            # Reference: modeling_qwen2_vl.py:518-520
+            if past_key_values is not None:
+                cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position} if position_embeddings else {}
+                key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
-            # GQA
+            # GQA: repeat KV heads
+            # Reference: modeling_qwen2_vl.py (via repeat_kv function)
             num_kv_heads = key_states.shape[1]
             num_q_heads = query_states.shape[1]
             if num_kv_heads != num_q_heads:
@@ -234,10 +240,12 @@ class MiddleLayersMitigator(BaseMitigator):
                 value_states = value_states.repeat_interleave(n_rep, dim=1)
 
             # Attention
-            attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+            scaling = self.head_dim ** -0.5
+            attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * scaling
 
             if attention_mask is not None:
-                attn_weights = attn_weights + attention_mask
+                causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+                attn_weights = attn_weights + causal_mask
 
             # === IMAGE ATTENTION BOOST ===
             img_start = mitigator._img_start
@@ -251,15 +259,12 @@ class MiddleLayersMitigator(BaseMitigator):
             attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
 
             attn_output = torch.matmul(attn_weights, value_states)
-            attn_output = attn_output.transpose(1, 2).reshape(bsz, q_len, -1)
+            attn_output = attn_output.transpose(1, 2).reshape(bsz, q_len, -1).contiguous()
             attn_output = self.o_proj(attn_output)
 
-            if use_cache:
-                new_cache = past_key_value if hasattr(past_key_value, 'update') else (key_states, value_states)
-            else:
-                new_cache = None
-
-            return attn_output, (attn_weights if output_attentions else None), new_cache
+            # Return 2 values (Qwen2VLAttention returns attn_output, attn_weights)
+            # Reference: modeling_qwen2_vl.py:541
+            return attn_output, (attn_weights if output_attentions else None)
 
         return forward
 
@@ -301,6 +306,7 @@ class MiddleLayersMitigator(BaseMitigator):
             'max_new_tokens': self.config.max_new_tokens,
             'do_sample': self.config.do_sample,
             'temperature': self.config.temperature,
+            'top_k': self.config.top_k,
             'top_p': self.config.top_p,
         }
         gen_kwargs.update(kwargs)

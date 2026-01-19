@@ -13,7 +13,7 @@ Formula:
     cutoff = log(beta) + max(logits_orig)
     final = cd_logits.masked_fill(logits_orig < cutoff, -inf)
 
-Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL, InstructBLIP
+Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL
 """
 
 from typing import Dict, Optional, Tuple
@@ -35,8 +35,8 @@ class VCDMitigator(BaseMitigator):
 
     Args:
         model: The VLM model
-        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl, instructblip
-        alpha: Contrastive weight (default: 1.0)
+        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl
+        alpha: Contrastive weight (default: 0.5)
         beta: Adaptive plausibility cutoff (default: 0.1)
         noise_step: DDPM noise step 0-999 (default: 500)
     """
@@ -47,7 +47,7 @@ class VCDMitigator(BaseMitigator):
         self,
         model: nn.Module,
         model_type: str = "llava",
-        alpha: float = 1.0,
+        alpha: float = 0.5,
         beta: float = 0.1,
         noise_step: int = 500,
         **kwargs,
@@ -72,12 +72,15 @@ class VCDMitigator(BaseMitigator):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_values=None,
         is_first_step: bool = True,
+        cache_position: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Dict:
         """
         Prepare model inputs, handling pixel_values only on first step for cached decoding.
 
         Reference: VCD maintains separate KV caches for original and noised.
+
+        Note: cache_position is critical for Qwen2-VL's 3D RoPE computation.
         """
         inputs = {
             'input_ids': input_ids,
@@ -90,13 +93,16 @@ class VCDMitigator(BaseMitigator):
         if past_key_values is not None:
             inputs['past_key_values'] = past_key_values
 
+        # cache_position is needed for Qwen2-VL to correctly compute position_ids
+        if cache_position is not None:
+            inputs['cache_position'] = cache_position
+
         # Only pass pixel_values on first step (before KV cache is populated)
         if is_first_step and pixel_values is not None:
             inputs['pixel_values'] = pixel_values
 
             # Model-specific additional kwargs
-            for key in ['image_sizes', 'image_grid_thw', 'position_ids',
-                        'qformer_input_ids', 'qformer_attention_mask', 'rope_deltas']:
+            for key in ['image_sizes', 'image_grid_thw', 'position_ids', 'rope_deltas']:
                 if key in kwargs and kwargs[key] is not None:
                     inputs[key] = kwargs[key]
 
@@ -163,14 +169,21 @@ class VCDMitigator(BaseMitigator):
         past_kv_orig = None
         past_kv_noised = None
 
+        # Track cache position for Qwen2-VL compatibility
+        cache_position = None
+
         for step in range(self.config.max_new_tokens):
             is_first_step = (past_kv_orig is None)
 
             # Current input (full sequence on first step, last token afterwards)
             if is_first_step:
                 curr_ids = generated
+                # cache_position for first step: [0, 1, 2, ..., seq_len-1]
+                cache_position = torch.arange(curr_ids.shape[1], device=device)
             else:
                 curr_ids = generated[:, -1:]
+                # cache_position for subsequent steps: [current_length]
+                cache_position = torch.tensor([generated.shape[1] - 1], device=device)
 
             # Prepare inputs for original image
             inputs_orig = self._prepare_inputs(
@@ -179,6 +192,7 @@ class VCDMitigator(BaseMitigator):
                 attention_mask=attention_mask,
                 past_key_values=past_kv_orig,
                 is_first_step=is_first_step,
+                cache_position=cache_position,
                 **kwargs,
             )
 
@@ -189,6 +203,7 @@ class VCDMitigator(BaseMitigator):
                 attention_mask=attention_mask,
                 past_key_values=past_kv_noised,
                 is_first_step=is_first_step,
+                cache_position=cache_position,
                 **kwargs,
             )
 
@@ -210,7 +225,12 @@ class VCDMitigator(BaseMitigator):
 
             # Sample next token
             if self.config.do_sample:
-                next_token = sample_top_p(cd_logits, self.config.top_p, self.config.temperature)
+                next_token = sample_top_p(
+                    cd_logits,
+                    top_p=self.config.top_p,
+                    temperature=self.config.temperature,
+                    top_k=self.config.top_k,
+                )
             else:
                 next_token = cd_logits.argmax(dim=-1, keepdim=True)
 

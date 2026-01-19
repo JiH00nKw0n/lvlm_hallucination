@@ -5,18 +5,21 @@ Identifies "blind tokens" (image tokens with low discriminative attention)
 and masks their embeddings before contrastive decoding.
 
 Reference:
-    - AvisC/avisc_utils/avisc_sample.py: Blind token detection and masking
-    - Octopus/eval_bench/train_token_amber.py:206-222: Model-internal masking
+    - AvisC/avisc_utils/avisc_sample.py:160-179 (Blind token detection)
+    - AvisC/avisc_utils/avisc_sample.py:206-208 (Contrastive + plausibility cutoff)
 
 Key Implementation Notes:
     1. Blind token detection uses attention patterns to identify low-info tokens
     2. Masking is applied via forward hook AFTER multimodal merging
     3. Separate KV caches for original and masked branches
+    4. Plausibility cutoff to filter implausible tokens
 
-Formula:
-    cd_logits = (1 + alpha) * logits_orig - alpha * logits_masked
+Formula (Reference: avisc_sample.py:206-208):
+    cutoff = log(beta) + max(logits_orig)
+    diffs = (1 + alpha) * logits_orig - alpha * logits_masked
+    avisc_logits = diffs.masked_fill(logits_orig < cutoff, -inf)
 
-Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL, InstructBLIP
+Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -36,11 +39,11 @@ class AvisCMitigator(BaseMitigator):
 
     Args:
         model: The VLM model
-        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl, instructblip
+        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl
         alpha: Contrastive weight (default: 1.0)
         beta: Plausibility cutoff (default: 0.1)
         layer_gamma: Cumulative prob for layer selection (default: 0.5)
-        lamb: Std multiplier for blind token threshold (default: 100.0 for LLaVA, 0.99 for InstructBLIP)
+        lamb: Std multiplier for blind token threshold (default: 100.0)
         masking_scheme: How to mask - "zeros", "ones", "noise" (default: "zeros")
     """
 
@@ -63,11 +66,8 @@ class AvisCMitigator(BaseMitigator):
         self.layer_gamma = layer_gamma
         self.masking_scheme = masking_scheme
 
-        # Default lamb based on model type
-        if lamb is None:
-            self.lamb = 0.99 if model_type == "instructblip" else 100.0
-        else:
-            self.lamb = lamb
+        # Default lamb
+        self.lamb = 100.0 if lamb is None else lamb
 
         # State for masking
         self._blind_mask: Optional[torch.Tensor] = None
@@ -159,16 +159,17 @@ class AvisCMitigator(BaseMitigator):
         for attn in attentions:
             # attn: [B, H, Q, K], average over heads, take last query token
             img_attn = attn.mean(dim=1)[:, -1, img_start:img_end]  # [B, num_img]
-            layer_img_att.append(img_attn.sum().item())
+            layer_img_att.append(img_attn.sum())
 
-        layer_img_att = torch.tensor(layer_img_att, device=attentions[0].device)
-        layer_probs = F.softmax(layer_img_att, dim=0)
+        layer_img_att = torch.stack(layer_img_att, dim=0)
+        layer_probs = layer_img_att / layer_img_att.sum()
 
-        # Count top-p layers
-        sorted_probs, sorted_idx = torch.sort(layer_probs, descending=True)
+        # Count top-p layers (reference uses < top_p)
+        sorted_probs = torch.sort(layer_probs, descending=True)[0]
         cumsum = torch.cumsum(sorted_probs, dim=0)
-        k = (cumsum <= self.layer_gamma).sum().item() + 1
-        top_k_layers = sorted_idx[:k].tolist()
+        k = (cumsum < self.layer_gamma).sum().item() + 1
+        _, top_k_layers = torch.topk(layer_probs.float(), k, dim=0)
+        top_k_layers = top_k_layers.tolist()
 
         # Step 2: Stack attention from selected layers
         att_stack = torch.stack([
@@ -179,9 +180,7 @@ class AvisCMitigator(BaseMitigator):
         img_att = att_stack.mean(dim=1)  # [B, num_img_tokens]
 
         # Step 3: Threshold
-        mean_att = img_att.mean(dim=-1, keepdim=True)
-        std_att = img_att.std(dim=-1, keepdim=True)
-        threshold = mean_att + self.lamb * std_att
+        threshold = img_att.mean() + self.lamb * img_att.std()
 
         # Blind tokens: attention BELOW threshold (low discriminative value)
         blind_mask = img_att < threshold  # [B, num_img_tokens]
@@ -193,8 +192,25 @@ class AvisCMitigator(BaseMitigator):
         logits_orig: torch.Tensor,
         logits_masked: torch.Tensor,
     ) -> torch.Tensor:
-        """Combine original and masked logits."""
-        return (1 + self.alpha) * logits_orig - self.alpha * logits_masked
+        """
+        Combine original and masked logits with plausibility cutoff.
+
+        Reference: AvisC/avisc_utils/avisc_sample.py:206-208
+
+        Formula:
+            cutoff = log(beta) + max(logits_orig)
+            diffs = (1 + alpha) * logits_orig - alpha * logits_masked
+            avisc_logits = diffs.masked_fill(logits_orig < cutoff, -inf)
+        """
+        # Compute plausibility cutoff (Reference: line 206)
+        cutoff = torch.log(torch.tensor(self.beta, device=logits_orig.device)) + \
+                 logits_orig.max(dim=-1, keepdim=True).values
+
+        # Contrastive combination (Reference: line 207)
+        diffs = (1 + self.alpha) * logits_orig - self.alpha * logits_masked
+
+        # Apply plausibility constraint (Reference: line 208)
+        return diffs.masked_fill(logits_orig < cutoff, -float("inf"))
 
     def generate(
         self,
@@ -227,6 +243,9 @@ class AvisCMitigator(BaseMitigator):
         config = getattr(self.model, 'config', None)
         self._img_start, self._img_end = self._get_image_token_indices(input_ids, config)
 
+        # cache_position for first step (Qwen2-VL compatibility)
+        cache_position = torch.arange(input_ids.shape[1], device=device)
+
         # Step 1: Initial forward to get attention for blind token detection
         inputs_init = {
             'input_ids': input_ids,
@@ -235,10 +254,10 @@ class AvisCMitigator(BaseMitigator):
             'output_attentions': True,
             'use_cache': True,
             'return_dict': True,
+            'cache_position': cache_position,
         }
         # Add model-specific kwargs
-        for key in ['image_sizes', 'image_grid_thw', 'position_ids',
-                    'qformer_input_ids', 'qformer_attention_mask']:
+        for key in ['image_sizes', 'image_grid_thw', 'position_ids']:
             if key in kwargs and kwargs[key] is not None:
                 inputs_init[key] = kwargs[key]
 
@@ -263,9 +282,9 @@ class AvisCMitigator(BaseMitigator):
             'pixel_values': pixel_values,
             'use_cache': True,
             'return_dict': True,
+            'cache_position': cache_position,
         }
-        for key in ['image_sizes', 'image_grid_thw', 'position_ids',
-                    'qformer_input_ids', 'qformer_attention_mask']:
+        for key in ['image_sizes', 'image_grid_thw', 'position_ids']:
             if key in kwargs and kwargs[key] is not None:
                 inputs_masked[key] = kwargs[key]
 
@@ -282,7 +301,12 @@ class AvisCMitigator(BaseMitigator):
 
         # Sample first token
         if self.config.do_sample:
-            next_token = sample_top_p(cd_logits, self.config.top_p, self.config.temperature)
+            next_token = sample_top_p(
+                cd_logits,
+                top_p=self.config.top_p,
+                temperature=self.config.temperature,
+                top_k=self.config.top_k,
+            )
         else:
             next_token = cd_logits.argmax(dim=-1, keepdim=True)
 
@@ -297,6 +321,8 @@ class AvisCMitigator(BaseMitigator):
         # Step 3: Continue generation with cached KV
         for step in range(1, self.config.max_new_tokens):
             curr_ids = generated[:, -1:]
+            # cache_position for subsequent steps
+            cache_position = torch.tensor([generated.shape[1] - 1], device=device)
 
             # Original branch
             with torch.no_grad():
@@ -306,6 +332,7 @@ class AvisCMitigator(BaseMitigator):
                     past_key_values=past_kv_orig,
                     use_cache=True,
                     return_dict=True,
+                    cache_position=cache_position,
                 )
 
             # Masked branch (no need for masking hook - KV cache already has masked info)
@@ -316,6 +343,7 @@ class AvisCMitigator(BaseMitigator):
                     past_key_values=past_kv_masked,
                     use_cache=True,
                     return_dict=True,
+                    cache_position=cache_position,
                 )
 
             past_kv_orig = outputs_orig.past_key_values
@@ -326,7 +354,12 @@ class AvisCMitigator(BaseMitigator):
             cd_logits = self._combine_logits(logits_orig, logits_masked)
 
             if self.config.do_sample:
-                next_token = sample_top_p(cd_logits, self.config.top_p, self.config.temperature)
+                next_token = sample_top_p(
+                    cd_logits,
+                    top_p=self.config.top_p,
+                    temperature=self.config.temperature,
+                    top_k=self.config.top_k,
+                )
             else:
                 next_token = cd_logits.argmax(dim=-1, keepdim=True)
 

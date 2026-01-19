@@ -19,7 +19,7 @@ Formula:
     final = final_logits + alpha * conf * early_layer_logits
     final[not in candidates] = -inf
 
-Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL, InstructBLIP
+Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -39,7 +39,7 @@ class DecoMitigator(BaseMitigator):
 
     Args:
         model: The VLM model
-        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl, instructblip
+        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl
         alpha: Blend strength (default: 0.6)
         early_exit_layers: Layers to inspect (default: 20-28)
         threshold_top_k: Max candidates (default: 20)
@@ -87,6 +87,11 @@ class DecoMitigator(BaseMitigator):
         """
         Compute logits from early exit layers.
 
+        Reference: Deco/transformers/models/llama/modeling_llama.py:821-824
+
+        Note: Reference uses hidden_states[layer_idx] directly (not layer_idx + 1).
+        This matches the patched Deco model's indexing convention.
+
         Args:
             hidden_states: Tuple of hidden states per layer (including embedding)
 
@@ -97,9 +102,12 @@ class DecoMitigator(BaseMitigator):
         early_logits = {}
 
         for layer_idx in self.early_exit_layers:
-            # hidden_states[0] is embedding, so layer i is at index i+1
-            if layer_idx + 1 < len(hidden_states):
-                h = norm(hidden_states[layer_idx + 1])
+            # Reference: hidden_states[early_exit_layer] directly
+            # Note: In standard HuggingFace, hidden_states[0] is embeddings,
+            # hidden_states[i] for i>=1 is layer i-1 output.
+            # We use layer_idx directly to match reference behavior.
+            if layer_idx < len(hidden_states):
+                h = norm(hidden_states[layer_idx])
                 early_logits[layer_idx] = lm_head(h)[:, -1, :]
 
         return early_logits
@@ -201,21 +209,25 @@ class DecoMitigator(BaseMitigator):
 
             if is_first_step:
                 curr_ids = generated
+                # cache_position for first step (Qwen2-VL compatibility)
+                cache_position = torch.arange(curr_ids.shape[1], device=device)
                 forward_kwargs = {
                     'input_ids': curr_ids,
                     'attention_mask': attention_mask,
                     'output_hidden_states': True,
                     'use_cache': True,
                     'return_dict': True,
+                    'cache_position': cache_position,
                 }
                 if pixel_values is not None:
                     forward_kwargs['pixel_values'] = pixel_values
-                for key in ['image_sizes', 'image_grid_thw', 'position_ids',
-                            'qformer_input_ids', 'qformer_attention_mask']:
+                for key in ['image_sizes', 'image_grid_thw', 'position_ids']:
                     if key in kwargs and kwargs[key] is not None:
                         forward_kwargs[key] = kwargs[key]
             else:
                 curr_ids = generated[:, -1:]
+                # cache_position for subsequent steps
+                cache_position = torch.tensor([generated.shape[1] - 1], device=device)
                 forward_kwargs = {
                     'input_ids': curr_ids,
                     'attention_mask': attention_mask,
@@ -223,6 +235,7 @@ class DecoMitigator(BaseMitigator):
                     'output_hidden_states': True,
                     'use_cache': True,
                     'return_dict': True,
+                    'cache_position': cache_position,
                 }
 
             with torch.no_grad():
@@ -250,7 +263,12 @@ class DecoMitigator(BaseMitigator):
 
             # Sample
             if self.config.do_sample:
-                next_token = sample_top_p(blended, self.config.top_p, self.config.temperature)
+                next_token = sample_top_p(
+                    blended,
+                    top_p=self.config.top_p,
+                    temperature=self.config.temperature,
+                    top_k=self.config.top_k,
+                )
             else:
                 next_token = blended.argmax(dim=-1, keepdim=True)
 

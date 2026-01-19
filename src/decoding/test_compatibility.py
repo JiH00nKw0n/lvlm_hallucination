@@ -7,17 +7,17 @@ mitigation methods and the 5 VLM model architectures.
 COMPATIBILITY MATRIX:
 ======================
 
-| Method         | LLaVA | LLaVA-NeXT | Qwen2-VL | Qwen2.5-VL | InstructBLIP |
-|----------------|-------|------------|----------|------------|--------------|
-| VCD            |   ✓   |     ✓      |    ✓     |     ✓      |      ✓       |
-| AvisC          |   ✓   |     ✓      |    ✓     |     ✓      |      ✓       |
-| VISTA          |   ✓   |     ✓      |    ✓     |     ✓      |      ✓       |
-| VTI            |   ✓   |     ✓      |    ✓     |     ✓      |      ✓       |
-| MiddleLayers   |   ✓   |     ✓      |    ✓*    |     ✓*     |      ✓       |
-| FarSight       |   ✓   |     ✓      |    ✓*    |     ✓*     |      ✓       |
-| Deco           |   ✓   |     ✓      |    ✓     |     ✓      |      ✓       |
-| OPERA          |   ✓   |     ✓      |    ✓     |     ✓      |      ✓       |
-| Octopus        |   ✓   |     ✓      |    ✓     |     ✓      |      ✓       |
+| Method         | LLaVA | LLaVA-NeXT | Qwen2-VL | Qwen2.5-VL |
+|----------------|-------|------------|----------|------------|
+| VCD            |   ✓   |     ✓      |    ✓     |     ✓      |
+| AvisC          |   ✓   |     ✓      |    ✓     |     ✓      |
+| VISTA          |   ✓   |     ✓      |    ✓     |     ✓      |
+| VTI            |   ✓   |     ✓      |    ✓     |     ✓      |
+| MiddleLayers   |   ✓   |     ✓      |    ✓*    |     ✓*     |
+| FarSight       |   ✓   |     ✓      |    ✓*    |     ✓*     |
+| Deco           |   ✓   |     ✓      |    ✓     |     ✓      |
+| OPERA          |   ✓   |     ✓      |    ✓     |     ✓      |
+| Octopus        |   ✓   |     ✓      |    ✓     |     ✓      |
 
 * Qwen models use SDPA/Flash Attention by default. Forward replacement methods
   (MiddleLayers, FarSight) automatically switch to eager attention.
@@ -38,13 +38,6 @@ Qwen2-VL/Qwen2.5-VL:
 - Uses 3D rotary position embeddings (mrope)
 - Dynamic image resolution support
 
-InstructBLIP:
-- Layer access: model.language_model.model.layers
-- Image input: `pixel_values` kwarg
-- Requires: `qformer_input_ids`, `qformer_attention_mask`
-- Q-Former outputs: first 32 tokens
-- Can use different LLM backends (Vicuna, OPT, etc.)
-
 USAGE EXAMPLES:
 ===============
 
@@ -60,10 +53,6 @@ with VCDMitigator(qwen_model, model_type="qwen2_vl", alpha=1.0) as mitigator:
     output = mitigator.generate(input_ids, pixel_values=pixel_values,
                                  image_grid_thw=image_grid_thw)
 
-# InstructBLIP
-with VCDMitigator(instructblip_model, model_type="instructblip", alpha=1.0) as mitigator:
-    output = mitigator.generate(input_ids, pixel_values=pixel_values,
-                                 qformer_input_ids=qformer_input_ids)
 ```
 
 TRAINING SUPPORT:
@@ -92,7 +81,6 @@ SUPPORTED_MODELS = [
     "llava_next",
     "qwen2_vl",
     "qwen2_5_vl",
-    "instructblip",
 ]
 
 # Method configurations
@@ -178,11 +166,6 @@ def get_model_specific_params(model_type: str) -> Dict:
             "image_kwarg": "pixel_values",
             "extra_kwargs": ["image_grid_thw"],
             "lamb": 50.0,
-        },
-        "instructblip": {
-            "image_kwarg": "pixel_values",
-            "extra_kwargs": ["qformer_input_ids", "qformer_attention_mask"],
-            "lamb": 0.99,  # AvisC - different threshold for InstructBLIP
         },
     }
 

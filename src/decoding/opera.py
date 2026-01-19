@@ -15,7 +15,7 @@ Key Implementation Notes:
     3. Rollback when consistent summary token detected threshold times
     4. Maintains separate history for rollback
 
-Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL, InstructBLIP
+Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL
 """
 
 from dataclasses import dataclass, field
@@ -46,7 +46,7 @@ class OPERAMitigator(BaseMitigator):
 
     Args:
         model: The VLM model
-        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl, instructblip
+        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl
         num_beams: Number of beams (default: 5)
         scale_factor: Attention amplification (default: 50.0)
         threshold: Rollback trigger count (default: 15)
@@ -87,56 +87,46 @@ class OPERAMitigator(BaseMitigator):
 
     def _compute_penalty(
         self,
-        attentions: torch.Tensor,
+        attn_last: torch.Tensor,
         img_start: int,
         img_end: int,
-        response_len: int,
+        response_start: int,
     ) -> Tuple[torch.Tensor, torch.Tensor, int]:
         """
-        Compute attention-based penalty.
+        Compute attention-based penalty for candidate tokens.
 
         Reference: OPERA/transformers/.../utils.py:3430-3449
 
         Args:
-            attentions: Last layer attention [B, H, Q, K]
+            attn_last: Candidate attention [B, C, Q, K]
             img_start: Image token start index
-            img_end: Image token end index
-            response_len: Current response length
+            img_end: Image token end index (exclusive)
+            response_start: Response token start index
 
         Returns:
             (penalty_scores, rollback_locs, rollback_loc)
         """
-        # Get attention from last layer, max over heads
-        attn = attentions.max(dim=1, keepdim=True).values  # [B, 1, Q, K]
+        attn_local = attn_last[:, :, response_start:, response_start:]
+        attn_local = self.scale_factor * attn_local
 
-        if response_len <= 10:
-            # Early tokens: penalize LOW image attention
-            img_attn = attn[:, :, -1, img_start:img_end].sum(dim=-1)  # [B, 1]
-            penalty_scores = -img_attn
-            rollback_locs = torch.zeros_like(penalty_scores).long()
-            rollback_loc = 0
-        else:
-            # Later tokens: penalize summary tokens
-            # Scale and compute product over diagonal
-            attn_local = attn * self.scale_factor
-            window_size = min(response_len, attn_local.shape[-1])
+        attn_local_scores = torch.zeros(
+            (attn_local.shape[0], attn_local.shape[1], attn_local.shape[-1]),
+            device=attn_local.device,
+            dtype=torch.float32,
+        )
+        for j in range(attn_local.shape[-1]):
+            local_score = 1e-7 * attn_local[..., j:, j].prod(-1)
+            attn_local_scores[..., j] = local_score
 
-            local_scores = []
-            for j in range(window_size):
-                if j < attn_local.shape[-2]:
-                    score = attn_local[..., j:, j].prod(dim=-1) * 1e-7
-                    local_scores.append(score)
+        cur_response_len = attn_local.shape[-1]
+        attn_scores = attn_last[:, :, -1, img_start:img_end].sum(-1)
 
-            if local_scores:
-                local_scores = torch.stack(local_scores, dim=-1)  # [B, 1, window]
-                penalty_scores, rollback_locs = local_scores.max(dim=-1)
-                rollback_loc = rollback_locs.mode().values.item()
-            else:
-                penalty_scores = torch.zeros((attn.shape[0], 1), device=attn.device)
-                rollback_locs = torch.zeros_like(penalty_scores).long()
-                rollback_loc = 0
+        rollback_scores, rollback_locs = attn_local_scores.max(-1)
+        rollback_loc = rollback_locs.mode().values
+        rollback_loc = rollback_loc.mode().values.item()
 
-        return penalty_scores.squeeze(-1), rollback_locs.squeeze(-1), rollback_loc
+        penalty_scores = -attn_scores if cur_response_len <= 10 else rollback_scores
+        return penalty_scores, rollback_locs, rollback_loc
 
     def generate(
         self,
@@ -147,11 +137,6 @@ class OPERAMitigator(BaseMitigator):
     ) -> torch.Tensor:
         """
         Generate with OPERA beam search and rollback.
-
-        Simplified implementation that captures the core OPERA logic:
-        1. Beam search with attention penalty
-        2. Track rollback locations
-        3. Rollback when threshold exceeded
 
         Args:
             input_ids: [B, seq_len]
@@ -186,19 +171,23 @@ class OPERAMitigator(BaseMitigator):
 
         # History for rollback
         history_states: List[OPERAState] = []
-        history_rollback_locs: List[torch.Tensor] = []
-        rollback_counts: Dict[int, int] = {}
+        history_rollback_locs: Optional[List[torch.Tensor]] = None
+        reject_token_pos_gather: Dict[int, List[torch.Tensor]] = {}
 
         past_key_values = None
+        attn_previous = None
         response_start = input_ids.shape[1]
+
+        beam_scores = beam_scores.view(batch_size, self.num_beams)
+        beam_scores[:, 1:] = -1e9
+        beam_scores = beam_scores.view(-1)
 
         for step in range(self.config.max_new_tokens):
             is_first_step = (past_key_values is None)
-            response_len = step + 1
 
-            # Prepare inputs
             if is_first_step:
                 curr_ids = generated
+                cache_position = torch.arange(curr_ids.shape[1], device=device)
                 forward_kwargs = {
                     'input_ids': curr_ids,
                     'attention_mask': attention_mask,
@@ -206,13 +195,14 @@ class OPERAMitigator(BaseMitigator):
                     'output_attentions': True,
                     'use_cache': True,
                     'return_dict': True,
+                    'cache_position': cache_position,
                 }
-                for key in ['image_sizes', 'image_grid_thw', 'position_ids',
-                            'qformer_input_ids', 'qformer_attention_mask']:
+                for key in ['image_sizes', 'image_grid_thw', 'position_ids']:
                     if key in kwargs and kwargs[key] is not None:
                         forward_kwargs[key] = kwargs[key]
             else:
                 curr_ids = generated[:, -1:]
+                cache_position = torch.tensor([generated.shape[1] - 1], device=device)
                 forward_kwargs = {
                     'input_ids': curr_ids,
                     'attention_mask': attention_mask,
@@ -220,6 +210,7 @@ class OPERAMitigator(BaseMitigator):
                     'output_attentions': True,
                     'use_cache': True,
                     'return_dict': True,
+                    'cache_position': cache_position,
                 }
 
             with torch.no_grad():
@@ -229,65 +220,102 @@ class OPERAMitigator(BaseMitigator):
             logits = outputs.logits[:, -1, :]
             attentions = outputs.attentions[-1] if outputs.attentions else None
 
-            # Compute penalty
-            if attentions is not None:
-                penalty, rollback_locs, rollback_loc = self._compute_penalty(
-                    attentions, img_start, img_end, response_len
-                )
-                logits = logits - self.penalty_weights * penalty.unsqueeze(-1)
-                history_rollback_locs.append(rollback_locs)
-            else:
-                rollback_loc = 0
+            if attentions is None:
+                raise ValueError("OPERA requires attention outputs")
 
-            # Save state for potential rollback
+            if attn_previous is None:
+                attn_previous = attentions.clone()
+            else:
+                attn_previous = torch.cat(
+                    [attn_previous, torch.zeros_like(attn_previous).sum(-1, keepdim=True)], -1
+                )
+                attn_previous = torch.cat(
+                    [attn_previous, attentions.clone().max(1, keepdim=True).values.data], -2
+                )
+
+            attn_previous = attn_previous.max(1, keepdim=True).values.data
+
+            candidate_token_scores, candidate_tokens = torch.topk(
+                logits, self.num_attn_candidates, dim=-1, largest=True, sorted=True
+            )
+
+            attn_last = []
+            for candidate_id in range(self.num_attn_candidates):
+                next_tokens = candidate_tokens[:, candidate_id].unsqueeze(-1)
+                tmp_attention = attention_mask
+                if tmp_attention is not None:
+                    tmp_attention = torch.cat(
+                        [tmp_attention, torch.ones_like(tmp_attention[:, :1])], dim=-1
+                    )
+                tmp_kwargs = {
+                    'input_ids': next_tokens,
+                    'attention_mask': tmp_attention,
+                    'past_key_values': past_key_values,
+                    'output_attentions': True,
+                    'use_cache': True,
+                    'return_dict': True,
+                    'cache_position': torch.tensor([generated.shape[1]], device=device),
+                }
+                with torch.no_grad():
+                    outputs_tmp = self.model(**tmp_kwargs)
+
+                attn_output = outputs_tmp.attentions[-1].clone()
+                attn_output = attn_output.max(1, keepdim=True).values.data
+                attn_square = torch.cat(
+                    [attn_previous, torch.zeros_like(attn_previous).sum(-1, keepdim=True)], -1
+                )
+                attn_square = torch.cat([attn_square, attn_output], -2)
+                attn_last.append(attn_square)
+
+            attn_last = torch.cat(attn_last, 1)
+            attn_last = attn_last / attn_last.sum(-1, keepdim=True)
+
+            penalty_scores, rollback_locs, rollback_loc = self._compute_penalty(
+                attn_last, img_start, img_end, response_start
+            )
+            candidate_token_scores = candidate_token_scores - self.penalty_weights * penalty_scores
+
+            if history_rollback_locs is None:
+                history_rollback_locs = [rollback_locs.mode().values.data[:, None]]
+            else:
+                history_rollback_locs.append(rollback_locs.mode().values.data[:, None])
+
             state = OPERAState(
                 input_ids=generated.clone(),
                 attention_mask=attention_mask.clone() if attention_mask is not None else None,
                 past_key_values=past_key_values,
                 beam_scores=beam_scores.clone(),
+                attn_previous=attn_previous.clone(),
             )
             if len(history_states) >= self.history_length:
                 history_states.pop(0)
+                if history_rollback_locs:
+                    history_rollback_locs.pop(0)
             history_states.append(state)
 
-            # Check for rollback
             should_rollback = False
-            if len(history_rollback_locs) >= self.threshold:
-                # Check if same rollback location appears threshold times
-                recent_locs = history_rollback_locs[-self.threshold:]
-                if all(loc == rollback_loc for loc in recent_locs):
-                    if rollback_loc >= 10:  # Only rollback for non-early tokens
-                        count = rollback_counts.get(rollback_loc, 0) + 1
-                        rollback_counts[rollback_loc] = count
-                        if count <= self.num_attn_candidates:
-                            should_rollback = True
+            rollback_pos: Optional[int] = None
+            if history_rollback_locs is not None and len(history_rollback_locs) >= self.threshold:
+                recent = torch.cat(history_rollback_locs[-self.threshold:], -1)
+                matches = (recent == rollback_loc).long().sum(dim=-1)
+                if torch.all(matches >= self.threshold) and rollback_loc >= 10:
+                    should_rollback = True
+                    rollback_pos = rollback_loc + 1
 
-            if should_rollback and len(history_states) > 1:
-                # Rollback to previous state
-                rollback_idx = max(0, len(history_states) - 2)
-                prev_state = history_states[rollback_idx]
-                generated = prev_state.input_ids
-                attention_mask = prev_state.attention_mask
-                past_key_values = prev_state.past_key_values
-                beam_scores = prev_state.beam_scores
+            next_token_logits = torch.full_like(logits, -999.0)
+            next_token_logits = next_token_logits.scatter(-1, candidate_tokens, candidate_token_scores)
 
-                # Pop rolled back states
-                while len(history_states) > rollback_idx:
-                    history_states.pop()
-                    if history_rollback_locs:
-                        history_rollback_locs.pop()
-
-                continue
-
-            # Beam search scoring
-            log_probs = F.log_softmax(logits, dim=-1)
+            log_probs = F.log_softmax(next_token_logits, dim=-1)
             next_scores = log_probs + beam_scores.unsqueeze(-1)
 
-            # Reshape for beam selection
             vocab_size = next_scores.shape[-1]
             next_scores = next_scores.view(batch_size, self.num_beams * vocab_size)
 
-            # Select top beams
+            response_pos = generated.shape[1] - response_start + 1
+            if response_pos in reject_token_pos_gather:
+                reject_tokens = torch.cat(reject_token_pos_gather[response_pos], dim=-1).long()
+                next_scores = next_scores.scatter(1, reject_tokens, -1e9)
+
             next_scores, next_tokens = torch.topk(
                 next_scores, 2 * self.num_beams, dim=1, largest=True, sorted=True
             )
@@ -295,12 +323,24 @@ class OPERAMitigator(BaseMitigator):
             next_indices = next_tokens // vocab_size
             next_tokens = next_tokens % vocab_size
 
-            # Select best beams
             beam_scores = next_scores[:, :self.num_beams].reshape(-1)
             beam_tokens = next_tokens[:, :self.num_beams].reshape(-1)
             beam_indices = next_indices[:, :self.num_beams].reshape(-1)
 
-            # Reorder
+            if should_rollback and rollback_pos is not None and len(history_states) > 1:
+                reject_token_pos = (
+                    beam_indices.view(batch_size, self.num_beams) * vocab_size
+                    + beam_tokens.view(batch_size, self.num_beams)
+                )
+                reject_token_pos_gather.setdefault(rollback_pos, []).append(reject_token_pos)
+                prev_state = history_states[-2]
+                generated = prev_state.input_ids
+                attention_mask = prev_state.attention_mask
+                past_key_values = prev_state.past_key_values
+                beam_scores = prev_state.beam_scores
+                attn_previous = prev_state.attn_previous
+                continue
+
             batch_beam_indices = (
                 torch.arange(batch_size, device=device).unsqueeze(1) * self.num_beams
                 + beam_indices.view(batch_size, self.num_beams)
@@ -316,11 +356,14 @@ class OPERAMitigator(BaseMitigator):
                     torch.ones((attention_mask.shape[0], 1), device=device, dtype=attention_mask.dtype)
                 ], dim=-1)
 
-            # Reorder KV cache
             if past_key_values is not None:
-                past_key_values = self.model._reorder_cache(past_key_values, batch_beam_indices)
+                if hasattr(self.model, "_reorder_cache"):
+                    past_key_values = self.model._reorder_cache(past_key_values, batch_beam_indices)
+                elif hasattr(past_key_values, "reorder_cache"):
+                    past_key_values.reorder_cache(batch_beam_indices)
 
-            # Check EOS
+            attn_previous = attn_previous[batch_beam_indices]
+
             eos_token_id = getattr(self.model.config, 'eos_token_id', None)
             if eos_token_id is not None:
                 if isinstance(eos_token_id, list):

@@ -1,12 +1,11 @@
 """
 Base classes and utilities for hallucination mitigation methods.
 
-Supports 5 VLM architectures:
+Supports 4 VLM architectures:
 - LLaVA (llava)
 - LLaVA-NeXT (llava_next)
 - Qwen2-VL (qwen2_vl)
 - Qwen2.5-VL (qwen2_5_vl)
-- InstructBLIP (instructblip)
 """
 
 from abc import ABC, abstractmethod
@@ -29,10 +28,8 @@ class ModelHelper:
     Supported models:
         - LLaVA: model.language_model.model.layers
         - LLaVA-NeXT: model.language_model.model.layers
-        - Qwen2-VL: model.model.layers
-        - Qwen2.5-VL: model.model.layers
-        - InstructBLIP: model.language_model.model.layers (decoder-only) or
-                        model.language_model.encoder.block (seq2seq)
+        - Qwen2-VL: model.model.language_model.layers
+        - Qwen2.5-VL: model.model.language_model.layers
     """
 
     # Image kwarg names for each model (all HF models use pixel_values)
@@ -41,7 +38,6 @@ class ModelHelper:
         'llava_next': 'pixel_values',
         'qwen2_vl': 'pixel_values',
         'qwen2_5_vl': 'pixel_values',
-        'instructblip': 'pixel_values',
     }
 
     # Default image token positions
@@ -50,7 +46,6 @@ class ModelHelper:
         'llava_next': (35, 611),
         'qwen2_vl': (10, 266),  # ~256 patches, variable
         'qwen2_5_vl': (10, 266),
-        'instructblip': (0, 32),  # Q-Former outputs
     }
 
     @staticmethod
@@ -69,16 +64,28 @@ class ModelHelper:
 
         Returns:
             nn.ModuleList of transformer layers
+
+        Model structures:
+            - Qwen2-VL: model.model.language_model.layers
+            - LLaVA/LLaVA-NeXT: model.language_model.model.layers
         """
         model_type = ModelHelper.normalize_model_type(model_type)
         model_name = type(model).__name__.lower()
 
-        # Qwen2-VL / Qwen2.5-VL: model.model.layers
+        # Qwen2-VL / Qwen2.5-VL: model.model.language_model.layers
         if 'qwen' in model_name or model_type in ('qwen2_vl', 'qwen2_5_vl'):
+            # Qwen2VLForConditionalGeneration structure:
+            # - model.model = Qwen2VLModel
+            # - model.model.language_model = Qwen2VLTextModel (has .layers)
+            if hasattr(model, 'model') and hasattr(model.model, 'language_model'):
+                lm = model.model.language_model
+                if hasattr(lm, 'layers'):
+                    return lm.layers
+            # Fallback: model.model.layers
             if hasattr(model, 'model') and hasattr(model.model, 'layers'):
                 return model.model.layers
 
-        # LLaVA / LLaVA-NeXT / InstructBLIP: language_model.model.layers
+        # LLaVA / LLaVA-NeXT: language_model.model.layers
         if hasattr(model, 'language_model'):
             lm = model.language_model
             # Decoder-only (LLaMA-style)
@@ -87,11 +94,6 @@ class ModelHelper:
             # Direct layers
             if hasattr(lm, 'layers'):
                 return lm.layers
-            # Seq2Seq (T5/FLAN-T5 style)
-            if hasattr(lm, 'encoder') and hasattr(lm.encoder, 'block'):
-                return lm.encoder.block
-            if hasattr(lm, 'decoder') and hasattr(lm.decoder, 'block'):
-                return lm.decoder.block
 
         # Direct model.model.layers (LLaMA-style)
         if hasattr(model, 'model') and hasattr(model.model, 'layers'):
@@ -135,7 +137,7 @@ class ModelHelper:
             if hasattr(model, 'model') and hasattr(model.model, 'embed_tokens'):
                 return model.model.embed_tokens
 
-        # LLaVA / InstructBLIP
+        # LLaVA / LLaVA-NeXT
         if hasattr(model, 'language_model'):
             lm = model.language_model
             if hasattr(lm, 'get_input_embeddings'):
@@ -162,24 +164,39 @@ class ModelHelper:
 
         Returns:
             Tuple of (norm, lm_head)
+
+        Model structures:
+            - Qwen2-VL: model.model.language_model.norm, model.lm_head
+            - LLaVA/LLaVA-NeXT: model.language_model.model.norm, model.language_model.lm_head
         """
         model_type = ModelHelper.normalize_model_type(model_type)
         model_name = type(model).__name__.lower()
 
-        # Qwen2-VL / Qwen2.5-VL
+        # Qwen2-VL / Qwen2.5-VL: model.model.language_model.norm
         if 'qwen' in model_name or model_type in ('qwen2_vl', 'qwen2_5_vl'):
+            # Qwen2VLForConditionalGeneration structure:
+            # - model.model = Qwen2VLModel
+            # - model.model.language_model = Qwen2VLTextModel (has .norm)
+            # - model.lm_head = lm_head
+            if hasattr(model, 'model') and hasattr(model.model, 'language_model'):
+                lm = model.model.language_model
+                if hasattr(lm, 'norm'):
+                    return lm.norm, model.lm_head
+            # Fallback: try model.model.norm
             if hasattr(model, 'model') and hasattr(model.model, 'norm'):
                 return model.model.norm, model.lm_head
 
-        # LLaVA / InstructBLIP
+        # LLaVA / LLaVA-NeXT: model.language_model.model.norm
         if hasattr(model, 'language_model'):
             lm = model.language_model
+            # Decoder-only (LLaMA-based): lm.model.norm, lm.lm_head
             if hasattr(lm, 'model') and hasattr(lm.model, 'norm'):
                 return lm.model.norm, lm.lm_head
+            # Direct norm on language_model
             if hasattr(lm, 'norm'):
                 return lm.norm, lm.lm_head
 
-        # Direct model.model.norm (LLaMA-style)
+        # Direct model.model.norm (LLaMA-style standalone)
         if hasattr(model, 'model') and hasattr(model.model, 'norm'):
             return model.model.norm, model.lm_head
 
@@ -212,11 +229,6 @@ class ModelHelper:
                 return model.visual
             if hasattr(model, 'model') and hasattr(model.model, 'visual'):
                 return model.model.visual
-
-        # InstructBLIP
-        if model_type == 'instructblip':
-            if hasattr(model, 'vision_model'):
-                return model.vision_model
 
         raise ValueError(f"Cannot find vision encoder in {model_type} model: {type(model)}")
 
@@ -254,7 +266,7 @@ def get_image_token_indices(
 
     Args:
         input_ids: Input token IDs tensor [B, seq_len]
-        model_type: Model type - llava, llava_next, qwen2_vl, qwen2_5_vl, instructblip
+        model_type: Model type - llava, llava_next, qwen2_vl, qwen2_5_vl
         config: Optional model config to get token IDs dynamically
         image_token_id: Token ID for image placeholder (default: 32000 for LLaVA)
 
@@ -297,10 +309,6 @@ def get_image_token_indices(
             return start_idx, end_idx
         else:
             return ModelHelper.DEFAULT_IMAGE_TOKENS[model_type]
-
-    elif model_type == "instructblip":
-        # InstructBLIP: first 32 tokens are Q-former outputs
-        return 0, 32
 
     else:
         # Fallback: try to find image_token_id
@@ -359,15 +367,17 @@ def sample_top_p(
     logits: torch.Tensor,
     top_p: float = 0.9,
     temperature: float = 1.0,
+    top_k: Optional[int] = None,
     filter_value: float = -float("Inf"),
 ) -> torch.Tensor:
     """
-    Top-p (nucleus) sampling.
+    Top-k + top-p (nucleus) sampling.
 
     Args:
         logits: Logits tensor of shape (B, vocab_size)
         top_p: Cumulative probability threshold (0-1)
         temperature: Sampling temperature
+        top_k: Top-k filter size (None or <=0 disables)
         filter_value: Value to replace filtered logits with
 
     Returns:
@@ -375,6 +385,11 @@ def sample_top_p(
     """
     if temperature != 1.0:
         logits = logits / temperature
+
+    if top_k is not None and top_k > 0:
+        top_k = min(top_k, logits.size(-1))
+        kth_values = torch.topk(logits, top_k, dim=-1).values[..., -1, None]
+        logits = logits.masked_fill(logits < kth_values, filter_value)
 
     sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
     cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)

@@ -9,7 +9,6 @@ Supported Models:
     - LLaVA-NeXT (model_type="llava_next")
     - Qwen2-VL (model_type="qwen2_vl")
     - Qwen2.5-VL (model_type="qwen2_5_vl")
-    - InstructBLIP (model_type="instructblip")
 
 Architecture:
     BaseMitigator

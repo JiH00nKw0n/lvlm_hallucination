@@ -17,7 +17,7 @@ Formula (full mode):
     y = sum_i(lam[i] * lambda_sim * normalize(vsv[i])) / len(vsv)
     x' = normalize(normalize(x) + y) * ||x||
 
-Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL, InstructBLIP
+Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -37,11 +37,11 @@ class VISTAMitigator(BaseMitigator):
 
     Args:
         model: The VLM model
-        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl, instructblip
+        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl
         vsv: Visual Steering Vector tensor of shape (num_layers, hidden_dim)
              or list of (num_layers, hidden_dim) tensors for multi-vector mode
         target_layers: Layers to apply VSV (default: all layers)
-        lam: Steering strength per layer or scalar (default: 0.1)
+        lam: Steering strength (scalar or list per vector, default: 0.1)
         simple_mode: If True, skip lambda_sim weighting (default: False)
         logits_layers: Layers for Self-Logits Augmentation (optional)
         logits_alpha: Blend ratio for SLA (default: 0.3)
@@ -69,11 +69,8 @@ class VISTAMitigator(BaseMitigator):
         self.logits_layers = logits_layers
         self.logits_alpha = logits_alpha
 
-        # Handle lam: can be scalar or per-layer list
-        if isinstance(lam, (int, float)):
-            self.lam = [lam] * num_layers
-        else:
-            self.lam = list(lam)
+        # lam follows reference: scalar or list shared across layers (per-vector weights)
+        self.lam = lam
 
         # Store VSV vectors
         self.vsv: Dict[int, torch.Tensor] = {}
@@ -133,9 +130,13 @@ class VISTAMitigator(BaseMitigator):
             if not isinstance(vsv_list, list):
                 vsv_list = [vsv_list]
 
-            lam_val = self.lam[layer_idx]
-            if not isinstance(lam_val, list):
+            lam_val = self.lam
+            if isinstance(lam_val, (int, float)):
                 lam_val = [lam_val] * len(vsv_list)
+            else:
+                lam_val = list(lam_val)
+                if len(lam_val) == 1 and len(vsv_list) > 1:
+                    lam_val = lam_val * len(vsv_list)
 
             if self.simple_mode:
                 # Simple mode: no lambda_sim
@@ -167,7 +168,7 @@ class VISTAMitigator(BaseMitigator):
             x_norm = F.normalize(x_float, p=2, dim=-1)
             steered = F.normalize(x_norm + y, p=2, dim=-1) * original_norm
 
-            steered = steered.to(x.dtype)
+            steered = steered.half()
 
             if isinstance(output, tuple):
                 return (steered,) + output[1:]
@@ -209,6 +210,7 @@ class VISTAMitigator(BaseMitigator):
                 'max_new_tokens': self.config.max_new_tokens,
                 'do_sample': self.config.do_sample,
                 'temperature': self.config.temperature,
+                'top_k': self.config.top_k,
                 'top_p': self.config.top_p,
             }
             gen_kwargs.update(kwargs)
@@ -235,10 +237,15 @@ class VISTAMitigator(BaseMitigator):
         past_key_values = None
         device = input_ids.device
 
-        norm, lm_head = self._get_norm_and_lm_head()
+        _, lm_head = self._get_norm_and_lm_head()
 
         for _ in range(self.config.max_new_tokens):
-            curr_ids = generated if past_key_values is None else generated[:, -1:]
+            if past_key_values is None:
+                curr_ids = generated
+                cache_position = torch.arange(curr_ids.shape[1], device=device)
+            else:
+                curr_ids = generated[:, -1:]
+                cache_position = torch.tensor([generated.shape[1] - 1], device=device)
 
             outputs = self.model(
                 input_ids=curr_ids,
@@ -246,6 +253,7 @@ class VISTAMitigator(BaseMitigator):
                 past_key_values=past_key_values,
                 output_hidden_states=True,
                 use_cache=True,
+                cache_position=cache_position,
                 **{k: v for k, v in kwargs.items() if past_key_values is None or k not in ['pixel_values', 'image_sizes', 'image_grid_thw']},
             )
 
@@ -256,8 +264,7 @@ class VISTAMitigator(BaseMitigator):
             aug_logits = []
             for layer_idx in self.logits_layers:
                 if layer_idx < len(hidden_states):
-                    h = norm(hidden_states[layer_idx])
-                    aug_logits.append(lm_head(h)[:, -1, :])
+                    aug_logits.append(lm_head(hidden_states[layer_idx])[:, -1, :])
 
             if aug_logits:
                 aug_logits = torch.stack(aug_logits).mean(dim=0)
@@ -265,7 +272,12 @@ class VISTAMitigator(BaseMitigator):
 
             # Sample
             if self.config.do_sample:
-                next_token = sample_top_p(logits, self.config.top_p, self.config.temperature)
+                next_token = sample_top_p(
+                    logits,
+                    top_p=self.config.top_p,
+                    temperature=self.config.temperature,
+                    top_k=self.config.top_k,
+                )
             else:
                 next_token = logits.argmax(dim=-1, keepdim=True)
 
@@ -318,8 +330,24 @@ class VISTAMitigator(BaseMitigator):
         Returns:
             vsv: Tensor of shape (num_layers, hidden_dim)
         """
-        from sklearn.decomposition import PCA
-        import numpy as np
+        def _svd_flip(u: torch.Tensor, v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+            max_abs_cols = torch.argmax(torch.abs(u), 0)
+            i = torch.arange(u.shape[1], device=u.device)
+            signs = torch.sign(u[max_abs_cols, i])
+            u = u * signs
+            v = v * signs.view(-1, 1)
+            return u, v
+
+        def _fit_pca(x: torch.Tensor, n_components: int) -> Tuple[torch.Tensor, torch.Tensor]:
+            n, d = x.size()
+            d = min(n_components, d)
+            mean = x.mean(0, keepdim=True)
+            z = x - mean
+            u, _, vh = torch.linalg.svd(z, full_matrices=False)
+            vt = vh
+            u, vt = _svd_flip(u, vt)
+            components = vt[:d]
+            return components, mean
 
         all_diffs = []
         num_layers = None
@@ -349,13 +377,10 @@ class VISTAMitigator(BaseMitigator):
                 diff = (pos_flat - neg_flat).cpu()
                 all_diffs.append(diff)
 
-        # PCA
-        stacked = torch.stack(all_diffs).numpy()
-        pca = PCA(n_components=rank)
-        pca.fit(stacked)
-
-        # Combine components
-        direction = pca.components_.sum(axis=0) + pca.mean_
-        vsv = torch.from_numpy(direction.reshape(num_layers, hidden_dim)).float()
+        # PCA (reference implementation)
+        stacked = torch.stack(all_diffs).float()
+        components, mean = _fit_pca(stacked, rank)
+        direction = (components.sum(dim=0, keepdim=True) + mean).mean(0)
+        vsv = direction.view(num_layers, hidden_dim).float()
 
         return vsv
