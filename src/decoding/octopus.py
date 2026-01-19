@@ -1,54 +1,42 @@
 """
 Octopus: Dynamic Strategy Selection
 
-Learns to dynamically select between hallucination mitigation strategies
-per token using a trained classifier.
+Uses the reference Octopus generation logic (avisc_sample.py) with a MyModel-style
+policy wrapper that outputs action logits and model outputs each step.
 
 Reference:
     - Octopus/eval_bench/train_token_amber.py:132-256 (MyModel classifier)
-    - Octopus/avisc_utils/avisc_sample.py:286-317 (M3ID formula)
+    - Octopus/avisc_utils/avisc_sample.py (custom sample/generate loop)
     - Octopus/eval_bench/train_token_amber.py:611-631 (DPO loss)
 
 Key Implementation Notes:
-    1. Classifier: CLS token prepended to hidden states + TransformerEncoder + MLP
-    2. Actions: 0=None, 1=AvisC, 2=VCD, 3=M3ID
-    3. Separate KV caches for each strategy
-    4. M3ID uses log-softmax formula: lc + ((1-gamma)/gamma) * (lc - lu)
+    1. Policy wrapper mirrors MyModel forward (masking inputs_embeds, LLaMA forward)
+    2. Classifier mirrors MyModel (TransformerEncoder + MLP, float32)
+    3. Generation delegates to Octopus/avisc_utils/avisc_sample.py
 
-Architecture (Reference):
-    - cls_token: learnable [1, d_model]
-    - TransformerEncoder: nhead=2, num_layers=2
-    - MLP: Linear(d_model, d_model//4) -> LeakyReLU -> Linear(d_model//4, num_classes)
-
-Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL
+Supports: LLaVA, LLaVA-NeXT (reference Octopus code targets LLaVA)
 """
 
 import math
-from typing import Dict, List, Optional, Tuple
+import types
+from typing import List, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers import CausalLMOutputWithPast
 
-from .base import (
-    BaseMitigator, TrainableMitigator, MitigatorConfig,
-    sample_top_p, add_diffusion_noise, ModelHelper
-)
+from .base import TrainableMitigator, add_diffusion_noise, get_image_token_indices, ModelHelper
 
 
 class OctopusClassifier(nn.Module):
     """
     Octopus action classifier.
 
-    Reference: Octopus/eval_bench/train_token_amber.py:132-256
-
-    Architecture matches reference exactly:
-        - Single CLS token prepended to hidden states
-        - TransformerEncoder (nhead=2, num_layers=2)
-        - MLP: d_model -> d_model//4 (LeakyReLU) -> num_classes
-
-    Input: Hidden states [B, seq_len, d_model]
-    Output: Action logits [B, num_classes] (CLS token output)
+    Matches reference MyModel classifier implementation:
+        - cls_token (float32)
+        - TransformerEncoder (nhead=2, num_layers=2, batch_first=False)
+        - MLP: d_model -> d_model//4 -> num_classes (LeakyReLU)
     """
 
     def __init__(
@@ -58,230 +46,405 @@ class OctopusClassifier(nn.Module):
         nhead: int = 2,
         num_layers: int = 2,
         n_query: int = 4,
+        bt: int = 1,
     ):
         super().__init__()
-        self.d_model = d_model
-        self.num_classes = num_classes
         self.n_query = n_query
+        self.bt = bt
 
-        # Single CLS token (Reference: line 140)
-        self.cls_token = nn.Parameter(torch.randn(1, d_model))
-        # Optional queries (saved in reference checkpoints)
-        self.queries = nn.Parameter(torch.randn(n_query, d_model))
+        self.cls_token = nn.Parameter(torch.randn(1, d_model).to(dtype=torch.float32))
+        self.queries = nn.Parameter(torch.randn(n_query, d_model).to(dtype=torch.float32))
 
-        # TransformerEncoder (Reference: lines 141-143)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            batch_first=True,
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        encoder_layer = nn.TransformerEncoderLayer(d_model, nhead).to(dtype=torch.float32)
+        encoder_layer.apply(self.init_weights)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers).to(dtype=torch.float32)
 
-        # MLP head (Reference: lines 145-151)
-        # Uses LeakyReLU and d_model//4
         self.mlp = nn.Sequential(
-            nn.Linear(d_model, d_model // 4),
+            nn.Linear(d_model, d_model // 4).to(dtype=torch.float32),
             nn.LeakyReLU(),
-            nn.Linear(d_model // 4, num_classes),
+            nn.Linear(d_model // 4, num_classes).to(dtype=torch.float32),
         )
 
-        # Initialize weights (Reference: lines 159-162)
-        self._init_weights()
-
-    def _init_weights(self):
-        """Initialize weights using Kaiming uniform."""
         for layer in self.mlp:
             if isinstance(layer, nn.Linear):
                 nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')
                 nn.init.constant_(layer.bias, 0)
 
+    @staticmethod
+    def init_weights(m):
+        if isinstance(m, nn.Linear):
+            nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
+            if m.bias is not None:
+                fan_in, _ = torch.nn.init._calculate_fan_in_and_fan_out(m.weight)
+                bound = 1 / math.sqrt(fan_in)
+                torch.nn.init.uniform_(m.bias, -bound, bound)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.weight, 1.0)
+            nn.init.constant_(m.bias, 0)
+
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass for classifier.
+        inputs_transformer = torch.cat(
+            (self.cls_token.unsqueeze(0).expand(self.bt, -1, -1), hidden_states.to(dtype=torch.float32)),
+            dim=1,
+        )
+        out_transformer = self.transformer(inputs_transformer)
+        logits_mlp = self.mlp(out_transformer)
+        return logits_mlp[:, 0, :]
 
-        Reference: Octopus/eval_bench/train_token_amber.py:250-256
 
-        Args:
-            hidden_states: [B, seq_len, d_model]
+class OctopusPolicy(nn.Module):
+    """
+    MyModel-style policy wrapper from the reference implementation.
 
-        Returns:
-            action_logits: [B, num_classes]
-        """
-        B = hidden_states.shape[0]
+    Returns (action_logits, model_outputs) in forward.
+    """
 
-        # Prepend CLS token (Reference: lines 250-251)
-        cls_expanded = self.cls_token.unsqueeze(0).expand(B, 1, -1)
-        inputs = torch.cat([cls_expanded, hidden_states.float()], dim=1)
+    def __init__(
+        self,
+        model: nn.Module,
+        classifier: OctopusClassifier,
+        model_type: str = "llava",
+    ):
+        super().__init__()
+        self.model = model
+        self.Llama = model.model
+        self.classifier = classifier
+        self.model_type = ModelHelper.normalize_model_type(model_type)
 
-        # TransformerEncoder (Reference: lines 253)
-        out = self.transformer(inputs)
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        past_key_values=None,
+        inputs_embeds=None,
+        labels=None,
+        use_cache=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        images=None,
+        pixel_values=None,
+        images_cd=None,
+        cd_beta=None,
+        cd_alpha=None,
+        img_idx=None,
+        mask_idx=None,
+        return_dict=None,
+        kernel_size=None,
+        use_avisc=None,
+        layer_gamma=None,
+        masking_scheme=None,
+        lamb=None,
+        question_id=None,
+        use_m3id=None,
+        is_eval=None,
+        temp=None,
+        image_grid_thw=None,
+        cache_position=None,
+        position_ids=None,
+        rope_deltas=None,
+    ):
+        if pixel_values is None and images is not None:
+            pixel_values = images
 
-        # MLP on CLS token output (Reference: lines 255-256)
-        cls_out = out[:, 0, :]  # [B, d_model]
-        logits = self.mlp(cls_out)  # [B, num_classes]
+        if attention_mask is None and input_ids is not None:
+            attention_mask = torch.ones(input_ids.shape[:2], dtype=torch.long, device=input_ids.device)
 
-        return logits
+        is_qwen = self.model_type in ("qwen2_vl", "qwen2_5_vl")
+        if not is_qwen:
+            if input_ids is not None:
+                input_ids, attention_mask, past_key_values, inputs_embeds, labels = (
+                    self.model.prepare_inputs_labels_for_multimodal(
+                        input_ids, attention_mask, past_key_values, labels, images
+                    )
+                )
+
+            if mask_idx is not None and past_key_values is None and inputs_embeds is not None:
+                img_start, _ = get_image_token_indices(
+                    input_ids,
+                    model_type=self.model_type,
+                    config=getattr(self.model, "config", None),
+                )
+                for input_embed, idx in zip(inputs_embeds, mask_idx):
+                    if masking_scheme is None:
+                        masking_scheme = "zeros"
+                    pos = idx + img_start
+                    if masking_scheme.lower() == "ones":
+                        input_embed[pos] = 1.0
+                    elif masking_scheme.lower() == "zeros":
+                        input_embed[pos] = 0.0
+                    elif masking_scheme.lower() == "noise":
+                        input_embed[pos] = torch.randn(
+                            input_embed[pos].size(),
+                            dtype=input_embed.dtype,
+                            device=input_embed.device,
+                        )
+                    else:
+                        input_embed[pos] = 0.0
+
+            with torch.no_grad():
+                outputs = self.Llama(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    past_key_values=past_key_values,
+                    inputs_embeds=inputs_embeds,
+                    use_cache=True,
+                    output_attentions=True,
+                    output_hidden_states=False,
+                    return_dict=True,
+                )
+
+            hidden_states = outputs[0]
+            logits = self.model.lm_head(hidden_states)
+        else:
+            if input_ids is None:
+                raise ValueError("OctopusPolicy requires input_ids for Qwen2-VL inputs.")
+
+            inputs_embeds = self.model.model.get_input_embeddings()(input_ids)
+            if pixel_values is not None:
+                image_embeds = self.model.model.get_image_features(pixel_values, image_grid_thw)
+                image_embeds = torch.cat(image_embeds, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
+                image_mask, _ = self.model.model.get_placeholder_mask(
+                    input_ids, inputs_embeds=inputs_embeds, image_features=image_embeds
+                )
+                inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+
+            if mask_idx is not None and past_key_values is None:
+                img_start, _ = get_image_token_indices(
+                    input_ids,
+                    model_type=self.model_type,
+                    config=getattr(self.model, "config", None),
+                )
+                for input_embed, idx in zip(inputs_embeds, mask_idx):
+                    if masking_scheme is None:
+                        masking_scheme = "zeros"
+                    pos = idx + img_start
+                    if masking_scheme.lower() == "ones":
+                        input_embed[pos] = 1.0
+                    elif masking_scheme.lower() == "zeros":
+                        input_embed[pos] = 0.0
+                    elif masking_scheme.lower() == "noise":
+                        input_embed[pos] = torch.randn(
+                            input_embed[pos].size(),
+                            dtype=input_embed.dtype,
+                            device=input_embed.device,
+                        )
+                    else:
+                        input_embed[pos] = 0.0
+
+            if position_ids is None:
+                rope_state = getattr(self.model.model, "rope_deltas", None)
+                if rope_state is None or cache_position is None or cache_position[0] == 0:
+                    position_ids, rope_deltas = self.model.model.get_rope_index(
+                        input_ids, image_grid_thw, None, attention_mask
+                    )
+                    self.model.model.rope_deltas = rope_deltas
+                else:
+                    batch_size, seq_length, _ = inputs_embeds.shape
+                    position_ids = torch.arange(seq_length, device=inputs_embeds.device)
+                    position_ids = position_ids.view(1, 1, -1).expand(3, batch_size, -1)
+                    delta = (cache_position[0] + self.model.model.rope_deltas).to(inputs_embeds.device)
+                    delta = delta.repeat_interleave(batch_size // delta.shape[0], dim=0)
+                    position_ids = position_ids + delta.to(position_ids.device)
+
+            with torch.no_grad():
+                outputs = self.model.model.language_model(
+                    input_ids=None,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    inputs_embeds=inputs_embeds,
+                    use_cache=True,
+                    output_attentions=True,
+                    output_hidden_states=False,
+                    return_dict=True,
+                    cache_position=cache_position,
+                )
+
+            hidden_states = outputs[0]
+            logits = self.model.lm_head(hidden_states)
+        loss = None
+
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+        else:
+            output = CausalLMOutputWithPast(
+                loss=loss,
+                logits=logits,
+                past_key_values=outputs.past_key_values,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.attentions,
+            )
+
+        action_logits = self.classifier(hidden_states)
+        return action_logits, output
+
+    def generate(self, inputs=None, **kwargs):
+        from Octopus.avisc_utils import avisc_sample
+
+        orig_sample = getattr(self.model, "sample", None)
+        orig_prepare_method = getattr(self.model, "prepare_inputs_for_generation_method", None)
+        orig_prepare_cd = getattr(self.model, "prepare_inputs_for_generation_cd", None)
+        orig_prepare_m3id = getattr(self.model, "prepare_inputs_for_generation_m3id", None)
+        image_kwarg = ModelHelper.get_image_kwarg_name(self.model_type)
+
+        def _prepare_with_image(model_self, input_ids, past_key_values=None,
+                                attention_mask=None, inputs_embeds=None, image_key=None, **model_kwargs):
+            if past_key_values:
+                input_ids = input_ids[:, -1:]
+            if inputs_embeds is not None and past_key_values is None:
+                model_inputs = {"inputs_embeds": inputs_embeds}
+            else:
+                model_inputs = {"input_ids": input_ids}
+
+            if image_key is not None and model_kwargs.get(image_key) is not None:
+                model_inputs[image_kwarg] = model_kwargs.get(image_key)
+
+            for key in ("cache_position", "position_ids", "rope_deltas", "image_grid_thw"):
+                if key in model_kwargs and model_kwargs[key] is not None:
+                    model_inputs[key] = model_kwargs[key]
+
+            model_inputs.update(
+                {
+                    "past_key_values": past_key_values,
+                    "use_cache": model_kwargs.get("use_cache"),
+                    "attention_mask": attention_mask,
+                }
+            )
+            return model_self.prepare_inputs_for_generation(**model_inputs)
+
+        def _prepare_inputs_for_generation_method(model_self, input_ids, past_key_values=None,
+                                                  attention_mask=None, inputs_embeds=None, **model_kwargs):
+            return _prepare_with_image(
+                model_self,
+                input_ids,
+                past_key_values=past_key_values,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds,
+                image_key="images",
+                **model_kwargs,
+            )
+
+        def _prepare_inputs_for_generation_cd(model_self, input_ids, past_key_values=None,
+                                              attention_mask=None, inputs_embeds=None, **model_kwargs):
+            return _prepare_with_image(
+                model_self,
+                input_ids,
+                past_key_values=past_key_values,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds,
+                image_key="images_cd",
+                **model_kwargs,
+            )
+
+        def _prepare_inputs_for_generation_m3id(model_self, input_ids, past_key_values=None,
+                                                attention_mask=None, inputs_embeds=None, **model_kwargs):
+            input_ids_m3id = input_ids
+            attention_mask_m3id = attention_mask
+            if past_key_values:
+                input_ids_m3id = input_ids[:, -1:]
+            elif self.model_type in ("qwen2_vl", "qwen2_5_vl"):
+                config = getattr(model_self, "config", None)
+                vision_start_id = getattr(config, "vision_start_token_id", 151652)
+                vision_end_id = getattr(config, "vision_end_token_id", 151653)
+                image_token_id = getattr(config, "image_token_id", None)
+                mask = (input_ids != vision_start_id) & (input_ids != vision_end_id)
+                if image_token_id is not None:
+                    mask = mask & (input_ids != image_token_id)
+                input_ids_m3id = input_ids[mask].view(input_ids.shape[0], -1)
+                if attention_mask is not None:
+                    attention_mask_m3id = attention_mask[mask].view(attention_mask.shape[0], -1)
+            else:
+                if input_ids is not None and (input_ids == -200).any():
+                    input_ids_m3id = input_ids[input_ids != -200].view(input_ids.shape[0], -1)
+                if attention_mask is not None and attention_mask_m3id is not None:
+                    attention_mask_m3id = attention_mask_m3id[:, :input_ids_m3id.shape[1]]
+
+            return _prepare_with_image(
+                model_self,
+                input_ids_m3id,
+                past_key_values=past_key_values,
+                attention_mask=attention_mask_m3id,
+                inputs_embeds=inputs_embeds,
+                image_key=None,
+                **model_kwargs,
+            )
+        try:
+            self.model.sample = types.MethodType(avisc_sample.sample, self.model)
+            if orig_prepare_method is None:
+                self.model.prepare_inputs_for_generation_method = types.MethodType(
+                    _prepare_inputs_for_generation_method, self.model
+                )
+            if orig_prepare_cd is None:
+                self.model.prepare_inputs_for_generation_cd = types.MethodType(
+                    _prepare_inputs_for_generation_cd, self.model
+                )
+            if orig_prepare_m3id is None:
+                self.model.prepare_inputs_for_generation_m3id = types.MethodType(
+                    _prepare_inputs_for_generation_m3id, self.model
+                )
+            return avisc_sample.generate(self.model, inputs=inputs, mymodel=self, **kwargs)
+        finally:
+            if orig_sample is not None:
+                self.model.sample = orig_sample
+            if orig_prepare_method is not None:
+                self.model.prepare_inputs_for_generation_method = orig_prepare_method
+            elif hasattr(self.model, "prepare_inputs_for_generation_method"):
+                delattr(self.model, "prepare_inputs_for_generation_method")
+            if orig_prepare_cd is not None:
+                self.model.prepare_inputs_for_generation_cd = orig_prepare_cd
+            elif hasattr(self.model, "prepare_inputs_for_generation_cd"):
+                delattr(self.model, "prepare_inputs_for_generation_cd")
+            if orig_prepare_m3id is not None:
+                self.model.prepare_inputs_for_generation_m3id = orig_prepare_m3id
+            elif hasattr(self.model, "prepare_inputs_for_generation_m3id"):
+                delattr(self.model, "prepare_inputs_for_generation_m3id")
 
 
 class OctopusMitigator(TrainableMitigator):
     """
     Octopus: Dynamic Strategy Selection.
 
-    Reference: Octopus/eval_bench/train_token_amber.py
-
-    Args:
-        model: The VLM model
-        model_type: llava, llava_next, qwen2_vl, qwen2_5_vl
-        classifier: OctopusClassifier instance (optional, can be loaded)
-        lambda_decay: M3ID gamma decay (default: 0.02)
-        cd_alpha: Contrastive alpha for AvisC/VCD (default: 1.0)
-        cd_beta: Plausibility cutoff (default: 0.1)
-        noise_step: VCD noise step (default: 500)
-        layer_gamma: AvisC layer selection threshold (default: 0.5)
-        lamb: AvisC blind token threshold (default: 100.0)
-        masking_scheme: AvisC masking type (default: "zeros")
-        n_query: Number of query tokens (default: 4)
+    Uses reference generation loop and MyModel-style policy wrapper.
     """
 
     name: str = "octopus"
-
-    # Action mapping (Reference: train_token_amber.py actions)
-    ACTION_NONE = 0
-    ACTION_AVISC = 1
-    ACTION_VCD = 2
-    ACTION_M3ID = 3
 
     def __init__(
         self,
         model: nn.Module,
         model_type: str = "llava",
         classifier: Optional[OctopusClassifier] = None,
-        lambda_decay: float = 0.02,
-        cd_alpha: float = 1.0,
-        cd_beta: float = 0.1,
         noise_step: int = 500,
         layer_gamma: float = 0.5,
         lamb: float = 100.0,
         masking_scheme: str = "zeros",
         n_query: int = 4,
+        bt: int = 1,
         **kwargs,
     ):
         super().__init__(model, model_type, **kwargs)
-        self.lambda_decay = lambda_decay
-        self.cd_alpha = cd_alpha
-        self.cd_beta = cd_beta
         self.noise_step = noise_step
         self.layer_gamma = layer_gamma
         self.lamb = lamb
         self.masking_scheme = masking_scheme
 
-        # Initialize or set classifier
-        if classifier is not None:
-            self.classifier = classifier
-        else:
-            # Infer d_model from model
-            d_model = 4096  # Default
-            if hasattr(model, 'config'):
-                d_model = getattr(model.config, 'hidden_size', d_model)
-            self.classifier = OctopusClassifier(d_model=d_model, n_query=n_query)
+        if classifier is None:
+            d_model = 4096
+            if hasattr(model, "config"):
+                d_model = getattr(model.config, "hidden_size", d_model)
+            classifier = OctopusClassifier(d_model=d_model, n_query=n_query, bt=bt)
 
-        # State for AvisC masking
-        self._blind_mask = None
-        self._img_start = 0
-        self._img_end = 0
-        self._enable_masking = False
-        self._masking_hook_handle = None
+        self.classifier = classifier
+        self.policy = OctopusPolicy(model, classifier, model_type=model_type)
 
     def setup(self) -> None:
-        """Move classifier to correct device and setup masking hook."""
         device = next(self.model.parameters()).device
-        dtype = next(self.model.parameters()).dtype
-        self.classifier = self.classifier.to(device)
-
-        # Setup masking hook for AvisC
-        layers = self._get_layers()
-        if len(layers) > 0:
-            self._masking_hook_handle = layers[0].register_forward_pre_hook(
-                self._avisc_masking_hook
-            )
+        self.policy = self.policy.to(device)
 
     def cleanup(self) -> None:
-        """Remove masking hook."""
-        if self._masking_hook_handle is not None:
-            self._masking_hook_handle.remove()
-            self._masking_hook_handle = None
-        self._blind_mask = None
-        self._enable_masking = False
-
-    def _avisc_masking_hook(self, module, args):
-        """Forward pre-hook to mask image token embeddings for AvisC."""
-        if not self._enable_masking or self._blind_mask is None:
-            return args
-
-        hidden_states = args[0] if isinstance(args, tuple) else args
-        masked_hidden = hidden_states.clone()
-        batch_size = masked_hidden.shape[0]
-
-        for b in range(batch_size):
-            if b < self._blind_mask.shape[0]:
-                blind_indices = torch.where(self._blind_mask[b])[0]
-                for idx in blind_indices:
-                    pos = self._img_start + idx.item()
-                    if pos < masked_hidden.shape[1]:
-                        if self.masking_scheme == "zeros":
-                            masked_hidden[b, pos] = 0.0
-                        elif self.masking_scheme == "ones":
-                            masked_hidden[b, pos] = 1.0
-                        elif self.masking_scheme == "noise":
-                            masked_hidden[b, pos] = torch.randn_like(masked_hidden[b, pos])
-
-        if isinstance(args, tuple):
-            return (masked_hidden,) + args[1:]
-        return masked_hidden
-
-    def _detect_blind_tokens(
-        self,
-        attentions: Tuple[torch.Tensor, ...],
-        img_start: int,
-        img_end: int,
-    ) -> torch.Tensor:
-        """
-        Detect blind tokens based on attention patterns.
-
-        Reference: Octopus/avisc_utils/avisc_sample.py:160-179
-        """
-        # Step 1: Layer selection by image attention
-        layer_img_att = []
-        for attn in attentions:
-            img_attn = attn.mean(dim=1)[:, -1, img_start:img_end]
-            layer_img_att.append(img_attn.sum())
-
-        layer_img_att = torch.stack(layer_img_att, dim=0)
-        layer_probs = layer_img_att / layer_img_att.sum()
-
-        # Count top-p layers
-        sorted_probs = torch.sort(layer_probs, descending=True)[0]
-        cumsum = torch.cumsum(sorted_probs, dim=0)
-        k = (cumsum < self.layer_gamma).sum().item() + 1
-        _, top_k_layers = torch.topk(layer_probs.float(), k, dim=0)
-        top_k_layers = top_k_layers.tolist()
-
-        # Step 2: Stack attention from selected layers
-        att_stack = torch.stack([
-            attentions[i].mean(dim=1)[:, -1, img_start:img_end]
-            for i in top_k_layers
-        ], dim=1)
-
-        img_att = att_stack.mean(dim=1)
-
-        # Step 3: Threshold
-        threshold = img_att.mean() + self.lamb * img_att.std()
-
-        blind_mask = img_att < threshold
-        return blind_mask
+        return
 
     def get_trainable_parameters(self) -> List[nn.Parameter]:
-        """Return classifier parameters."""
         return list(self.classifier.parameters())
 
     def compute_loss(
@@ -291,28 +454,13 @@ class OctopusMitigator(TrainableMitigator):
         rejected_actions: torch.Tensor,
         beta: float = 1.0,
     ) -> torch.Tensor:
-        """
-        Compute DPO loss for training.
-
-        Reference: Octopus/eval_bench/train_token_amber.py:611-631
-
-        Args:
-            hidden_states: [B, seq_len, d_model]
-            chosen_actions: [B] - preferred actions
-            rejected_actions: [B] - non-preferred actions
-            beta: DPO temperature (default: 1.0)
-
-        Returns:
-            loss: Scalar loss tensor
-        """
         # If hidden_states are already action scores [B, T, C], use them directly
-        if hidden_states.dim() == 3 and hidden_states.shape[-1] == self.classifier.num_classes:
+        if hidden_states.dim() == 3 and hidden_states.shape[-1] == 4:
             action_scores = hidden_states
         else:
-            action_logits = self.classifier(hidden_states)  # [B, num_classes]
-            action_scores = action_logits.unsqueeze(1)  # [B, 1, num_classes]
+            action_logits = self.classifier(hidden_states)
+            action_scores = action_logits.unsqueeze(1)
 
-        # Align label shapes to [B, T]
         if chosen_actions.dim() == 1:
             chosen_actions = chosen_actions.unsqueeze(1)
         if rejected_actions.dim() == 1:
@@ -328,7 +476,6 @@ class OctopusMitigator(TrainableMitigator):
             chosen_actions = chosen_actions[:, :len_text]
             rejected_actions = rejected_actions[:, :len_text]
 
-        # DPO loss (reference-free)
         chosen_logps = torch.gather(
             action_scores.log_softmax(-1), 2, chosen_actions[:, :, None]
         ).squeeze(2).sum(-1)
@@ -342,358 +489,71 @@ class OctopusMitigator(TrainableMitigator):
 
         return loss
 
-    def _apply_avisc(
-        self,
-        logits_orig: torch.Tensor,
-        logits_masked: torch.Tensor,
-        is_eval: bool = True,
-    ) -> torch.Tensor:
-        """
-        Apply AvisC contrastive decoding.
-
-        Reference: Octopus/avisc_utils/avisc_sample.py:239-248
-        """
-        cutoff = torch.log(torch.tensor(self.cd_beta, device=logits_orig.device)) + \
-                 logits_orig.max(dim=-1, keepdim=True).values
-        diffs = (1 + self.cd_alpha) * logits_orig - self.cd_alpha * logits_masked
-
-        if is_eval:
-            return diffs.masked_fill(logits_orig < cutoff, -float("inf"))
-        return diffs
-
-    def _apply_vcd(
-        self,
-        logits_orig: torch.Tensor,
-        logits_noised: torch.Tensor,
-        is_eval: bool = True,
-    ) -> torch.Tensor:
-        """
-        Apply VCD contrastive decoding.
-
-        Reference: Octopus/avisc_utils/avisc_sample.py:269-276
-        """
-        cutoff = torch.log(torch.tensor(self.cd_beta, device=logits_orig.device)) + \
-                 logits_orig.max(dim=-1, keepdim=True).values
-        diffs = (1 + self.cd_alpha) * logits_orig - self.cd_alpha * logits_noised
-
-        if is_eval:
-            return diffs.masked_fill(logits_orig < cutoff, -float("inf"))
-        return diffs
-
-    def _apply_m3id(
-        self,
-        logits_orig: torch.Tensor,
-        logits_text: torch.Tensor,
-        t: int,
-        is_eval: bool = True,
-    ) -> torch.Tensor:
-        """
-        Apply M3ID log-softmax reweighting.
-
-        Reference: Octopus/avisc_utils/avisc_sample.py:286-317
-
-        Formula:
-            gamma_t = exp(-lambda * t)
-            lc = log_softmax(logits_orig)
-            lu = log_softmax(logits_text)
-            m3id_logit = lc + ((1 - gamma_t) / gamma_t) * (lc - lu)
-        """
-        gamma_t = math.exp(-self.lambda_decay * t)
-
-        # Log-softmax formulation (Reference: lines 306-308)
-        lc = F.log_softmax(logits_orig, dim=-1)
-        lu = F.log_softmax(logits_text, dim=-1)
-        m3id_logit = lc + ((1 - gamma_t) / gamma_t) * (lc - lu)
-
-        if is_eval:
-            cutoff = torch.log(torch.tensor(self.cd_beta, device=logits_orig.device)) + \
-                     logits_orig.max(dim=-1, keepdim=True).values
-            m3id_logit = m3id_logit.masked_fill(logits_orig < cutoff, -float("inf"))
-
-        return m3id_logit
-
     def generate(
         self,
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         pixel_values: Optional[torch.Tensor] = None,
-        is_eval: bool = True,
+        images: Optional[torch.Tensor] = None,
+        images_cd: Optional[torch.Tensor] = None,
+        is_eval: bool = False,
         output_scores: Optional[bool] = None,
         return_dict_in_generate: Optional[bool] = None,
         **kwargs,
-    ) -> torch.Tensor:
-        """
-        Generate with dynamic strategy selection.
+    ):
+        if images is None and pixel_values is not None:
+            images = pixel_values
+        if images is None:
+            raise ValueError("Octopus requires images or pixel_values")
 
-        Args:
-            input_ids: [B, seq_len]
-            attention_mask: [B, seq_len]
-            pixel_values: [B, C, H, W]
-            is_eval: Whether to apply plausibility cutoff
+        if images_cd is None:
+            images_cd = add_diffusion_noise(images, noise_step=self.noise_step)
 
-        Returns:
-            Generated token IDs
-        """
-        if pixel_values is None:
-            raise ValueError("Octopus requires pixel_values")
+        gen_kwargs = {
+            "do_sample": self.config.do_sample,
+            "temperature": self.config.temperature,
+            "top_p": self.config.top_p,
+            "top_k": self.config.top_k,
+            "max_new_tokens": self.config.max_new_tokens,
+            "use_cache": True,
+            "use_avisc": True,
+            "use_m3id": True,
+            "layer_gamma": self.layer_gamma,
+            "masking_scheme": self.masking_scheme,
+            "lamb": self.lamb,
+            "is_eval": is_eval,
+        }
+        gen_kwargs.update(kwargs)
 
-        generated = input_ids.clone()
-        device = input_ids.device
-        batch_size = input_ids.shape[0]
-        output_scores = bool(output_scores)
-        return_dict_in_generate = bool(return_dict_in_generate)
+        if output_scores is not None:
+            gen_kwargs["output_scores"] = output_scores
+        if return_dict_in_generate is not None:
+            gen_kwargs["return_dict_in_generate"] = return_dict_in_generate
+        if attention_mask is not None:
+            gen_kwargs["attention_mask"] = attention_mask
 
-        if batch_size > 1:
-            sequences = []
-            scores = []
-            for i in range(batch_size):
-                out = self.generate(
-                    input_ids=input_ids[i:i+1],
-                    attention_mask=attention_mask[i:i+1] if attention_mask is not None else None,
-                    pixel_values=pixel_values[i:i+1],
-                    is_eval=is_eval,
-                    output_scores=output_scores,
-                    return_dict_in_generate=True,
-                    **kwargs,
-                )
-                sequences.append(out["sequences"])
-                scores.append(out["scores"])
-
-            pad_token_id = getattr(self.model.config, "pad_token_id", 0)
-            sequences = torch.nn.utils.rnn.pad_sequence(
-                [seq.squeeze(0) for seq in sequences],
-                batch_first=True,
-                padding_value=pad_token_id,
-            )
-            if return_dict_in_generate:
-                return {"sequences": sequences, "scores": scores if output_scores else None}
-            return sequences
-
-        text_scores: List[torch.Tensor] = []
-        action_scores: List[torch.Tensor] = []
-
-        # Get image token indices
-        config = getattr(self.model, 'config', None)
-        self._img_start, self._img_end = self._get_image_token_indices(input_ids, config)
-
-        # Prepare perturbed images for VCD
-        pixel_values_noised = add_diffusion_noise(pixel_values, self.noise_step)
-
-        # Separate KV caches for each strategy
-        past_kv_base = None
-        past_kv_avisc = None
-        past_kv_vcd = None
-        past_kv_m3id = None
-
-        # M3ID step counter (Reference: line 102 - starts at 1)
-        t = 1
-
-        for step in range(self.config.max_new_tokens):
-            is_first_step = (past_kv_base is None)
-
-            if is_first_step:
-                curr_ids = generated
-                # cache_position for first step (Qwen2-VL compatibility)
-                cache_position = torch.arange(curr_ids.shape[1], device=device)
+        if "model_name" not in gen_kwargs:
+            if self.model_type in ("llava", "llava_next"):
+                gen_kwargs["model_name"] = "llava"
             else:
-                curr_ids = generated[:, -1:]
-                # cache_position for subsequent steps
-                cache_position = torch.tensor([generated.shape[1] - 1], device=device)
+                gen_kwargs["model_name"] = self.model_type
+        gen_kwargs.setdefault("model_type", self.model_type)
+        gen_kwargs.setdefault("model_config", getattr(self.model, "config", None))
 
-            # Base forward with attention output for AvisC blind token detection
-            base_kwargs = {
-                'input_ids': curr_ids,
-                'attention_mask': attention_mask,
-                'output_hidden_states': True,
-                'output_attentions': is_first_step,  # Only need attention on first step
-                'use_cache': True,
-                'return_dict': True,
-                'cache_position': cache_position,
-            }
-            if is_first_step:
-                base_kwargs['pixel_values'] = pixel_values
-                for key in ['image_sizes', 'image_grid_thw', 'position_ids']:
-                    if key in kwargs and kwargs[key] is not None:
-                        base_kwargs[key] = kwargs[key]
-            else:
-                base_kwargs['past_key_values'] = past_kv_base
-
-            with torch.no_grad():
-                outputs_base = self.model(**base_kwargs)
-
-            past_kv_base = outputs_base.past_key_values
-            logits_base = outputs_base.logits[:, -1, :]
-
-            # Detect blind tokens on first step for AvisC
-            if is_first_step and outputs_base.attentions is not None:
-                self._blind_mask = self._detect_blind_tokens(
-                    outputs_base.attentions,
-                    self._img_start,
-                    self._img_end,
-                )
-
-            # Get hidden state for classifier
-            hidden = outputs_base.hidden_states[-1]  # [B, seq_len, d_model]
-
-            # Get action from classifier (per-batch, not collapsed)
-            action_logits = self.classifier(hidden)  # [B, num_classes]
-            actions = action_logits.argmax(dim=-1)  # [B] - per-batch actions
-
-            # For simplicity in generation, use mode of actions across batch
-            # (Reference behavior: single action per step)
-            action = actions.mode().values.item() if batch_size > 1 else actions[0].item()
-
-            # Apply selected strategy
-            if action == self.ACTION_NONE:
-                final_logits = logits_base
-
-            elif action == self.ACTION_AVISC:
-                # AvisC: masked embeddings
-                avisc_first = past_kv_avisc is None
-                avisc_ids = generated if avisc_first else generated[:, -1:]
-                avisc_cache_position = (
-                    torch.arange(avisc_ids.shape[1], device=device)
-                    if avisc_first
-                    else torch.tensor([generated.shape[1] - 1], device=device)
-                )
-                avisc_kwargs = {
-                    'input_ids': avisc_ids,
-                    'attention_mask': attention_mask,
-                    'use_cache': True,
-                    'return_dict': True,
-                    'cache_position': avisc_cache_position,
-                }
-                if avisc_first:
-                    self._enable_masking = True
-                    avisc_kwargs['pixel_values'] = pixel_values
-                    for key in ['image_sizes', 'image_grid_thw', 'position_ids']:
-                        if key in kwargs and kwargs[key] is not None:
-                            avisc_kwargs[key] = kwargs[key]
-                else:
-                    avisc_kwargs['past_key_values'] = past_kv_avisc
-
-                with torch.no_grad():
-                    outputs_avisc = self.model(**avisc_kwargs)
-                if avisc_first:
-                    self._enable_masking = False
-                past_kv_avisc = outputs_avisc.past_key_values
-
-                logits_avisc = outputs_avisc.logits[:, -1, :]
-                final_logits = self._apply_avisc(logits_base, logits_avisc, is_eval)
-
-            elif action == self.ACTION_VCD:
-                # VCD: noised image
-                vcd_first = past_kv_vcd is None
-                vcd_ids = generated if vcd_first else generated[:, -1:]
-                vcd_cache_position = (
-                    torch.arange(vcd_ids.shape[1], device=device)
-                    if vcd_first
-                    else torch.tensor([generated.shape[1] - 1], device=device)
-                )
-                vcd_kwargs = {
-                    'input_ids': vcd_ids,
-                    'attention_mask': attention_mask,
-                    'use_cache': True,
-                    'return_dict': True,
-                    'cache_position': vcd_cache_position,
-                }
-                if vcd_first:
-                    vcd_kwargs['pixel_values'] = pixel_values_noised
-                    for key in ['image_sizes', 'image_grid_thw', 'position_ids']:
-                        if key in kwargs and kwargs[key] is not None:
-                            vcd_kwargs[key] = kwargs[key]
-                else:
-                    vcd_kwargs['past_key_values'] = past_kv_vcd
-
-                with torch.no_grad():
-                    outputs_vcd = self.model(**vcd_kwargs)
-
-                past_kv_vcd = outputs_vcd.past_key_values
-                logits_vcd = outputs_vcd.logits[:, -1, :]
-                final_logits = self._apply_vcd(logits_base, logits_vcd, is_eval)
-
-            elif action == self.ACTION_M3ID:
-                # M3ID: text-only (no image)
-                m3id_first = past_kv_m3id is None
-                m3id_ids = generated if m3id_first else generated[:, -1:]
-                m3id_cache_position = (
-                    torch.arange(m3id_ids.shape[1], device=device)
-                    if m3id_first
-                    else torch.tensor([generated.shape[1] - 1], device=device)
-                )
-                m3id_kwargs = {
-                    'input_ids': m3id_ids,
-                    'attention_mask': attention_mask,
-                    'use_cache': True,
-                    'return_dict': True,
-                    'cache_position': m3id_cache_position,
-                }
-                if not m3id_first:
-                    m3id_kwargs['past_key_values'] = past_kv_m3id
-
-                with torch.no_grad():
-                    outputs_m3id = self.model(**m3id_kwargs)
-
-                past_kv_m3id = outputs_m3id.past_key_values
-                logits_m3id = outputs_m3id.logits[:, -1, :]
-                final_logits = self._apply_m3id(logits_base, logits_m3id, t, is_eval)
-                t += 1  # Increment t after M3ID (Reference: line 290)
-
-            else:
-                final_logits = logits_base
-
-            # Sample
-            if output_scores:
-                text_scores.append(final_logits)
-                action_scores.append(action_logits)
-
-            if self.config.do_sample:
-                next_token = sample_top_p(
-                    final_logits,
-                    top_p=self.config.top_p,
-                    temperature=self.config.temperature,
-                    top_k=self.config.top_k,
-                )
-            else:
-                next_token = final_logits.argmax(dim=-1, keepdim=True)
-
-            generated = torch.cat([generated, next_token], dim=-1)
-
-            if attention_mask is not None:
-                attention_mask = torch.cat([
-                    attention_mask,
-                    torch.ones((attention_mask.shape[0], 1), device=device, dtype=attention_mask.dtype)
-                ], dim=-1)
-
-            # Check EOS
-            eos_token_id = getattr(self.model.config, 'eos_token_id', None)
-            if eos_token_id is not None:
-                if isinstance(eos_token_id, list):
-                    if any((next_token == eos).all() for eos in eos_token_id):
-                        break
-                elif (next_token == eos_token_id).all():
-                    break
-
-        if return_dict_in_generate:
-            return {
-                'sequences': generated,
-                'scores': (text_scores, action_scores) if output_scores else None,
-            }
-        return generated
+        return self.policy.generate(
+            inputs=input_ids,
+            images=images,
+            images_cd=images_cd,
+            **gen_kwargs,
+        )
 
     def save_pretrained(self, path: str) -> None:
-        """
-        Save classifier weights.
-
-        Reference: Octopus/eval_bench/train_token_amber.py:626-631
-        """
         payload = {
-            'cls': self.classifier.cls_token.data,
-            'mlp_state_dict': self.classifier.mlp.state_dict(),
-            'transformer': self.classifier.transformer.state_dict(),
+            "query": self.classifier.queries.data,
+            "cls": self.classifier.cls_token.data,
+            "mlp_state_dict": self.classifier.mlp.state_dict(),
+            "transformer": self.classifier.transformer.state_dict(),
         }
-        if hasattr(self.classifier, 'queries'):
-            payload['query'] = self.classifier.queries.data
         torch.save(payload, path)
 
     @classmethod
@@ -704,18 +564,15 @@ class OctopusMitigator(TrainableMitigator):
         model_type: str = "llava",
         **kwargs,
     ) -> "OctopusMitigator":
-        """Load classifier from path."""
-        checkpoint = torch.load(path, map_location='cpu')
+        checkpoint = torch.load(path, map_location="cpu")
 
-        # Infer d_model from checkpoint
-        d_model = checkpoint['cls'].shape[-1]
+        d_model = checkpoint["cls"].shape[-1]
+        n_query = checkpoint["query"].shape[0]
 
-        n_query = checkpoint['query'].shape[0] if 'query' in checkpoint else 4
         classifier = OctopusClassifier(d_model=d_model, n_query=n_query)
-        classifier.cls_token.data = checkpoint['cls']
-        classifier.mlp.load_state_dict(checkpoint['mlp_state_dict'])
-        classifier.transformer.load_state_dict(checkpoint['transformer'])
-        if 'query' in checkpoint and hasattr(classifier, 'queries'):
-            classifier.queries.data = checkpoint['query']
+        classifier.cls_token.data = checkpoint["cls"]
+        classifier.mlp.load_state_dict(checkpoint["mlp_state_dict"])
+        classifier.transformer.load_state_dict(checkpoint["transformer"])
+        classifier.queries.data = checkpoint["query"]
 
         return cls(model, model_type=model_type, classifier=classifier, **kwargs)

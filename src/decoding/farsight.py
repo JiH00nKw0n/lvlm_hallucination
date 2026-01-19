@@ -108,15 +108,8 @@ class FarSightMitigator(BaseMitigator):
 
             # Q K V
             q = self.q_proj(hidden_states).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-            k = self.k_proj(hidden_states).view(B, L, -1, self.head_dim).transpose(1, 2)
-            v = self.v_proj(hidden_states).view(B, L, -1, self.head_dim).transpose(1, 2)
-
-            # GQA
-            num_kv_heads = k.shape[1]
-            if num_kv_heads != self.num_heads:
-                n_rep = self.num_heads // num_kv_heads
-                k = k.repeat_interleave(n_rep, dim=1)
-                v = v.repeat_interleave(n_rep, dim=1)
+            k = self.k_proj(hidden_states).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+            v = self.v_proj(hidden_states).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
 
             # Attention scores
             attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
@@ -132,7 +125,7 @@ class FarSightMitigator(BaseMitigator):
             upper = torch.triu(torch.ones((L, L), device=device, dtype=dtype), diagonal=1)
 
             # Basic linear decay P
-            sigma = mitigator.decay_factor
+            sigma = getattr(self, "sigma", mitigator.decay_factor)
             P_basic = -(sigma * F.relu(delta)) * upper
 
             # Progressive decay
@@ -168,7 +161,7 @@ class FarSightMitigator(BaseMitigator):
             P_static = (P_static * valid_cols * valid_rows).expand(B, self.num_heads, L, L)
 
             # ALiBi slopes
-            if mitigator.use_alibi:
+            if getattr(self, "farsight_use_alibi", mitigator.use_alibi):
                 H = self.num_heads
                 slopes = torch.tensor([2.0 ** (-8.0 * (h + 1) / H) for h in range(H)], device=device, dtype=dtype)
                 slopes = slopes.view(1, H, 1, 1)
@@ -186,7 +179,7 @@ class FarSightMitigator(BaseMitigator):
 
             # Output
             context = torch.matmul(attn_probs, v)
-            context = context.transpose(1, 2).reshape(B, L, -1)
+            context = context.transpose(1, 2).reshape(B, L, self.hidden_size)
             output = self.o_proj(context)
 
             attn_weights = attn_probs if output_attentions else None
@@ -259,7 +252,7 @@ class FarSightMitigator(BaseMitigator):
             upper = torch.triu(torch.ones((L, L), device=device, dtype=dtype), diagonal=1)
 
             # Basic linear decay P
-            sigma = mitigator.decay_factor
+            sigma = getattr(self, "sigma", mitigator.decay_factor)
             P_basic = -(sigma * F.relu(delta)) * upper
 
             # Progressive decay
@@ -294,7 +287,7 @@ class FarSightMitigator(BaseMitigator):
             P_static = (P_static * valid_cols * valid_rows).expand(B, num_q_heads, L, L)
 
             # ALiBi slopes
-            if mitigator.use_alibi:
+            if getattr(self, "farsight_use_alibi", mitigator.use_alibi):
                 H = num_q_heads
                 slopes = torch.tensor([2.0 ** (-8.0 * (h + 1) / H) for h in range(H)], device=device, dtype=dtype)
                 slopes = slopes.view(1, H, 1, 1)
@@ -324,6 +317,8 @@ class FarSightMitigator(BaseMitigator):
 
     def setup(self) -> None:
         """Replace attention forwards with FarSight versions."""
+        if self.model.training:
+            return
         self._switch_to_eager_attention()
         layers = self._get_layers()
 
@@ -337,6 +332,10 @@ class FarSightMitigator(BaseMitigator):
                     head_dim = getattr(attn, 'head_dim', 128)
                     attn.num_heads = hidden_size // head_dim
                     attn.head_dim = head_dim
+                    attn.hidden_size = hidden_size
+
+                attn.sigma = self.decay_factor
+                attn.farsight_use_alibi = bool(self.use_alibi)
 
                 self._original_forwards.append((attn, attn.forward))
                 attn.forward = types.MethodType(self._get_farsight_forward(layer_idx), attn)

@@ -1,4 +1,4 @@
-ㅋㅋ"""
+"""
 VISTA prompt preparation utilities.
 
 Reference: VISTA/model_loader.py:364-430

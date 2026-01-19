@@ -22,13 +22,15 @@ Formula:
 Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL
 """
 
+import copy
 from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers.generation.logits_process import LogitsProcessorList
 
-from .base import BaseMitigator, MitigatorConfig, sample_top_p, ModelHelper
+from .base import BaseMitigator, MitigatorConfig, ModelHelper
 
 
 class DecoMitigator(BaseMitigator):
@@ -59,6 +61,8 @@ class DecoMitigator(BaseMitigator):
         **kwargs,
     ):
         super().__init__(model, model_type, **kwargs)
+        if "do_sample" not in kwargs and self.config.do_sample:
+            self.config.do_sample = False
         self.alpha = alpha
         self.threshold_top_k = threshold_top_k
         self.threshold_top_p = threshold_top_p
@@ -200,6 +204,34 @@ class DecoMitigator(BaseMitigator):
         Returns:
             Generated token IDs [B, seq_len + max_new_tokens]
         """
+        generation_config = copy.deepcopy(self.model.generation_config)
+        generation_config.do_sample = bool(self.config.do_sample)
+        if self.config.max_new_tokens is not None:
+            generation_config.max_new_tokens = self.config.max_new_tokens
+        if generation_config.max_new_tokens is not None:
+            generation_config.max_length = generation_config.max_new_tokens + input_ids.shape[1]
+        if generation_config.max_length is None:
+            generation_config.max_length = input_ids.shape[1] + self.config.max_new_tokens
+        if self.config.temperature is not None:
+            generation_config.temperature = self.config.temperature
+        if self.config.top_k is not None:
+            generation_config.top_k = self.config.top_k
+        if self.config.top_p is not None:
+            generation_config.top_p = self.config.top_p
+
+        logits_processor = self.model._get_logits_processor(
+            generation_config=generation_config,
+            input_ids_seq_length=input_ids.shape[-1],
+            encoder_input_ids=input_ids,
+            logits_processor=LogitsProcessorList(),
+        )
+        logits_warper = None
+        if generation_config.do_sample:
+            logits_warper = self.model._get_logits_warper(
+                generation_config=generation_config,
+                logits_warper=LogitsProcessorList(),
+            )
+
         generated = input_ids.clone()
         device = input_ids.device
         past_key_values = None
@@ -239,13 +271,25 @@ class DecoMitigator(BaseMitigator):
                 }
 
             with torch.no_grad():
-                outputs = self.model(**forward_kwargs)
+                try:
+                    outputs = self.model(
+                        **forward_kwargs,
+                        early_exit_layers=self.early_exit_layers,
+                    )
+                except TypeError:
+                    outputs = self.model(**forward_kwargs)
 
-            past_key_values = outputs.past_key_values
-            final_logits = outputs.logits[:, -1, :]
+            early_logits_dict = None
+            final_outputs = outputs
+            if isinstance(outputs, tuple) and len(outputs) == 2 and isinstance(outputs[0], dict):
+                early_logits_dict, final_outputs = outputs
+
+            past_key_values = final_outputs.past_key_values
+            final_logits = final_outputs.logits[:, -1, :]
 
             # Get early exit logits
-            early_logits_dict = self._get_early_logits(outputs.hidden_states)
+            if early_logits_dict is None:
+                early_logits_dict = self._get_early_logits(final_outputs.hidden_states)
 
             if early_logits_dict:
                 # Select anchor layer and blend
@@ -261,16 +305,15 @@ class DecoMitigator(BaseMitigator):
             else:
                 blended = final_logits
 
-            # Sample
-            if self.config.do_sample:
-                next_token = sample_top_p(
-                    blended,
-                    top_p=self.config.top_p,
-                    temperature=self.config.temperature,
-                    top_k=self.config.top_k,
-                )
+            next_token_scores = logits_processor(generated, final_logits)
+            final_token_scores = logits_processor(generated, blended)
+            if generation_config.do_sample:
+                if logits_warper is not None:
+                    final_token_scores = logits_warper(generated, final_token_scores)
+                final_probs = F.softmax(final_token_scores, dim=-1)
+                next_token = torch.multinomial(final_probs, num_samples=1)
             else:
-                next_token = blended.argmax(dim=-1, keepdim=True)
+                next_token = final_token_scores.argmax(dim=-1, keepdim=True)
 
             generated = torch.cat([generated, next_token], dim=-1)
 

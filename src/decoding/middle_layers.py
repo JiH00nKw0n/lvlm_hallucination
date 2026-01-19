@@ -110,8 +110,8 @@ class MiddleLayersMitigator(BaseMitigator):
             value_states = self.v_proj(hidden_states)
 
             query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-            key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-            value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+            key_states = key_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+            value_states = value_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
 
             # Handle KV cache
             kv_seq_len = key_states.shape[-2]
@@ -139,17 +139,18 @@ class MiddleLayersMitigator(BaseMitigator):
                     key_states = torch.cat([past_key_value[0], key_states], dim=2)
                     value_states = torch.cat([past_key_value[1], value_states], dim=2)
 
-            # GQA: repeat KV heads
-            if self.num_key_value_heads != self.num_heads:
-                n_rep = self.num_heads // self.num_key_value_heads
-                key_states = key_states.repeat_interleave(n_rep, dim=1)
-                value_states = value_states.repeat_interleave(n_rep, dim=1)
-
             # Attention
             attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
             if attention_mask is not None:
+                if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
+                    raise ValueError(
+                        f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
+                    )
                 attn_weights = attn_weights + attention_mask
+                attn_weights = torch.max(
+                    attn_weights, torch.tensor(torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
+                )
 
             # === IMAGE ATTENTION BOOST ===
             img_start = mitigator._img_start
@@ -299,8 +300,12 @@ class MiddleLayersMitigator(BaseMitigator):
     ) -> torch.Tensor:
         """Generate with boosted image attention."""
         # Detect image token indices
-        config = getattr(self.model, 'config', None)
-        self._img_start, self._img_end = self._get_image_token_indices(input_ids, config)
+        if "img_start_idx" in kwargs and "img_end_idx" in kwargs:
+            self._img_start = int(kwargs["img_start_idx"])
+            self._img_end = int(kwargs["img_end_idx"])
+        else:
+            config = getattr(self.model, 'config', None)
+            self._img_start, self._img_end = self._get_image_token_indices(input_ids, config)
 
         gen_kwargs = {
             'max_new_tokens': self.config.max_new_tokens,
