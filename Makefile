@@ -2,6 +2,7 @@ IMAGE_NAME := evaluate-lvlm-hallucination-mitigators
 CFG_PATH := config/evaluate/llama3-llava-next-8b-hf.yaml
 LOG_DIR := .log
 CACHE_DIR := .cache
+HF_TOKEN ?= $(HFtoken)
 
 .PHONY: build-evaluate-lvlm-hallucination-mitigators run-evaluate-lvlm-hallucination-mitigators
 
@@ -17,6 +18,7 @@ run-evaluate-lvlm-hallucination-mitigators:
 		-v "$$(pwd)":/workspace \
 		-v "$$(pwd)/$(LOG_DIR)":/workspace/.log \
 		-v "$$(pwd)/$(CACHE_DIR)":/workspace/.cache \
+		-e HF_TOKEN=$(HF_TOKEN) \
 		-e HF_HOME=/workspace/.cache \
 		-e HF_DATASETS_CACHE=/workspace/.cache \
 		-e LOG_DIR=/workspace/.log \
