@@ -27,7 +27,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .base import BaseMitigator, MitigatorConfig, ModelHelper
+from .base import BaseMitigator, ModelHelper
 
 
 class FarSightMitigator(BaseMitigator):
@@ -49,13 +49,13 @@ class FarSightMitigator(BaseMitigator):
     name: str = "farsight"
 
     def __init__(
-        self,
-        model: nn.Module,
-        model_type: str = "llava",
-        target_layers: Optional[List[int]] = None,
-        decay_factor: Optional[float] = None,
-        use_alibi: bool = True,
-        **kwargs,
+            self,
+            model: nn.Module,
+            model_type: str = "llava",
+            target_layers: Optional[List[int]] = None,
+            decay_factor: Optional[float] = None,
+            use_alibi: bool = True,
+            **kwargs,
     ):
         super().__init__(model, model_type, **kwargs)
 
@@ -90,14 +90,14 @@ class FarSightMitigator(BaseMitigator):
         mitigator = self
 
         def forward(
-            self,
-            hidden_states: torch.Tensor,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_value=None,
-            output_attentions: bool = False,
-            use_cache: bool = False,
-            **kwargs,
+                self,
+                hidden_states: torch.Tensor,
+                attention_mask: Optional[torch.Tensor] = None,
+                position_ids: Optional[torch.LongTensor] = None,
+                past_key_value=None,
+                output_attentions: bool = False,
+                use_cache: bool = False,
+                **kwargs,
         ):
             """
             FarSight: W = (QK^T/√d) ⊙ C + P, Â = softmax(W) ⊙ C
@@ -199,16 +199,16 @@ class FarSightMitigator(BaseMitigator):
         mitigator = self
 
         def forward(
-            self,
-            hidden_states: torch.Tensor,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values=None,
-            output_attentions: bool = False,
-            use_cache: bool = False,
-            cache_position: Optional[torch.LongTensor] = None,
-            position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-            **kwargs,
+                self,
+                hidden_states: torch.Tensor,
+                attention_mask: Optional[torch.Tensor] = None,
+                position_ids: Optional[torch.LongTensor] = None,
+                past_key_values=None,
+                output_attentions: bool = False,
+                use_cache: bool = False,
+                cache_position: Optional[torch.LongTensor] = None,
+                position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+                **kwargs,
         ):
             """
             FarSight for Qwen2-VL: W = (QK^T/√d) ⊙ C + P, Â = softmax(W) ⊙ C
@@ -225,7 +225,9 @@ class FarSightMitigator(BaseMitigator):
             # Apply RoPE if position_embeddings provided
             if position_embeddings is not None:
                 cos, sin = position_embeddings
-                mrope_section = self.rope_scaling["mrope_section"] if hasattr(self, 'rope_scaling') and self.rope_scaling else None
+                mrope_section = self.rope_scaling["mrope_section"] if hasattr(
+                    self, 'rope_scaling'
+                    ) and self.rope_scaling else None
                 if mrope_section is not None:
                     from transformers.models.qwen2_vl.modeling_qwen2_vl import apply_multimodal_rotary_pos_emb
                     q, k = apply_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section)
@@ -258,6 +260,7 @@ class FarSightMitigator(BaseMitigator):
             # Progressive decay
             prog_factor = 1.0 - (i_idx.to(dtype) / max(L - 1, 1)) * 0.5
             P_prog = -(sigma * prog_factor) * F.relu(delta) * upper
+
             def _derive_valid_from_attention_mask(m: torch.Tensor) -> torch.Tensor:
                 if m.dtype not in (torch.float16, torch.float32, torch.bfloat16):
                     m_f = m.to(torch.float32)
@@ -347,10 +350,10 @@ class FarSightMitigator(BaseMitigator):
         self._original_forwards.clear()
 
     def generate(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        **kwargs,
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            **kwargs,
     ) -> torch.Tensor:
         """
         Generate with FarSight.

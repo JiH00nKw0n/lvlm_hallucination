@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .base import BaseMitigator, MitigatorConfig, ModelHelper
+from .base import BaseMitigator, ModelHelper
 
 
 class MiddleLayersMitigator(BaseMitigator):
@@ -40,13 +40,13 @@ class MiddleLayersMitigator(BaseMitigator):
     name: str = "middle_layers"
 
     def __init__(
-        self,
-        model: nn.Module,
-        model_type: str = "llava",
-        target_layers: Optional[List[int]] = None,
-        alpha: float = 0.5,
-        aggregation: str = "mean",
-        **kwargs,
+            self,
+            model: nn.Module,
+            model_type: str = "llava",
+            target_layers: Optional[List[int]] = None,
+            alpha: float = 0.5,
+            aggregation: str = "mean",
+            **kwargs,
     ):
         super().__init__(model, model_type, **kwargs)
 
@@ -94,14 +94,14 @@ class MiddleLayersMitigator(BaseMitigator):
         mitigator = self
 
         def forward(
-            self,
-            hidden_states: torch.Tensor,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_value=None,
-            output_attentions: bool = False,
-            use_cache: bool = False,
-            **kwargs,
+                self,
+                hidden_states: torch.Tensor,
+                attention_mask: Optional[torch.Tensor] = None,
+                position_ids: Optional[torch.LongTensor] = None,
+                past_key_value=None,
+                output_attentions: bool = False,
+                use_cache: bool = False,
+                **kwargs,
         ):
             bsz, q_len, _ = hidden_states.size()
 
@@ -134,7 +134,9 @@ class MiddleLayersMitigator(BaseMitigator):
             if past_key_value is not None:
                 if hasattr(past_key_value, 'update'):
                     cache_kwargs = {"sin": sin, "cos": cos} if hasattr(self, 'rotary_emb') else {}
-                    key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+                    key_states, value_states = past_key_value.update(
+                        key_states, value_states, self.layer_idx, cache_kwargs
+                        )
                 else:
                     key_states = torch.cat([past_key_value[0], key_states], dim=2)
                     value_states = torch.cat([past_key_value[1], value_states], dim=2)
@@ -158,7 +160,9 @@ class MiddleLayersMitigator(BaseMitigator):
             if img_end > img_start and attn_weights.shape[-1] > img_start:
                 actual_end = min(img_end, attn_weights.shape[-1])
                 if mitigator.aggregation == "mean":
-                    boost = mitigator.alpha * attn_weights[:, :, -1, img_start:actual_end].abs().mean(dim=1, keepdim=True)
+                    boost = mitigator.alpha * attn_weights[:, :, -1, img_start:actual_end].abs().mean(
+                        dim=1, keepdim=True
+                        )
                     attn_weights[:, :, -1, img_start:actual_end] = attn_weights[:, :, -1, img_start:actual_end] + boost
 
             attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
@@ -191,16 +195,16 @@ class MiddleLayersMitigator(BaseMitigator):
         mitigator = self
 
         def forward(
-            self,
-            hidden_states: torch.Tensor,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values=None,  # Changed: past_key_value -> past_key_values
-            output_attentions: bool = False,
-            use_cache: bool = False,
-            cache_position: Optional[torch.LongTensor] = None,  # Added: cache_position
-            position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-            **kwargs,
+                self,
+                hidden_states: torch.Tensor,
+                attention_mask: Optional[torch.Tensor] = None,
+                position_ids: Optional[torch.LongTensor] = None,
+                past_key_values=None,  # Changed: past_key_value -> past_key_values
+                output_attentions: bool = False,
+                use_cache: bool = False,
+                cache_position: Optional[torch.LongTensor] = None,  # Added: cache_position
+                position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+                **kwargs,
         ):
             bsz, q_len, _ = hidden_states.size()
 
@@ -219,7 +223,9 @@ class MiddleLayersMitigator(BaseMitigator):
                 # Qwen uses multimodal 3D RoPE with mrope_section
                 from transformers.models.qwen2_vl.modeling_qwen2_vl import apply_multimodal_rotary_pos_emb
                 # Get mrope_section from rope_scaling config
-                mrope_section = self.rope_scaling["mrope_section"] if hasattr(self, 'rope_scaling') and self.rope_scaling else None
+                mrope_section = self.rope_scaling["mrope_section"] if hasattr(
+                    self, 'rope_scaling'
+                    ) and self.rope_scaling else None
                 if mrope_section is not None:
                     query_states, key_states = apply_multimodal_rotary_pos_emb(
                         query_states, key_states, cos, sin, mrope_section
@@ -229,7 +235,9 @@ class MiddleLayersMitigator(BaseMitigator):
             # Reference: modeling_qwen2_vl.py:518-520
             if past_key_values is not None:
                 cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position} if position_embeddings else {}
-                key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
+                key_states, value_states = past_key_values.update(
+                    key_states, value_states, self.layer_idx, cache_kwargs
+                    )
 
             # GQA: repeat KV heads
             # Reference: modeling_qwen2_vl.py (via repeat_kv function)
@@ -254,7 +262,9 @@ class MiddleLayersMitigator(BaseMitigator):
             if img_end > img_start and attn_weights.shape[-1] > img_start:
                 actual_end = min(img_end, attn_weights.shape[-1])
                 if mitigator.aggregation == "mean":
-                    boost = mitigator.alpha * attn_weights[:, :, -1, img_start:actual_end].abs().mean(dim=1, keepdim=True)
+                    boost = mitigator.alpha * attn_weights[:, :, -1, img_start:actual_end].abs().mean(
+                        dim=1, keepdim=True
+                        )
                     attn_weights[:, :, -1, img_start:actual_end] = attn_weights[:, :, -1, img_start:actual_end] + boost
 
             attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
@@ -292,11 +302,11 @@ class MiddleLayersMitigator(BaseMitigator):
         self._original_forwards.clear()
 
     def generate(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        pixel_values: Optional[torch.Tensor] = None,
-        **kwargs,
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            pixel_values: Optional[torch.Tensor] = None,
+            **kwargs,
     ) -> torch.Tensor:
         """Generate with boosted image attention."""
         # Detect image token indices

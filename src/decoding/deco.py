@@ -30,7 +30,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.generation.logits_process import LogitsProcessorList
 
-from .base import BaseMitigator, MitigatorConfig, ModelHelper
+from .base import BaseMitigator
 
 
 class DecoMitigator(BaseMitigator):
@@ -51,14 +51,14 @@ class DecoMitigator(BaseMitigator):
     name: str = "deco"
 
     def __init__(
-        self,
-        model: nn.Module,
-        model_type: str = "llava",
-        alpha: float = 0.6,
-        early_exit_layers: Optional[List[int]] = None,
-        threshold_top_k: int = 20,
-        threshold_top_p: float = 0.9,
-        **kwargs,
+            self,
+            model: nn.Module,
+            model_type: str = "llava",
+            alpha: float = 0.6,
+            early_exit_layers: Optional[List[int]] = None,
+            threshold_top_k: int = 20,
+            threshold_top_p: float = 0.9,
+            **kwargs,
     ):
         super().__init__(model, model_type, **kwargs)
         if "do_sample" not in kwargs and self.config.do_sample:
@@ -85,8 +85,8 @@ class DecoMitigator(BaseMitigator):
         pass
 
     def _get_early_logits(
-        self,
-        hidden_states: Tuple[torch.Tensor, ...],
+            self,
+            hidden_states: Tuple[torch.Tensor, ...],
     ) -> Dict[int, torch.Tensor]:
         """
         Compute logits from early exit layers.
@@ -117,9 +117,9 @@ class DecoMitigator(BaseMitigator):
         return early_logits
 
     def _select_anchor_layer(
-        self,
-        final_logits: torch.Tensor,
-        early_logits: Dict[int, torch.Tensor],
+            self,
+            final_logits: torch.Tensor,
+            early_logits: Dict[int, torch.Tensor],
     ) -> Tuple[int, torch.Tensor, torch.Tensor]:
         """
         Select anchor layer with highest candidate confidence.
@@ -161,11 +161,11 @@ class DecoMitigator(BaseMitigator):
         return selected_layer, max_prob, candidate_ids
 
     def _blend_logits(
-        self,
-        final_logits: torch.Tensor,
-        early_logits: torch.Tensor,
-        max_prob: torch.Tensor,
-        candidate_ids: torch.Tensor,
+            self,
+            final_logits: torch.Tensor,
+            early_logits: torch.Tensor,
+            max_prob: torch.Tensor,
+            candidate_ids: torch.Tensor,
     ) -> torch.Tensor:
         """
         Blend final and early exit logits.
@@ -186,11 +186,11 @@ class DecoMitigator(BaseMitigator):
         return blended
 
     def generate(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        pixel_values: Optional[torch.Tensor] = None,
-        **kwargs,
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            pixel_values: Optional[torch.Tensor] = None,
+            **kwargs,
     ) -> torch.Tensor:
         """
         Generate with Deco early exit calibration.
@@ -318,10 +318,12 @@ class DecoMitigator(BaseMitigator):
             generated = torch.cat([generated, next_token], dim=-1)
 
             if attention_mask is not None:
-                attention_mask = torch.cat([
-                    attention_mask,
-                    torch.ones((attention_mask.shape[0], 1), device=device, dtype=attention_mask.dtype)
-                ], dim=-1)
+                attention_mask = torch.cat(
+                    [
+                        attention_mask,
+                        torch.ones((attention_mask.shape[0], 1), device=device, dtype=attention_mask.dtype)
+                    ], dim=-1
+                )
 
             # Check EOS
             eos_token_id = getattr(self.model.config, 'eos_token_id', None)

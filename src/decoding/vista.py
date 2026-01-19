@@ -107,17 +107,17 @@ class VISTAMitigator(BaseMitigator):
     name: str = "vista"
 
     def __init__(
-        self,
-        model: nn.Module,
-        model_type: str = "llava",
-        vsv: Optional[torch.Tensor] = None,
-        lam: float = 0.1,
-        simple_mode: bool = False,
-        logits_layers: Optional[str] = None,
-        logits_alpha: float = 0.3,
-        tar_layers: Optional[str] = None,
-        target_layers: Optional[List[int]] = None,
-        **kwargs,
+            self,
+            model: nn.Module,
+            model_type: str = "llava",
+            vsv: Optional[torch.Tensor] = None,
+            lam: float = 0.1,
+            simple_mode: bool = False,
+            logits_layers: Optional[str] = None,
+            logits_alpha: float = 0.3,
+            tar_layers: Optional[str] = None,
+            target_layers: Optional[List[int]] = None,
+            **kwargs,
     ):
         super().__init__(model, model_type, **kwargs)
         if target_layers is not None:
@@ -169,10 +169,10 @@ class VISTAMitigator(BaseMitigator):
                 delattr(self.model, attr)
 
     def generate(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        **kwargs,
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            **kwargs,
     ) -> torch.Tensor:
         gen_kwargs = {
             "max_new_tokens": self.config.max_new_tokens,
@@ -203,12 +203,12 @@ class VISTAMitigator(BaseMitigator):
 
     @classmethod
     def compute_vsv(
-        cls,
-        model: nn.Module,
-        positive_inputs: List[dict],
-        negative_inputs: List[dict],
-        model_type: str = "llava",
-        rank: int = 1,
+            cls,
+            model: nn.Module,
+            positive_inputs: List[dict],
+            negative_inputs: List[dict],
+            model_type: str = "llava",
+            rank: int = 1,
     ) -> torch.Tensor:
         kwargs_list = [(neg, pos) for pos, neg in zip(positive_inputs, negative_inputs)]
         llm_model = model.language_model if hasattr(model, "language_model") else model

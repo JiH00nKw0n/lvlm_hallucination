@@ -16,13 +16,12 @@ Formula:
 Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL
 """
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from .base import BaseMitigator, MitigatorConfig, add_diffusion_noise, sample_top_p
+from .base import BaseMitigator, add_diffusion_noise, sample_top_p
 
 
 class VCDMitigator(BaseMitigator):
@@ -44,13 +43,13 @@ class VCDMitigator(BaseMitigator):
     name: str = "vcd"
 
     def __init__(
-        self,
-        model: nn.Module,
-        model_type: str = "llava",
-        alpha: float = 0.5,
-        beta: float = 0.1,
-        noise_step: int = 500,
-        **kwargs,
+            self,
+            model: nn.Module,
+            model_type: str = "llava",
+            alpha: float = 0.5,
+            beta: float = 0.1,
+            noise_step: int = 500,
+            **kwargs,
     ):
         super().__init__(model, model_type, **kwargs)
         self.alpha = alpha
@@ -66,14 +65,14 @@ class VCDMitigator(BaseMitigator):
         pass
 
     def _prepare_inputs(
-        self,
-        input_ids: torch.Tensor,
-        pixel_values: Optional[torch.Tensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        past_key_values=None,
-        is_first_step: bool = True,
-        cache_position: Optional[torch.Tensor] = None,
-        **kwargs,
+            self,
+            input_ids: torch.Tensor,
+            pixel_values: Optional[torch.Tensor] = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            past_key_values=None,
+            is_first_step: bool = True,
+            cache_position: Optional[torch.Tensor] = None,
+            **kwargs,
     ) -> Dict:
         """
         Prepare model inputs, handling pixel_values only on first step for cached decoding.
@@ -109,9 +108,9 @@ class VCDMitigator(BaseMitigator):
         return inputs
 
     def _combine_logits(
-        self,
-        logits_orig: torch.Tensor,
-        logits_noised: torch.Tensor,
+            self,
+            logits_orig: torch.Tensor,
+            logits_noised: torch.Tensor,
     ) -> torch.Tensor:
         """
         Combine original and noised logits using VCD formula.
@@ -136,11 +135,11 @@ class VCDMitigator(BaseMitigator):
         return cd_logits
 
     def generate(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        pixel_values: Optional[torch.Tensor] = None,
-        **kwargs,
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            pixel_values: Optional[torch.Tensor] = None,
+            **kwargs,
     ) -> torch.Tensor:
         """
         Generate with VCD contrastive decoding.
@@ -239,10 +238,12 @@ class VCDMitigator(BaseMitigator):
 
             # Update attention mask
             if attention_mask is not None:
-                attention_mask = torch.cat([
-                    attention_mask,
-                    torch.ones((attention_mask.shape[0], 1), device=device, dtype=attention_mask.dtype)
-                ], dim=-1)
+                attention_mask = torch.cat(
+                    [
+                        attention_mask,
+                        torch.ones((attention_mask.shape[0], 1), device=device, dtype=attention_mask.dtype)
+                    ], dim=-1
+                )
 
             # Check for EOS
             eos_token_id = getattr(self.model.config, 'eos_token_id', None)

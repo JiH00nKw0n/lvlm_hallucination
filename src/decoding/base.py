@@ -9,8 +9,8 @@ Supports 4 VLM architectures:
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from dataclasses import dataclass
+from typing import Any, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -256,10 +256,10 @@ class ModelHelper:
 
 
 def get_image_token_indices(
-    input_ids: torch.Tensor,
-    model_type: str = "llava",
-    config: Optional[Any] = None,
-    image_token_id: int = 32000,
+        input_ids: torch.Tensor,
+        model_type: str = "llava",
+        config: Optional[Any] = None,
+        image_token_id: int = 32000,
 ) -> Tuple[int, int]:
     """
     Get start and end indices of image tokens.
@@ -364,11 +364,11 @@ def add_diffusion_noise(image_tensor: torch.Tensor, noise_step: int = 500) -> to
 # =============================================================================
 
 def sample_top_p(
-    logits: torch.Tensor,
-    top_p: float = 0.9,
-    temperature: float = 1.0,
-    top_k: Optional[int] = None,
-    filter_value: float = -float("Inf"),
+        logits: torch.Tensor,
+        top_p: float = 0.9,
+        temperature: float = 1.0,
+        top_k: Optional[int] = None,
+        filter_value: float = -float("Inf"),
 ) -> torch.Tensor:
     """
     Top-k + top-p (nucleus) sampling.
@@ -447,18 +447,20 @@ class BaseMitigator(ABC):
     requires_training: bool = False
 
     def __init__(
-        self,
-        model: nn.Module,
-        model_type: str = "llava",
-        config: Optional[MitigatorConfig] = None,
-        **kwargs,
+            self,
+            model: nn.Module,
+            model_type: str = "llava",
+            config: Optional[MitigatorConfig] = None,
+            **kwargs,
     ):
         self.model = model
         self.model_type = ModelHelper.normalize_model_type(model_type)
-        self.config = config or MitigatorConfig(**{
-            k: v for k, v in kwargs.items()
-            if k in MitigatorConfig.__dataclass_fields__
-        })
+        self.config = config or MitigatorConfig(
+            **{
+                k: v for k, v in kwargs.items()
+                if k in MitigatorConfig.__dataclass_fields__
+            }
+            )
         self.is_active = False
         self._original_training_mode = None
 
@@ -474,10 +476,10 @@ class BaseMitigator(ABC):
 
     @abstractmethod
     def generate(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        **kwargs,
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            **kwargs,
     ) -> torch.Tensor:
         """Generate tokens with the mitigation applied."""
         pass
@@ -516,9 +518,9 @@ class BaseMitigator(ABC):
         return ModelHelper.get_image_kwarg_name(self.model_type)
 
     def _get_image_token_indices(
-        self,
-        input_ids: torch.Tensor,
-        config: Optional[Any] = None,
+            self,
+            input_ids: torch.Tensor,
+            config: Optional[Any] = None,
     ) -> Tuple[int, int]:
         return get_image_token_indices(
             input_ids,

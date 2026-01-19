@@ -16,12 +16,12 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
+from transformers.generation.beam_search import BeamSearchScorer
 from transformers.generation.logits_process import LogitsProcessorList
 from transformers.generation.stopping_criteria import StoppingCriteriaList
-from transformers.generation.beam_search import BeamSearchScorer
 
 from .base import BaseMitigator, ModelHelper
 
@@ -59,16 +59,16 @@ class OPERAMitigator(BaseMitigator):
     name: str = "opera"
 
     def __init__(
-        self,
-        model: nn.Module,
-        model_type: str = "llava",
-        num_beams: int = 5,
-        scale_factor: float = 50.0,
-        threshold: int = 15,
-        num_attn_candidates: int = 5,
-        penalty_weights: float = 1.0,
-        window_size: int = 512,
-        **kwargs,
+            self,
+            model: nn.Module,
+            model_type: str = "llava",
+            num_beams: int = 5,
+            scale_factor: float = 50.0,
+            threshold: int = 15,
+            num_attn_candidates: int = 5,
+            penalty_weights: float = 1.0,
+            window_size: int = 512,
+            **kwargs,
     ):
         super().__init__(model, model_type, **kwargs)
         self.num_beams = num_beams
@@ -93,7 +93,8 @@ class OPERAMitigator(BaseMitigator):
             vision_tower = self.model.vision_tower
             if hasattr(vision_tower, "num_patches"):
                 return int(vision_tower.num_patches)
-        return ModelHelper.DEFAULT_IMAGE_TOKENS.get(self.model_type, (35, 611))[1] - ModelHelper.DEFAULT_IMAGE_TOKENS.get(self.model_type, (35, 611))[0]
+        return ModelHelper.DEFAULT_IMAGE_TOKENS.get(self.model_type, (35, 611))[1] - \
+            ModelHelper.DEFAULT_IMAGE_TOKENS.get(self.model_type, (35, 611))[0]
 
     def _compute_key_position(self, input_ids: torch.Tensor) -> dict:
         img_start, _ = self._get_image_token_indices(input_ids, getattr(self.model, "config", None))
@@ -105,25 +106,25 @@ class OPERAMitigator(BaseMitigator):
         }
 
     def _opera_beam_search(
-        self,
-        input_ids: torch.LongTensor,
-        beam_scorer: BeamSearchScorer,
-        logits_processor: Optional[LogitsProcessorList] = None,
-        stopping_criteria: Optional[StoppingCriteriaList] = None,
-        pad_token_id: Optional[int] = None,
-        eos_token_id: Optional[Union[int, List[int]]] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        output_scores: Optional[bool] = None,
-        return_dict_in_generate: Optional[bool] = None,
-        synced_gpus: bool = False,
-        key_position: Optional[dict] = None,
-        scale_factor: Optional[float] = 50.0,
-        threshold: Optional[int] = 15,
-        num_attn_candidates: Optional[int] = 5,
-        window_size: Optional[int] = 512,
-        penalty_weights: Optional[float] = 1.0,
-        **model_kwargs,
+            self,
+            input_ids: torch.LongTensor,
+            beam_scorer: BeamSearchScorer,
+            logits_processor: Optional[LogitsProcessorList] = None,
+            stopping_criteria: Optional[StoppingCriteriaList] = None,
+            pad_token_id: Optional[int] = None,
+            eos_token_id: Optional[Union[int, List[int]]] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            output_scores: Optional[bool] = None,
+            return_dict_in_generate: Optional[bool] = None,
+            synced_gpus: bool = False,
+            key_position: Optional[dict] = None,
+            scale_factor: Optional[float] = 50.0,
+            threshold: Optional[int] = 15,
+            num_attn_candidates: Optional[int] = 5,
+            window_size: Optional[int] = 512,
+            penalty_weights: Optional[float] = 1.0,
+            **model_kwargs,
     ) -> torch.LongTensor:
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
@@ -214,7 +215,8 @@ class OPERAMitigator(BaseMitigator):
                 assert beam_idx is not None and attn_previous is not None
                 attn_previous = torch.cat([attn_previous, torch.zeros_like(attn_previous).sum(-1, keepdim=True)], -1)
                 attn_previous = torch.cat(
-                    [attn_previous[beam_idx], outputs.attentions[-1].clone().max(1, keepdim=True).values.data], -2)
+                    [attn_previous[beam_idx], outputs.attentions[-1].clone().max(1, keepdim=True).values.data], -2
+                )
 
             attn_previous = attn_previous.max(1, keepdim=True).values.data
             current_state["attn_previous"] = attn_previous.data.cpu()
@@ -271,8 +273,9 @@ class OPERAMitigator(BaseMitigator):
             attn_local = attn_last[:, :, attn_pos["response_start"]:, attn_pos["response_start"]:]
 
             attn_local = scale_factor * attn_local
-            attn_local_scores = torch.zeros((
-                attn_local.shape[0], attn_local.shape[1], attn_local.shape[-1]), dtype=torch.float16
+            attn_local_scores = torch.zeros(
+                (
+                    attn_local.shape[0], attn_local.shape[1], attn_local.shape[-1]), dtype=torch.float16
             ).to(candidate_token_scores.device)
             for j in range(attn_local.shape[-1]):
                 local_score = 1e-7 * attn_local[..., j:, j].prod(-1).data
@@ -302,8 +305,10 @@ class OPERAMitigator(BaseMitigator):
             history_states.append(current_state)
 
             try:
-                if all((rollback_loc_gather == rollback_loc).long().sum() > int(threshold)
-                       for _, rollback_loc_gather in enumerate(rollback_loc_gathers)):
+                if all(
+                        (rollback_loc_gather == rollback_loc).long().sum() > int(threshold)
+                        for _, rollback_loc_gather in enumerate(rollback_loc_gathers)
+                        ):
                     if rollback_loc < 10:
                         assert False
                     rollback_pos = rollback_loc + 1
@@ -338,13 +343,17 @@ class OPERAMitigator(BaseMitigator):
 
                     if "images" in model_kwargs_ori.keys() or "pixel_values" in model_kwargs_ori.keys():
                         model_kwargs = model_kwargs_ori.copy()
-                        model_kwargs["attention_mask"] = torch.cat([
-                            model_kwargs["attention_mask"],
-                            torch.ones((
-                                input_ids.shape[0],
-                                input_ids[:, :-1].shape[1] - model_kwargs["attention_mask"].shape[1]
-                            )).to(input_ids.device)
-                        ], 1)
+                        model_kwargs["attention_mask"] = torch.cat(
+                            [
+                                model_kwargs["attention_mask"],
+                                torch.ones(
+                                    (
+                                        input_ids.shape[0],
+                                        input_ids[:, :-1].shape[1] - model_kwargs["attention_mask"].shape[1]
+                                    )
+                                ).to(input_ids.device)
+                            ], 1
+                        )
 
                         model_inputs_tmp = self.model.prepare_inputs_for_generation(input_ids[:, :-1], **model_kwargs)
                     else:
@@ -352,7 +361,9 @@ class OPERAMitigator(BaseMitigator):
                         model_kwargs = model_kwargs_ori.copy()
                         model_kwargs["inputs_embeds"] = torch.cat([model_kwargs["inputs_embeds"], answer_embeds], 1)
                         model_kwargs["attention_mask"] = torch.cat(
-                            [model_kwargs["attention_mask"], torch.ones_like(input_ids[:, 1:-1]).to(input_ids.device)], 1)
+                            [model_kwargs["attention_mask"], torch.ones_like(input_ids[:, 1:-1]).to(input_ids.device)],
+                            1
+                        )
 
                         model_inputs_tmp = self.model.prepare_inputs_for_generation(input_ids[:, 1:-1], **model_kwargs)
 
@@ -487,11 +498,11 @@ class OPERAMitigator(BaseMitigator):
         return sequence_outputs["sequences"]
 
     def generate(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        pixel_values: Optional[torch.Tensor] = None,
-        **kwargs,
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            pixel_values: Optional[torch.Tensor] = None,
+            **kwargs,
     ) -> torch.Tensor:
         if pixel_values is None:
             raise ValueError("OPERA requires pixel_values")

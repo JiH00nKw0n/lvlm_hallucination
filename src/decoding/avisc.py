@@ -22,13 +22,12 @@ Formula (Reference: avisc_sample.py:206-208):
 Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from .base import BaseMitigator, MitigatorConfig, sample_top_p, get_image_token_indices
+from .base import BaseMitigator, sample_top_p
 
 
 class AvisCMitigator(BaseMitigator):
@@ -50,15 +49,15 @@ class AvisCMitigator(BaseMitigator):
     name: str = "avisc"
 
     def __init__(
-        self,
-        model: nn.Module,
-        model_type: str = "llava",
-        alpha: float = 1.0,
-        beta: float = 0.1,
-        layer_gamma: float = 0.5,
-        lamb: Optional[float] = None,
-        masking_scheme: str = "zeros",
-        **kwargs,
+            self,
+            model: nn.Module,
+            model_type: str = "llava",
+            alpha: float = 1.0,
+            beta: float = 0.1,
+            layer_gamma: float = 0.5,
+            lamb: Optional[float] = None,
+            masking_scheme: str = "zeros",
+            **kwargs,
     ):
         super().__init__(model, model_type, **kwargs)
         self.alpha = alpha
@@ -130,10 +129,10 @@ class AvisCMitigator(BaseMitigator):
         return masked_hidden
 
     def _detect_blind_tokens(
-        self,
-        attentions: Tuple[torch.Tensor, ...],
-        img_start: int,
-        img_end: int,
+            self,
+            attentions: Tuple[torch.Tensor, ...],
+            img_start: int,
+            img_end: int,
     ) -> torch.Tensor:
         """
         Detect blind tokens based on attention patterns.
@@ -172,10 +171,12 @@ class AvisCMitigator(BaseMitigator):
         top_k_layers = top_k_layers.tolist()
 
         # Step 2: Stack attention from selected layers
-        att_stack = torch.stack([
-            attentions[i].mean(dim=1)[:, -1, img_start:img_end]
-            for i in top_k_layers
-        ], dim=1)  # [B, k, num_img_tokens]
+        att_stack = torch.stack(
+            [
+                attentions[i].mean(dim=1)[:, -1, img_start:img_end]
+                for i in top_k_layers
+            ], dim=1
+        )  # [B, k, num_img_tokens]
 
         img_att = att_stack.mean(dim=1)  # [B, num_img_tokens]
 
@@ -188,9 +189,9 @@ class AvisCMitigator(BaseMitigator):
         return blind_mask
 
     def _combine_logits(
-        self,
-        logits_orig: torch.Tensor,
-        logits_masked: torch.Tensor,
+            self,
+            logits_orig: torch.Tensor,
+            logits_masked: torch.Tensor,
     ) -> torch.Tensor:
         """
         Combine original and masked logits with plausibility cutoff.
@@ -213,11 +214,11 @@ class AvisCMitigator(BaseMitigator):
         return diffs.masked_fill(logits_orig < cutoff, -float("inf"))
 
     def generate(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        pixel_values: Optional[torch.Tensor] = None,
-        **kwargs,
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            pixel_values: Optional[torch.Tensor] = None,
+            **kwargs,
     ) -> torch.Tensor:
         """
         Generate with AvisC blind token masking.
@@ -313,10 +314,12 @@ class AvisCMitigator(BaseMitigator):
         generated = torch.cat([generated, next_token], dim=-1)
 
         if attention_mask is not None:
-            attention_mask = torch.cat([
-                attention_mask,
-                torch.ones((attention_mask.shape[0], 1), device=device, dtype=attention_mask.dtype)
-            ], dim=-1)
+            attention_mask = torch.cat(
+                [
+                    attention_mask,
+                    torch.ones((attention_mask.shape[0], 1), device=device, dtype=attention_mask.dtype)
+                ], dim=-1
+            )
 
         # Step 3: Continue generation with cached KV
         for step in range(1, self.config.max_new_tokens):
@@ -366,10 +369,12 @@ class AvisCMitigator(BaseMitigator):
             generated = torch.cat([generated, next_token], dim=-1)
 
             if attention_mask is not None:
-                attention_mask = torch.cat([
-                    attention_mask,
-                    torch.ones((attention_mask.shape[0], 1), device=device, dtype=attention_mask.dtype)
-                ], dim=-1)
+                attention_mask = torch.cat(
+                    [
+                        attention_mask,
+                        torch.ones((attention_mask.shape[0], 1), device=device, dtype=attention_mask.dtype)
+                    ], dim=-1
+                )
 
             # Check for EOS
             eos_token_id = getattr(self.model.config, 'eos_token_id', None)

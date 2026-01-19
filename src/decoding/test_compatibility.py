@@ -71,9 +71,9 @@ TRAINING SUPPORT:
 | Octopus        | Yes               | Action classifier (DPO)    |
 """
 
-import torch
+from typing import Dict
+
 import torch.nn as nn
-from typing import Dict, List, Optional, Type
 
 # Model types supported
 SUPPORTED_MODELS = [
@@ -182,7 +182,9 @@ def check_layer_access(model: nn.Module) -> Dict[str, bool]:
 
         class _TestMitigator(BaseMitigator):
             def setup(self): pass
+
             def cleanup(self): pass
+
             def generate(self, *args, **kwargs): pass
 
         test = _TestMitigator(model)

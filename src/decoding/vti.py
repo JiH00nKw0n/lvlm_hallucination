@@ -94,15 +94,15 @@ class VTIMitigator(BaseMitigator):
     name: str = "vti"
 
     def __init__(
-        self,
-        model: nn.Module,
-        model_type: str = "llava",
-        textual_vti: Optional[torch.Tensor] = None,
-        visual_vti: Optional[torch.Tensor] = None,
-        target_layers: Optional[List[int]] = None,
-        alpha_text: Union[float, List[float]] = 0.8,
-        alpha_image: Union[float, List[float]] = 0.9,
-        **kwargs,
+            self,
+            model: nn.Module,
+            model_type: str = "llava",
+            textual_vti: Optional[torch.Tensor] = None,
+            visual_vti: Optional[torch.Tensor] = None,
+            target_layers: Optional[List[int]] = None,
+            alpha_text: Union[float, List[float]] = 0.8,
+            alpha_image: Union[float, List[float]] = 0.9,
+            **kwargs,
     ):
         super().__init__(model, model_type, **kwargs)
         if target_layers is not None:
@@ -150,10 +150,10 @@ class VTIMitigator(BaseMitigator):
         self._original_visual_mlps.clear()
 
     def generate(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        **kwargs,
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            **kwargs,
     ) -> torch.Tensor:
         gen_kwargs = {
             "max_new_tokens": self.config.max_new_tokens,
@@ -171,12 +171,12 @@ class VTIMitigator(BaseMitigator):
 
     @classmethod
     def compute_textual_vti(
-        cls,
-        model: nn.Module,
-        hallucinating_inputs: List[Dict],
-        correct_inputs: List[Dict],
-        model_type: str = "llava",
-        rank: int = 1,
+            cls,
+            model: nn.Module,
+            hallucinating_inputs: List[Dict],
+            correct_inputs: List[Dict],
+            model_type: str = "llava",
+            rank: int = 1,
     ) -> torch.Tensor:
         def _svd_flip(u: torch.Tensor, v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
             max_abs_cols = torch.argmax(torch.abs(u), 1)
@@ -236,14 +236,14 @@ class VTIMitigator(BaseMitigator):
 
     @classmethod
     def compute_visual_vti(
-        cls,
-        model: nn.Module,
-        clean_images: List[Union[torch.Tensor, Tuple[List[torch.Tensor], torch.Tensor]]],
-        model_type: str = "llava",
-        mask_ratio: float = 0.99,
-        rank: int = 1,
-        patch_size: int = 14,
-        image_grid_thw: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+            cls,
+            model: nn.Module,
+            clean_images: List[Union[torch.Tensor, Tuple[List[torch.Tensor], torch.Tensor]]],
+            model_type: str = "llava",
+            mask_ratio: float = 0.99,
+            rank: int = 1,
+            patch_size: int = 14,
+            image_grid_thw: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
     ) -> torch.Tensor:
         def _svd_flip(u: torch.Tensor, v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
             max_abs_cols = torch.argmax(torch.abs(u), 1)

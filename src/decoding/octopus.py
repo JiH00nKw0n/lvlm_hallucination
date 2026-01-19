@@ -24,7 +24,7 @@ from typing import List, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import CausalLMOutputWithPast
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from .base import TrainableMitigator, add_diffusion_noise, get_image_token_indices, ModelHelper
 
@@ -40,13 +40,13 @@ class OctopusClassifier(nn.Module):
     """
 
     def __init__(
-        self,
-        d_model: int = 4096,
-        num_classes: int = 4,
-        nhead: int = 2,
-        num_layers: int = 2,
-        n_query: int = 4,
-        bt: int = 1,
+            self,
+            d_model: int = 4096,
+            num_classes: int = 4,
+            nhead: int = 2,
+            num_layers: int = 2,
+            n_query: int = 4,
+            bt: int = 1,
     ):
         super().__init__()
         self.n_query = n_query
@@ -100,10 +100,10 @@ class OctopusPolicy(nn.Module):
     """
 
     def __init__(
-        self,
-        model: nn.Module,
-        classifier: OctopusClassifier,
-        model_type: str = "llava",
+            self,
+            model: nn.Module,
+            classifier: OctopusClassifier,
+            model_type: str = "llava",
     ):
         super().__init__()
         self.model = model
@@ -112,36 +112,36 @@ class OctopusPolicy(nn.Module):
         self.model_type = ModelHelper.normalize_model_type(model_type)
 
     def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        labels=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        images=None,
-        pixel_values=None,
-        images_cd=None,
-        cd_beta=None,
-        cd_alpha=None,
-        img_idx=None,
-        mask_idx=None,
-        return_dict=None,
-        kernel_size=None,
-        use_avisc=None,
-        layer_gamma=None,
-        masking_scheme=None,
-        lamb=None,
-        question_id=None,
-        use_m3id=None,
-        is_eval=None,
-        temp=None,
-        image_grid_thw=None,
-        cache_position=None,
-        position_ids=None,
-        rope_deltas=None,
+            self,
+            input_ids=None,
+            attention_mask=None,
+            past_key_values=None,
+            inputs_embeds=None,
+            labels=None,
+            use_cache=None,
+            output_attentions=None,
+            output_hidden_states=None,
+            images=None,
+            pixel_values=None,
+            images_cd=None,
+            cd_beta=None,
+            cd_alpha=None,
+            img_idx=None,
+            mask_idx=None,
+            return_dict=None,
+            kernel_size=None,
+            use_avisc=None,
+            layer_gamma=None,
+            masking_scheme=None,
+            lamb=None,
+            question_id=None,
+            use_m3id=None,
+            is_eval=None,
+            temp=None,
+            image_grid_thw=None,
+            cache_position=None,
+            position_ids=None,
+            rope_deltas=None,
     ):
         if pixel_values is None and images is not None:
             pixel_values = images
@@ -279,7 +279,7 @@ class OctopusPolicy(nn.Module):
         return action_logits, output
 
     def generate(self, inputs=None, **kwargs):
-        from Octopus.avisc_utils import avisc_sample
+        from src.decoding.octopus_utils import avisc_sample
 
         orig_sample = getattr(self.model, "sample", None)
         orig_prepare_method = getattr(self.model, "prepare_inputs_for_generation_method", None)
@@ -368,6 +368,7 @@ class OctopusPolicy(nn.Module):
                 image_key=None,
                 **model_kwargs,
             )
+
         try:
             self.model.sample = types.MethodType(avisc_sample.sample, self.model)
             if orig_prepare_method is None:
@@ -410,17 +411,17 @@ class OctopusMitigator(TrainableMitigator):
     name: str = "octopus"
 
     def __init__(
-        self,
-        model: nn.Module,
-        model_type: str = "llava",
-        classifier: Optional[OctopusClassifier] = None,
-        noise_step: int = 500,
-        layer_gamma: float = 0.5,
-        lamb: float = 100.0,
-        masking_scheme: str = "zeros",
-        n_query: int = 4,
-        bt: int = 1,
-        **kwargs,
+            self,
+            model: nn.Module,
+            model_type: str = "llava",
+            classifier: Optional[OctopusClassifier] = None,
+            noise_step: int = 500,
+            layer_gamma: float = 0.5,
+            lamb: float = 100.0,
+            masking_scheme: str = "zeros",
+            n_query: int = 4,
+            bt: int = 1,
+            **kwargs,
     ):
         super().__init__(model, model_type, **kwargs)
         self.noise_step = noise_step
@@ -448,11 +449,11 @@ class OctopusMitigator(TrainableMitigator):
         return list(self.classifier.parameters())
 
     def compute_loss(
-        self,
-        hidden_states: torch.Tensor,
-        chosen_actions: torch.Tensor,
-        rejected_actions: torch.Tensor,
-        beta: float = 1.0,
+            self,
+            hidden_states: torch.Tensor,
+            chosen_actions: torch.Tensor,
+            rejected_actions: torch.Tensor,
+            beta: float = 1.0,
     ) -> torch.Tensor:
         # If hidden_states are already action scores [B, T, C], use them directly
         if hidden_states.dim() == 3 and hidden_states.shape[-1] == 4:
@@ -490,16 +491,16 @@ class OctopusMitigator(TrainableMitigator):
         return loss
 
     def generate(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        pixel_values: Optional[torch.Tensor] = None,
-        images: Optional[torch.Tensor] = None,
-        images_cd: Optional[torch.Tensor] = None,
-        is_eval: bool = False,
-        output_scores: Optional[bool] = None,
-        return_dict_in_generate: Optional[bool] = None,
-        **kwargs,
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            pixel_values: Optional[torch.Tensor] = None,
+            images: Optional[torch.Tensor] = None,
+            images_cd: Optional[torch.Tensor] = None,
+            is_eval: bool = False,
+            output_scores: Optional[bool] = None,
+            return_dict_in_generate: Optional[bool] = None,
+            **kwargs,
     ):
         if images is None and pixel_values is not None:
             images = pixel_values
@@ -558,11 +559,11 @@ class OctopusMitigator(TrainableMitigator):
 
     @classmethod
     def from_pretrained(
-        cls,
-        model: nn.Module,
-        path: str,
-        model_type: str = "llava",
-        **kwargs,
+            cls,
+            model: nn.Module,
+            path: str,
+            model_type: str = "llava",
+            **kwargs,
     ) -> "OctopusMitigator":
         checkpoint = torch.load(path, map_location="cpu")
 
