@@ -75,9 +75,14 @@ do
 
     # Run evaluation with Accelerate for distributed inference
     # Redirect both stdout and stderr to log file while showing on console
+    if [ "$NUM_GPUS" -ge 2 ]; then
+        ACCELERATE_ARGS=(--num_processes="$NUM_GPUS" --multi_gpu)
+    else
+        ACCELERATE_ARGS=(--num_processes="$NUM_GPUS")
+    fi
+
     if CUDA_VISIBLE_DEVICES=$DEVICES accelerate launch \
-        --num_processes=$NUM_GPUS \
-        --multi_gpu \
+        "${ACCELERATE_ARGS[@]}" \
         "$PROJECT_DIR/evaluate.py" --cfg-path "$CFG_PATH" 2>&1 | tee -a "$LOG_FILE"; then
         echo "✓ Config $((i+1))/${#CFG_PATHS[@]} completed successfully" | tee -a "$LOG_FILE"
     else

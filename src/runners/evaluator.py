@@ -196,6 +196,10 @@ class LVLMEvaluator(BaseEvaluator):
             raise ValueError("decoding_config requires 'name'")
 
         mitigator_cls = registry.get_mitigator_class(name)
+        if mitigator_cls is None and name == "GreedyMitigator":
+            from src.decoding.greedy import GreedyMitigator
+            registry.register_mitigator("GreedyMitigator")(GreedyMitigator)
+            mitigator_cls = registry.get_mitigator_class(name)
         if mitigator_cls is None:
             available = ", ".join(registry.list_mitigators())
             raise ValueError(f"Unknown mitigator: {name}. Available: {available}")
