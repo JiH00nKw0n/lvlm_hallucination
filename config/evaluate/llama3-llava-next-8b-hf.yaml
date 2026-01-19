@@ -64,6 +64,15 @@ mitigators:
       alpha: 0.5
       beta: 0.1
       noise_step: 500
+  - name: SSLMitigator
+    model_type: llava-hf/llama3-llava-next-8b-hf
+    config:
+      sae_repo: lmms-lab/llama3-llava-next-8b-hf-sae-131k
+      sae_hookpoint: model.layers.24
+      layer: 24
+      gamma: 0.2
+      hall_index: 36992
+      non_hall_index: 47230
 
 evaluator:
   - POPEEvaluator:

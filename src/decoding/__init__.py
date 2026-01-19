@@ -1,7 +1,7 @@
 """
 Hallucination Mitigation Decoding Strategies
 
-This module provides a unified interface for 9 hallucination mitigation methods
+This module provides a unified interface for 10 hallucination mitigation methods
 for Large Vision-Language Models (LVLMs).
 
 Supported Models:
@@ -20,7 +20,8 @@ Architecture:
     ├── FarSightMitigator     # Upper Triangular Penalty
     ├── DecoMitigator         # Early Exit Calibration
     ├── OPERAMitigator        # Beam Search with Rollback
-    └── OctopusMitigator      # Dynamic Strategy Selection (Trainable)
+    ├── OctopusMitigator      # Dynamic Strategy Selection (Trainable)
+    └── SSLMitigator          # SAE-based Steering (LLaVA-NeXT only)
 
 Usage:
     from src.decoding import VCDMitigator, get_mitigator
@@ -39,7 +40,6 @@ from typing import Dict, Type
 
 from .base import (
     BaseMitigator,
-    DecodeResult,
     MitigatorConfig,
     TrainableMitigator,
     ModelHelper,
@@ -57,6 +57,7 @@ from .farsight import FarSightMitigator
 from .deco import DecoMitigator
 from .opera import OPERAMitigator
 from .octopus import OctopusMitigator, OctopusClassifier
+from .ssl import SSLMitigator
 from src.common.registry import registry
 
 
@@ -70,6 +71,7 @@ registry.register_mitigator('FarSightMitigator')(FarSightMitigator)
 registry.register_mitigator('DecoMitigator')(DecoMitigator)
 registry.register_mitigator('OPERAMitigator')(OPERAMitigator)
 registry.register_mitigator('OctopusMitigator')(OctopusMitigator)
+registry.register_mitigator('SSLMitigator')(SSLMitigator)
 
 # Backward-compatible alias
 MITIGATOR_REGISTRY: Dict[str, Type[BaseMitigator]] = registry.mapping["mitigator_name_mapping"]
@@ -140,7 +142,6 @@ __all__ = [
     # Base classes
     'BaseMitigator',
     'TrainableMitigator',
-    'DecodeResult',
     'MitigatorConfig',
     'ModelHelper',
 
@@ -154,6 +155,7 @@ __all__ = [
     'DecoMitigator',
     'OPERAMitigator',
     'OctopusMitigator',
+    'SSLMitigator',
     'OctopusClassifier',
 
     # Utilities
