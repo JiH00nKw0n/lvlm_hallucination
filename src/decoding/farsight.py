@@ -107,12 +107,28 @@ class FarSightMitigator(BaseMitigator):
             device = hidden_states.device
 
             # Q K V
-            q = self.q_proj(hidden_states).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-            k = self.k_proj(hidden_states).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-            v = self.v_proj(hidden_states).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+            num_heads = getattr(self, "num_heads", None)
+            num_kv_heads = getattr(self, "num_key_value_heads", num_heads)
+            head_dim = getattr(self, "head_dim", None)
+            if num_heads is None:
+                raise ValueError("FarSight requires num_heads on attention module.")
+            if head_dim is None:
+                head_dim = self.q_proj.out_features // num_heads
+            if num_kv_heads is None:
+                num_kv_heads = num_heads
+
+            q = self.q_proj(hidden_states).view(B, L, num_heads, head_dim).transpose(1, 2)
+            k = self.k_proj(hidden_states).view(B, L, num_kv_heads, head_dim).transpose(1, 2)
+            v = self.v_proj(hidden_states).view(B, L, num_kv_heads, head_dim).transpose(1, 2)
+
+            # GQA: repeat KV heads if needed
+            if num_kv_heads != num_heads:
+                n_rep = num_heads // num_kv_heads
+                k = k.repeat_interleave(n_rep, dim=1)
+                v = v.repeat_interleave(n_rep, dim=1)
 
             # Attention scores
-            attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(head_dim)
 
             # Causal mask
             C = torch.tril(torch.ones((L, L), device=device, dtype=dtype)).view(1, 1, L, L)
@@ -184,8 +200,8 @@ class FarSightMitigator(BaseMitigator):
 
             attn_weights = attn_probs if output_attentions else None
 
-            # LLaMA-style: return 3 values (output, attn_weights, past_key_value)
-            return output, attn_weights, None
+            # LLaMA-style (newer HF): return 2 values (output, attn_weights)
+            return output, attn_weights
 
         return forward
 
@@ -336,6 +352,13 @@ class FarSightMitigator(BaseMitigator):
                     attn.num_heads = hidden_size // head_dim
                     attn.head_dim = head_dim
                     attn.hidden_size = hidden_size
+                if not hasattr(attn, 'num_key_value_heads'):
+                    if hasattr(attn, 'head_dim'):
+                        attn.num_key_value_heads = attn.k_proj.out_features // attn.head_dim
+                    else:
+                        head_dim = attn.q_proj.out_features // attn.num_heads
+                        attn.head_dim = head_dim
+                        attn.num_key_value_heads = attn.k_proj.out_features // head_dim
 
                 attn.sigma = self.decay_factor
                 attn.farsight_use_alibi = bool(self.use_alibi)

@@ -1,7 +1,7 @@
 #!/bin/bash
-mkdir .log
-mkdir .cache
-mkdir result
+set -e
+
+mkdir -p .log .cache result
 
 echo "Simple setup script - no version checks"
 
@@ -29,7 +29,7 @@ echo "Upgrading pip..."
 pip install --upgrade pip
 
 # Install PyTorch with CUDA 12.1 (compatible with driver 535)
-echo "Installing PyTorch 2.6.0 with CUDA 12.1..."
+echo "Installing PyTorch 2.5.1 with CUDA 12.1..."
 pip install --no-cache-dir --force-reinstall \
   --index-url https://download.pytorch.org/whl/cu121 \
   torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1
@@ -41,3 +41,20 @@ pip install -r requirements.txt
 echo ""
 echo "Setup complete!"
 echo "PyTorch with CUDA 12.1 installed (compatible with driver 535+)"
+
+# Run evaluation after setup
+if [ -n "$HFtoken" ] && [ -z "$HF_TOKEN" ]; then
+    export HF_TOKEN="$HFtoken"
+fi
+
+export HF_HOME="$(pwd)/.cache"
+export HF_DATASETS_CACHE="$(pwd)/.cache"
+export LOG_DIR="$(pwd)/.log"
+
+CFG_PATH="${CFG_PATH:-config/evaluate/llama3-llava-next-8b-hf.yaml}"
+DEVICES="${DEVICES:-0}"
+
+echo "Running evaluation with config: $CFG_PATH"
+echo "Using GPUs: $DEVICES"
+
+bash scripts/eval.sh "$DEVICES" "$CFG_PATH"

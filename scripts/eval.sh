@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # Evaluation script for LVLM benchmarks
-# Usage: ./scripts/eval.sh [gpu_ids]
+# Usage: ./scripts/eval.sh [gpu_ids] [cfg_path]
 # Example: ./scripts/eval.sh 0,1,2,3  # Use GPUs 0,1,2,3
 #          ./scripts/eval.sh 0        # Use GPU 0 only
+#          ./scripts/eval.sh 0 config/evaluate/llama3-llava-next-8b-hf.yaml
 # Note: device_map="auto" in config automatically distributes model across available GPUs
 
 # Get script directory and project root
@@ -18,6 +19,7 @@ export LOG_DIR="$PROJECT_DIR/.log"
 
 # Get GPU configuration
 DEVICES=${1:-"0,1,2,3"}  # Default to GPUs 0,1,2,3
+CFG_OVERRIDE=${2:-""}
 
 # Create log directory if it doesn't exist
 mkdir -p "$PROJECT_DIR/.log"
@@ -31,11 +33,18 @@ echo "Project directory: $PROJECT_DIR"
 echo "Parent directory: $PARENT_DIR"
 
 # Configuration files to evaluate
-CFG_PATHS=(
-    "$PROJECT_DIR/config/evaluate/llava-1.5-7b-hf.yaml"
-    "$PROJECT_DIR/config/evaluate/llava-1.5-7b-hf-ft.yaml"
-    # Add more config paths here as needed
-)
+if [ -n "$CFG_OVERRIDE" ]; then
+    if [[ "$CFG_OVERRIDE" = /* ]]; then
+        CFG_PATHS=("$CFG_OVERRIDE")
+    else
+        CFG_PATHS=("$PROJECT_DIR/$CFG_OVERRIDE")
+    fi
+else
+    CFG_PATHS=(
+        "$PROJECT_DIR/config/evaluate/llama3-llava-next-8b-hf.yaml"
+        # Add more config paths here as needed
+    )
+fi
 
 echo "==========================================" | tee -a "$LOG_FILE"
 echo "Starting LVLM Evaluation Pipeline" | tee -a "$LOG_FILE"

@@ -77,6 +77,11 @@ class AvisCMitigator(BaseMitigator):
 
     def setup(self) -> None:
         """Register masking hook on first decoder layer."""
+        if hasattr(self.model, "config"):
+            if hasattr(self.model.config, "_attn_implementation"):
+                self.model.config._attn_implementation = "eager"
+            if hasattr(self.model.config, "attn_implementation"):
+                self.model.config.attn_implementation = "eager"
         # We'll use a forward pre-hook on the first layer to mask embeddings
         # This happens AFTER the VLM's multimodal merging
         layers = self._get_layers()

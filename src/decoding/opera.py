@@ -21,7 +21,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.generation.beam_search import BeamSearchScorer
 from transformers.generation.logits_process import LogitsProcessorList
-from transformers.generation.stopping_criteria import StoppingCriteriaList
+from transformers.generation.stopping_criteria import MaxLengthCriteria, StoppingCriteriaList
 
 from .base import BaseMitigator, ModelHelper
 
@@ -79,6 +79,11 @@ class OPERAMitigator(BaseMitigator):
         self.window_size = window_size
 
     def setup(self) -> None:
+        if hasattr(self.model, "config"):
+            if hasattr(self.model.config, "_attn_implementation"):
+                self.model.config._attn_implementation = "eager"
+            if hasattr(self.model.config, "attn_implementation"):
+                self.model.config.attn_implementation = "eager"
         return
 
     def cleanup(self) -> None:
@@ -200,6 +205,8 @@ class OPERAMitigator(BaseMitigator):
                 "cur_len": cur_len,
             }
 
+            if model_kwargs.get("cache_position") is None:
+                model_kwargs["cache_position"] = torch.arange(input_ids.shape[1], device=input_ids.device)
             model_inputs = self.model.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             outputs = self.model(
@@ -248,6 +255,7 @@ class OPERAMitigator(BaseMitigator):
                 model_kwargs_tmp = self.model._update_model_kwargs_for_generation(
                     outputs, model_kwargs_tmp, is_encoder_decoder=self.model.config.is_encoder_decoder
                 )
+                model_kwargs_tmp["cache_position"] = torch.arange(input_ids_tmp.shape[1], device=input_ids.device)
 
                 model_inputs_tmp = self.model.prepare_inputs_for_generation(input_ids_tmp, **model_kwargs_tmp)
 
@@ -518,6 +526,7 @@ class OPERAMitigator(BaseMitigator):
             generation_config.max_length = generation_config.max_new_tokens + input_ids.shape[1]
         if generation_config.max_length is None:
             generation_config.max_length = input_ids.shape[1] + self.config.max_new_tokens
+        generation_config.output_attentions = True
 
         model_kwargs = {}
         if attention_mask is None:
@@ -529,6 +538,7 @@ class OPERAMitigator(BaseMitigator):
                 )
         model_kwargs["attention_mask"] = attention_mask
         model_kwargs["pixel_values"] = pixel_values
+        model_kwargs["cache_position"] = torch.arange(input_ids.shape[1], device=input_ids.device)
 
         for key in ["image_sizes", "image_grid_thw", "position_ids"]:
             if key in kwargs and kwargs[key] is not None:
@@ -540,10 +550,15 @@ class OPERAMitigator(BaseMitigator):
             encoder_input_ids=input_ids,
             logits_processor=LogitsProcessorList(),
         )
-        stopping_criteria = self.model._get_stopping_criteria(
-            generation_config=generation_config,
-            stopping_criteria=StoppingCriteriaList(),
-        )
+        try:
+            stopping_criteria = self.model._get_stopping_criteria(
+                generation_config=generation_config,
+                stopping_criteria=StoppingCriteriaList(),
+            )
+        except AttributeError:
+            stopping_criteria = StoppingCriteriaList(
+                [MaxLengthCriteria(max_length=generation_config.max_length)]
+            )
 
         beam_scorer = BeamSearchScorer(
             batch_size=input_ids.shape[0],

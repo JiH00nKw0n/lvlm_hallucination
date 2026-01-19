@@ -109,9 +109,19 @@ class MiddleLayersMitigator(BaseMitigator):
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
 
-            query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-            key_states = key_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-            value_states = value_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+            num_heads = getattr(self, "num_heads", None)
+            num_kv_heads = getattr(self, "num_key_value_heads", num_heads)
+            head_dim = getattr(self, "head_dim", None)
+            if num_heads is None:
+                raise ValueError("MiddleLayers requires num_heads on attention module.")
+            if head_dim is None:
+                head_dim = self.q_proj.out_features // num_heads
+            if num_kv_heads is None:
+                num_kv_heads = num_heads
+
+            query_states = query_states.view(bsz, q_len, num_heads, head_dim).transpose(1, 2)
+            key_states = key_states.view(bsz, q_len, num_kv_heads, head_dim).transpose(1, 2)
+            value_states = value_states.view(bsz, q_len, num_kv_heads, head_dim).transpose(1, 2)
 
             # Handle KV cache
             kv_seq_len = key_states.shape[-2]
@@ -142,7 +152,12 @@ class MiddleLayersMitigator(BaseMitigator):
                     value_states = torch.cat([past_key_value[1], value_states], dim=2)
 
             # Attention
-            attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+            if num_kv_heads != num_heads:
+                n_rep = num_heads // num_kv_heads
+                key_states = key_states.repeat_interleave(n_rep, dim=1)
+                value_states = value_states.repeat_interleave(n_rep, dim=1)
+
+            attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(head_dim)
 
             if attention_mask is not None:
                 if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
@@ -171,16 +186,7 @@ class MiddleLayersMitigator(BaseMitigator):
             attn_output = attn_output.transpose(1, 2).reshape(bsz, q_len, -1)
             attn_output = self.o_proj(attn_output)
 
-            # Prepare cache output
-            if use_cache:
-                if hasattr(past_key_value, 'update'):
-                    new_cache = past_key_value
-                else:
-                    new_cache = (key_states, value_states)
-            else:
-                new_cache = None
-
-            return attn_output, (attn_weights if output_attentions else None), new_cache
+            return attn_output, (attn_weights if output_attentions else None)
 
         return forward
 
@@ -290,6 +296,18 @@ class MiddleLayersMitigator(BaseMitigator):
         for layer_idx in self.target_layers:
             if layer_idx < len(layers):
                 attn = ModelHelper.get_attention_module(layers[layer_idx])
+                if not hasattr(attn, "num_heads"):
+                    hidden_size = attn.q_proj.in_features
+                    head_dim = getattr(attn, "head_dim", 128)
+                    attn.num_heads = hidden_size // head_dim
+                    attn.head_dim = head_dim
+                if not hasattr(attn, "num_key_value_heads"):
+                    if hasattr(attn, "head_dim"):
+                        attn.num_key_value_heads = attn.k_proj.out_features // attn.head_dim
+                    else:
+                        head_dim = attn.q_proj.out_features // attn.num_heads
+                        attn.head_dim = head_dim
+                        attn.num_key_value_heads = attn.k_proj.out_features // head_dim
                 self._original_forwards.append((attn, attn.forward))
 
                 new_forward = self._get_attention_forward(layer_idx)

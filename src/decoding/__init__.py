@@ -1,7 +1,7 @@
 """
 Hallucination Mitigation Decoding Strategies
 
-This module provides a unified interface for 10 hallucination mitigation methods
+This module provides a unified interface for 11 hallucination mitigation methods
 for Large Vision-Language Models (LVLMs).
 
 Supported Models:
@@ -12,6 +12,7 @@ Supported Models:
 
 Architecture:
     BaseMitigator
+    ├── GreedyMitigator       # Deterministic decoding (baseline)
     ├── VCDMitigator          # Visual Contrastive Decoding
     ├── AvisCMitigator        # Attention Vision Calibration
     ├── VISTAMitigator        # Visual Steering Vector
@@ -48,6 +49,7 @@ from .base import (
 )
 
 # Individual method imports
+from .greedy import GreedyMitigator
 from .vcd import VCDMitigator
 from .avisc import AvisCMitigator
 from .vista import VISTAMitigator
@@ -62,6 +64,7 @@ from src.common.registry import registry
 
 
 # Register mitigators in the global registry
+registry.register_mitigator('GreedyMitigator')(GreedyMitigator)
 registry.register_mitigator('VCDMitigator')(VCDMitigator)
 registry.register_mitigator('AvisCMitigator')(AvisCMitigator)
 registry.register_mitigator('VISTAMitigator')(VISTAMitigator)
@@ -146,6 +149,7 @@ __all__ = [
     'ModelHelper',
 
     # Method implementations
+    'GreedyMitigator',
     'VCDMitigator',
     'AvisCMitigator',
     'VISTAMitigator',

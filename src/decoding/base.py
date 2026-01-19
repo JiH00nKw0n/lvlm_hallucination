@@ -191,10 +191,18 @@ class ModelHelper:
             lm = model.language_model
             # Decoder-only (LLaMA-based): lm.model.norm, lm.lm_head
             if hasattr(lm, 'model') and hasattr(lm.model, 'norm'):
-                return lm.model.norm, lm.lm_head
+                if hasattr(lm, 'lm_head'):
+                    return lm.model.norm, lm.lm_head
+                if hasattr(model, 'lm_head'):
+                    return lm.model.norm, model.lm_head
+                return lm.model.norm, lm
             # Direct norm on language_model
             if hasattr(lm, 'norm'):
-                return lm.norm, lm.lm_head
+                if hasattr(lm, 'lm_head'):
+                    return lm.norm, lm.lm_head
+                if hasattr(model, 'lm_head'):
+                    return lm.norm, model.lm_head
+                return lm.norm, lm
 
         # Direct model.model.norm (LLaMA-style standalone)
         if hasattr(model, 'model') and hasattr(model.model, 'norm'):

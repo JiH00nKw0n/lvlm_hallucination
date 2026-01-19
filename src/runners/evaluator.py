@@ -188,6 +188,9 @@ class LVLMEvaluator(BaseEvaluator):
         if not self.decoding_config:
             return None
 
+        # Ensure mitigators are registered
+        import src.decoding  # noqa: F401
+
         name = self.decoding_config.get("name")
         if not name:
             raise ValueError("decoding_config requires 'name'")

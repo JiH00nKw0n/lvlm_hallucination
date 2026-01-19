@@ -112,6 +112,8 @@ class SSLMitigator(BaseMitigator):
         hidden = unpack_outputs[0]
 
         with torch.no_grad():
+            if hidden.dim() < 3:
+                return outputs
             if hidden.shape[1] != 1:
                 x_img = hidden[:, self._image_start:self._image_start + self._num_img_tokens, :]
                 x_norm = x_img.norm(dim=-1, keepdim=True)
