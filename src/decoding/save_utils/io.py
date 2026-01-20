@@ -7,8 +7,8 @@ from huggingface_hub import hf_hub_download
 from .identify_features import generate_best_separation_features
 
 
-def remove_module_prefix(state_dict: Dict) -> Dict:
-    cleaned = {}
+def remove_module_prefix(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    cleaned: Dict[str, torch.Tensor] = {}
     for key, value in state_dict.items():
         if key.startswith("module."):
             cleaned[key[7:]] = value

@@ -76,7 +76,10 @@ class MiddleLayersMitigator(BaseMitigator):
             if hasattr(self.model.config, 'attn_implementation'):
                 self.model.config.attn_implementation = 'eager'
 
-    def _get_attention_forward(self, layer_idx: int) -> Callable:
+    def _get_attention_forward(
+            self,
+            layer_idx: int,
+    ) -> Callable[..., Tuple[torch.Tensor, Optional[torch.Tensor]]]:
         """
         Get the appropriate modified attention forward based on model type.
         """
@@ -98,12 +101,12 @@ class MiddleLayersMitigator(BaseMitigator):
                 hidden_states: torch.Tensor,
                 attention_mask: Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.LongTensor] = None,
-                past_key_values=None,
+                past_key_values: Optional[object] = None,
                 output_attentions: bool = False,
                 use_cache: bool = False,
                 cache_position: Optional[torch.LongTensor] = None,
                 **kwargs,
-        ):
+        ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
             bsz, q_len, _ = hidden_states.size()
 
             if past_key_values is None and "past_key_value" in kwargs:
@@ -133,7 +136,10 @@ class MiddleLayersMitigator(BaseMitigator):
                 if hasattr(past_key_values, 'get_usable_length'):
                     kv_seq_len += past_key_values.get_usable_length(kv_seq_len, self.layer_idx)
                 else:
-                    kv_seq_len += past_key_values[0].shape[-2]
+                    past = past_key_values
+                    if isinstance(past, tuple) and len(past) > 0 and isinstance(past[0], tuple):
+                        past = past[0]
+                    kv_seq_len += past[0].shape[-2]
 
             # RoPE
             if hasattr(self, 'rotary_emb'):
@@ -216,13 +222,13 @@ class MiddleLayersMitigator(BaseMitigator):
                 hidden_states: torch.Tensor,
                 attention_mask: Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.LongTensor] = None,
-                past_key_values=None,  # Changed: past_key_value -> past_key_values
+                past_key_values: Optional[object] = None,  # Changed: past_key_value -> past_key_values
                 output_attentions: bool = False,
                 use_cache: bool = False,
                 cache_position: Optional[torch.LongTensor] = None,  # Added: cache_position
                 position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
                 **kwargs,
-        ):
+        ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
             bsz, q_len, _ = hidden_states.size()
 
             query_states = self.q_proj(hidden_states)

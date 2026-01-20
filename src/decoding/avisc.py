@@ -22,10 +22,11 @@ Formula (Reference: avisc_sample.py:206-208):
 Supports: LLaVA, LLaVA-NeXT, Qwen2-VL, Qwen2.5-VL
 """
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from torch.utils.hooks import RemovableHandle
 
 from .base import BaseMitigator, sample_top_p
 
@@ -72,7 +73,7 @@ class AvisCMitigator(BaseMitigator):
         self._blind_mask: Optional[torch.Tensor] = None
         self._img_start: int = 0
         self._img_end: int = 0
-        self._masking_hook_handle = None
+        self._masking_hook_handle: Optional[RemovableHandle] = None
         self._enable_masking: bool = False
 
     def setup(self) -> None:
@@ -98,7 +99,11 @@ class AvisCMitigator(BaseMitigator):
         self._blind_mask = None
         self._enable_masking = False
 
-    def _masking_hook(self, module: nn.Module, args: tuple) -> object:
+    def _masking_hook(
+            self,
+            module: nn.Module,
+            args: Tuple[torch.Tensor, ...],
+    ) -> Union[Tuple[torch.Tensor, ...], torch.Tensor]:
         """
         Forward pre-hook to mask image token embeddings.
 

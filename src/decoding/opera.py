@@ -13,7 +13,7 @@ Supports: LLaVA, LLaVA-NeXT (reference OPERA is LLaVA-based)
 import copy
 import warnings
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.distributed as dist
@@ -101,7 +101,7 @@ class OPERAMitigator(BaseMitigator):
         return ModelHelper.DEFAULT_IMAGE_TOKENS.get(self.model_type, (35, 611))[1] - \
             ModelHelper.DEFAULT_IMAGE_TOKENS.get(self.model_type, (35, 611))[0]
 
-    def _compute_key_position(self, input_ids: torch.Tensor) -> dict:
+    def _compute_key_position(self, input_ids: torch.Tensor) -> Dict[str, int]:
         img_start, _ = self._get_image_token_indices(input_ids, getattr(self.model, "config", None))
         num_image_tokens = self._get_num_image_tokens()
         return {
@@ -123,13 +123,13 @@ class OPERAMitigator(BaseMitigator):
             output_scores: Optional[bool] = None,
             return_dict_in_generate: Optional[bool] = None,
             synced_gpus: bool = False,
-            key_position: Optional[dict] = None,
+            key_position: Optional[Dict[str, int]] = None,
             scale_factor: Optional[float] = 50.0,
             threshold: Optional[int] = 15,
             num_attn_candidates: Optional[int] = 5,
             window_size: Optional[int] = 512,
             penalty_weights: Optional[float] = 1.0,
-            **model_kwargs,
+            **model_kwargs: object,
     ) -> torch.LongTensor:
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()

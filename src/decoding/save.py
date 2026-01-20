@@ -12,6 +12,7 @@ from typing import List, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.hooks import RemovableHandle
 
 from .base import BaseMitigator
 from .save_utils import (
@@ -62,7 +63,7 @@ class SAVEMitigator(BaseMitigator):
         self.sae_repo = sae_repo
         self.sae_filename = sae_filename
 
-        self._handle = None
+        self._handle: Optional[RemovableHandle] = None
         self._sae: Optional[SAE] = None
         self._faith_vec: Optional[torch.Tensor] = None
         self._hal_vec: Optional[torch.Tensor] = None

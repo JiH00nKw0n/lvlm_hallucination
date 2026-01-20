@@ -74,7 +74,10 @@ class FarSightMitigator(BaseMitigator):
             if hasattr(self.model.config, 'attn_implementation'):
                 self.model.config.attn_implementation = 'eager'
 
-    def _get_farsight_forward(self, layer_idx: int) -> Callable:
+    def _get_farsight_forward(
+            self,
+            layer_idx: int,
+    ) -> Callable[..., Tuple[torch.Tensor, Optional[torch.Tensor]]]:
         """Get the appropriate FarSight forward based on model type."""
         if self.model_type in ('qwen2_vl', 'qwen2_5_vl'):
             return self._create_qwen_farsight_forward(layer_idx)
@@ -94,11 +97,11 @@ class FarSightMitigator(BaseMitigator):
                 hidden_states: torch.Tensor,
                 attention_mask: Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.LongTensor] = None,
-                past_key_value=None,
+                past_key_value: Optional[object] = None,
                 output_attentions: bool = False,
                 use_cache: bool = False,
                 **kwargs,
-        ):
+        ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
             """
             FarSight: W = (QK^T/√d) ⊙ C + P, Â = softmax(W) ⊙ C
             """
@@ -219,13 +222,13 @@ class FarSightMitigator(BaseMitigator):
                 hidden_states: torch.Tensor,
                 attention_mask: Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.LongTensor] = None,
-                past_key_values=None,
+                past_key_values: Optional[object] = None,
                 output_attentions: bool = False,
                 use_cache: bool = False,
                 cache_position: Optional[torch.LongTensor] = None,
                 position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
                 **kwargs,
-        ):
+        ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
             """
             FarSight for Qwen2-VL: W = (QK^T/√d) ⊙ C + P, Â = softmax(W) ⊙ C
             """

@@ -10,12 +10,15 @@ Supports 4 VLM architectures:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import PretrainedConfig
+
+TensorDict = Dict[str, torch.Tensor]
+ModelKwargs = Dict[str, Any]
 
 
 # =============================================================================

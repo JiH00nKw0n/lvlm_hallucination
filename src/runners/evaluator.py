@@ -205,7 +205,10 @@ class LVLMEvaluator(BaseEvaluator):
             available = ", ".join(registry.list_mitigators())
             raise ValueError(f"Unknown mitigator: {name}. Available: {available}")
 
-        model_type_raw = self.decoding_config.get("model_type", "llava-hf/llava-1.5-7b-hf")
+        model_type_raw = self.decoding_config.get(
+            "model_type",
+            self.decoding_config.get("config", {}).get("model_type", "llava-hf/llava-1.5-7b-hf"),
+        )
         model_type = self._resolve_model_type(model_type_raw)
         mitigator_kwargs = dict(self.decoding_config.get("config", {}))
         mitigator_kwargs["model_type"] = model_type

@@ -69,7 +69,7 @@ class VCDMitigator(BaseMitigator):
             input_ids: torch.Tensor,
             pixel_values: Optional[torch.Tensor] = None,
             attention_mask: Optional[torch.Tensor] = None,
-            past_key_values=None,
+            past_key_values: Optional[object] = None,
             is_first_step: bool = True,
             cache_position: Optional[torch.Tensor] = None,
             **kwargs,

@@ -23,6 +23,7 @@ Architecture:
     ├── OPERAMitigator        # Beam Search with Rollback
     ├── OctopusMitigator      # Dynamic Strategy Selection (Trainable)
     ├── SSLMitigator          # SAE-based Steering (LLaVA-NeXT only)
+    ├── OursMitigator         # Query-conditioned SAE gating (LLaVA-NeXT only)
     └── SAVEMitigator         # SAVE steering (LLaVA-NeXT only)
 
 Usage:
@@ -61,6 +62,7 @@ from .deco import DecoMitigator
 from .opera import OPERAMitigator
 from .octopus import OctopusMitigator, OctopusClassifier
 from .ssl import SSLMitigator
+from .ours_ssl import OursMitigator
 from .save import SAVEMitigator
 from src.common.registry import registry
 
@@ -77,6 +79,7 @@ registry.register_mitigator('DecoMitigator')(DecoMitigator)
 registry.register_mitigator('OPERAMitigator')(OPERAMitigator)
 registry.register_mitigator('OctopusMitigator')(OctopusMitigator)
 registry.register_mitigator('SSLMitigator')(SSLMitigator)
+registry.register_mitigator('OursMitigator')(OursMitigator)
 registry.register_mitigator('SAVEMitigator')(SAVEMitigator)
 
 # Backward-compatible alias
@@ -163,6 +166,7 @@ __all__ = [
     'OPERAMitigator',
     'OctopusMitigator',
     'SSLMitigator',
+    'OursMitigator',
     'SAVEMitigator',
     'OctopusClassifier',
 

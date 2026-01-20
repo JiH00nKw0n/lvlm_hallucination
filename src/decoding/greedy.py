@@ -28,7 +28,7 @@ class GreedyMitigator(BaseMitigator):
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         pixel_values: Optional[torch.Tensor] = None,
-        **kwargs,
+        **kwargs: object,
     ) -> torch.Tensor:
         gen_kwargs = {
             "max_new_tokens": self.config.max_new_tokens,

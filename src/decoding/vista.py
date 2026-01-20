@@ -11,7 +11,7 @@ Reference:
 Supports: LLaVA, LLaVA-NeXT
 """
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -24,13 +24,18 @@ from .vista_utils.steering_vector import obtain_vsv
 class VSVLayer(nn.Module):
     """Reference VSVLayer (VISTA/llm_layers.py)."""
 
-    def __init__(self, vsv, lam, simple_mode: bool = False):
+    def __init__(
+            self,
+            vsv: Optional[torch.Tensor],
+            lam: List[float],
+            simple_mode: bool = False,
+    ) -> None:
         super().__init__()
         self.vsv = vsv
         self.lam = lam
         self.simple_mode = simple_mode
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.vsv is None:
             return x
         x = x.float()
@@ -60,7 +65,7 @@ def _get_nested_attr(obj: nn.Module, attr_path: str) -> nn.Module:
     return obj
 
 
-def _find_longest_modulelist(model: nn.Module, path: str = ""):
+def _find_longest_modulelist(model: nn.Module, path: str = "") -> Tuple[str, int]:
     longest_path = path
     longest_len = 0
     for name, child in model.named_children():

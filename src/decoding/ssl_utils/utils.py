@@ -10,7 +10,7 @@ from transformers import PreTrainedModel
 T = TypeVar("T")
 
 
-def rank0_print(*args):
+def rank0_print(*args: object) -> None:
     if dist.is_initialized():
         if dist.get_rank() == 0:
             print(f"Rank {dist.get_rank()}: ", *args)
@@ -18,7 +18,7 @@ def rank0_print(*args):
         print(*args)
 
 
-def rank_print(*args):
+def rank_print(*args: object) -> None:
     if dist.is_initialized():
         print(f"Rank {dist.get_rank()}: ", *args)
     else:
@@ -34,7 +34,7 @@ def assert_type(typ: Type[T], obj: Any) -> T:
 
 
 @torch.no_grad()
-def geometric_median(points: Tensor, max_iter: int = 100, tol: float = 1e-5):
+def geometric_median(points: Tensor, max_iter: int = 100, tol: float = 1e-5) -> Tensor:
     """Compute the geometric median `points`. Used for initializing decoder bias."""
     # Initialize our guess as the mean of the points
     guess = points.mean(dim=0)
@@ -105,7 +105,7 @@ def resolve_widths(
 
 
 # Fallback implementation of SAE decoder
-def eager_decode(top_indices: Tensor, top_acts: Tensor, W_dec: Tensor):
+def eager_decode(top_indices: Tensor, top_acts: Tensor, W_dec: Tensor) -> Tensor:
     buf = top_acts.new_zeros(top_acts.shape[:-1] + (W_dec.shape[-1],))
     acts = buf.scatter_(dim=-1, index=top_indices, src=top_acts)
     return acts @ W_dec.mT

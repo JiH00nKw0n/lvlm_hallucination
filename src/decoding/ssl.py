@@ -13,6 +13,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+from torch.utils.hooks import RemovableHandle
 
 from .base import BaseMitigator
 from .ssl_utils import Sae
@@ -58,7 +59,7 @@ class SSLMitigator(BaseMitigator):
         self.hall_index = hall_index
         self.non_hall_index = non_hall_index
 
-        self._handle = None
+        self._handle: Optional[RemovableHandle] = None
         self._image_start: int = 0
         self._num_img_tokens: int = 0
         self._d_hall: Optional[torch.Tensor] = None

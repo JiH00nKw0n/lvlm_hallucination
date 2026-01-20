@@ -20,12 +20,12 @@ from .base import BaseMitigator, ModelHelper
 class VTILayer(nn.Module):
     """Reference VTILayer (VTI/vti_utils/llm_layers.py)."""
 
-    def __init__(self, vti_direction, lam):
+    def __init__(self, vti_direction: Optional[torch.Tensor], lam: List[float]):
         super().__init__()
         self.vti_direction = vti_direction
         self.lam = lam
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.vti_direction is None:
             return x
         norm = torch.norm(x.float(), dim=-1).unsqueeze(-1)
@@ -49,7 +49,7 @@ def _get_nested_attr(obj: nn.Module, attr_path: str) -> nn.Module:
     return obj
 
 
-def _find_longest_modulelist(model: nn.Module, path: str = ""):
+def _find_longest_modulelist(model: nn.Module, path: str = "") -> Tuple[str, int]:
     longest_path = path
     longest_len = 0
     for name, child in model.named_children():

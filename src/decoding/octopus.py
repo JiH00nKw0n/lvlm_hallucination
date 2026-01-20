@@ -19,11 +19,12 @@ Supports: LLaVA, LLaVA-NeXT (reference Octopus code targets LLaVA)
 
 import math
 import types
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers.generation.utils import GenerateOutput
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from .base import TrainableMitigator, add_diffusion_noise, get_image_token_indices, ModelHelper
@@ -71,7 +72,7 @@ class OctopusClassifier(nn.Module):
                 nn.init.constant_(layer.bias, 0)
 
     @staticmethod
-    def init_weights(m):
+    def init_weights(m: nn.Module) -> None:
         if isinstance(m, nn.Linear):
             nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
             if m.bias is not None:
@@ -142,7 +143,7 @@ class OctopusPolicy(nn.Module):
             cache_position=None,
             position_ids=None,
             rope_deltas=None,
-    ):
+    ) -> Tuple[torch.Tensor, Union[CausalLMOutputWithPast, Tuple[torch.Tensor, ...]]]:
         if pixel_values is None and images is not None:
             pixel_values = images
 
@@ -278,7 +279,11 @@ class OctopusPolicy(nn.Module):
         action_logits = self.classifier(hidden_states)
         return action_logits, output
 
-    def generate(self, inputs=None, **kwargs):
+    def generate(
+            self,
+            inputs: Optional[torch.Tensor] = None,
+            **kwargs: object,
+    ) -> Union[GenerateOutput, torch.LongTensor]:
         from src.decoding.octopus_utils import avisc_sample
 
         orig_sample = getattr(self.model, "sample", None)
