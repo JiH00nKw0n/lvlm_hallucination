@@ -76,6 +76,15 @@ mitigators:
       gamma: 0.2
       hall_index: 36992
       non_hall_index: 47230
+  - name: SAVEMitigator
+    model_type: llava-hf/llama3-llava-next-8b-hf
+    config:
+      layer: 24
+      steer_alpha: 5.0
+      mode: both
+      feature_save_dir: src/decoding/save_utils
+      sae_repo: flybamboo/vlm-saes
+      sae_filename: sae_final_layer24_8x_norm13.996978.pkl
 
 evaluator:
   - POPEEvaluator:

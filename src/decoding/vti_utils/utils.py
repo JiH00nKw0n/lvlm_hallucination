@@ -10,7 +10,7 @@ import json
 import os
 import random
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -18,6 +18,9 @@ import torch.nn.functional as F
 from PIL import Image
 
 from .pca import PCA
+
+HiddenStatesTuple = Tuple[torch.Tensor, ...]
+InputDict = Dict[str, torch.Tensor]
 
 
 @dataclass
@@ -173,13 +176,13 @@ def get_prompts(
 
 def get_demos(
     args: VTIArgs,
-    image_processor,
-    model,
-    tokenizer,
+    image_processor: Any,
+    model: Any,
+    tokenizer: Any,
     patch_size: int = 14,
     file_path: Optional[str] = None,
     model_is_llava: bool = True,
-) -> Tuple[List, Tuple]:
+) -> Tuple[List[List[torch.Tensor]], Tuple[Tuple[InputDict, InputDict], ...]]:
     """
     Load demonstration data from JSONL.
 
@@ -220,7 +223,11 @@ def get_demos(
     return inputs_images, input_ids
 
 
-def get_hiddenstates(model, inputs, image_tensor) -> List[Tuple]:
+def get_hiddenstates(
+    model: Any,
+    inputs: Tuple[Tuple[InputDict, InputDict], ...],
+    image_tensor: Optional[Sequence[Sequence[torch.Tensor]]],
+) -> List[Tuple[torch.Tensor, torch.Tensor]]:
     """
     Extract hidden states for textual VTI.
 
@@ -297,7 +304,7 @@ def obtain_textual_vti(model, inputs, image_tensor, rank: int = 1) -> Tuple[torc
     return direction, reading_direction
 
 
-def _average_tuples(tuples: List[Tuple[torch.Tensor]]) -> Tuple[torch.Tensor]:
+def _average_tuples(tuples: List[Tuple[torch.Tensor, ...]]) -> Tuple[torch.Tensor, ...]:
     """Average tensors at each position across tuples."""
     if not tuples:
         raise ValueError("The input list of tuples is empty.")
@@ -315,7 +322,11 @@ def _average_tuples(tuples: List[Tuple[torch.Tensor]]) -> Tuple[torch.Tensor]:
     return tuple(averaged_tensors)
 
 
-def get_visual_hiddenstates(model, image_tensor, model_is_llava: bool = True) -> List[Tuple]:
+def get_visual_hiddenstates(
+    model: Any,
+    image_tensor: Sequence[Sequence[torch.Tensor]],
+    model_is_llava: bool = True,
+) -> List[Tuple[torch.Tensor, torch.Tensor]]:
     """
     Extract hidden states from vision encoder.
 
@@ -371,7 +382,12 @@ def get_visual_hiddenstates(model, image_tensor, model_is_llava: bool = True) ->
     return h_all
 
 
-def obtain_visual_vti(model, image_tensor, rank: int = 1, model_is_llava: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
+def obtain_visual_vti(
+    model: Any,
+    image_tensor: Sequence[Sequence[torch.Tensor]],
+    rank: int = 1,
+    model_is_llava: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute visual VTI direction.
 

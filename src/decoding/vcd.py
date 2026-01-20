@@ -73,7 +73,7 @@ class VCDMitigator(BaseMitigator):
             is_first_step: bool = True,
             cache_position: Optional[torch.Tensor] = None,
             **kwargs,
-    ) -> Dict:
+    ) -> Dict[str, object]:
         """
         Prepare model inputs, handling pixel_values only on first step for cached decoding.
 

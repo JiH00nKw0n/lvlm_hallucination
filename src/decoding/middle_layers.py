@@ -98,12 +98,16 @@ class MiddleLayersMitigator(BaseMitigator):
                 hidden_states: torch.Tensor,
                 attention_mask: Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.LongTensor] = None,
-                past_key_value=None,
+                past_key_values=None,
                 output_attentions: bool = False,
                 use_cache: bool = False,
+                cache_position: Optional[torch.LongTensor] = None,
                 **kwargs,
         ):
             bsz, q_len, _ = hidden_states.size()
+
+            if past_key_values is None and "past_key_value" in kwargs:
+                past_key_values = kwargs["past_key_value"]
 
             query_states = self.q_proj(hidden_states)
             key_states = self.k_proj(hidden_states)
@@ -125,11 +129,11 @@ class MiddleLayersMitigator(BaseMitigator):
 
             # Handle KV cache
             kv_seq_len = key_states.shape[-2]
-            if past_key_value is not None:
-                if hasattr(past_key_value, 'get_usable_length'):
-                    kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+            if past_key_values is not None:
+                if hasattr(past_key_values, 'get_usable_length'):
+                    kv_seq_len += past_key_values.get_usable_length(kv_seq_len, self.layer_idx)
                 else:
-                    kv_seq_len += past_key_value[0].shape[-2]
+                    kv_seq_len += past_key_values[0].shape[-2]
 
             # RoPE
             if hasattr(self, 'rotary_emb'):
@@ -141,15 +145,17 @@ class MiddleLayersMitigator(BaseMitigator):
                 query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
             # Update KV cache
-            if past_key_value is not None:
-                if hasattr(past_key_value, 'update'):
+            if past_key_values is not None:
+                if hasattr(past_key_values, 'update'):
                     cache_kwargs = {"sin": sin, "cos": cos} if hasattr(self, 'rotary_emb') else {}
-                    key_states, value_states = past_key_value.update(
+                    if cache_position is not None:
+                        cache_kwargs["cache_position"] = cache_position
+                    key_states, value_states = past_key_values.update(
                         key_states, value_states, self.layer_idx, cache_kwargs
-                        )
+                    )
                 else:
-                    key_states = torch.cat([past_key_value[0], key_states], dim=2)
-                    value_states = torch.cat([past_key_value[1], value_states], dim=2)
+                    key_states = torch.cat([past_key_values[0], key_states], dim=2)
+                    value_states = torch.cat([past_key_values[1], value_states], dim=2)
 
             # Attention
             if num_kv_heads != num_heads:
@@ -160,9 +166,14 @@ class MiddleLayersMitigator(BaseMitigator):
             attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(head_dim)
 
             if attention_mask is not None:
-                if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
+                if attention_mask.dim() == 4 and attention_mask.shape[-1] == kv_seq_len:
+                    if attention_mask.shape[-2] not in (1, q_len):
+                        raise ValueError(
+                            f"Attention mask should have last dims (1 or q_len, {kv_seq_len}), but is {attention_mask.size()}"
+                        )
+                else:
                     raise ValueError(
-                        f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
+                        f"Attention mask should be 4D with last dim {kv_seq_len}, but is {attention_mask.size()}"
                     )
                 attn_weights = attn_weights + attention_mask
                 attn_weights = torch.max(

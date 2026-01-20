@@ -50,7 +50,7 @@ def sample(
         use_avisc: Optional[bool] = True,
         use_m3id: Optional[bool] = False,
         is_eval: Optional[bool] = False,
-        mymodel=None,
+        mymodel: Optional[Callable[..., Any]] = None,
         **model_kwargs,
 ) -> Union[SampleOutput, torch.LongTensor]:
     # init values

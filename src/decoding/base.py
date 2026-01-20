@@ -10,11 +10,12 @@ Supports 4 VLM architectures:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers import PretrainedConfig
 
 
 # =============================================================================
@@ -266,7 +267,7 @@ class ModelHelper:
 def get_image_token_indices(
         input_ids: torch.Tensor,
         model_type: str = "llava",
-        config: Optional[Any] = None,
+        config: Optional[PretrainedConfig] = None,
         image_token_id: int = 32000,
 ) -> Tuple[int, int]:
     """
@@ -528,7 +529,7 @@ class BaseMitigator(ABC):
     def _get_image_token_indices(
             self,
             input_ids: torch.Tensor,
-            config: Optional[Any] = None,
+            config: Optional[PretrainedConfig] = None,
     ) -> Tuple[int, int]:
         return get_image_token_indices(
             input_ids,

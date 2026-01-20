@@ -98,7 +98,7 @@ class AvisCMitigator(BaseMitigator):
         self._blind_mask = None
         self._enable_masking = False
 
-    def _masking_hook(self, module, args):
+    def _masking_hook(self, module: nn.Module, args: tuple) -> object:
         """
         Forward pre-hook to mask image token embeddings.
 

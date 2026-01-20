@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Callable, Dict, List, Optional
 
 import torch
@@ -331,11 +332,14 @@ class LVLMEvaluator(BaseEvaluator):
         """
         # Add index to track original order and identify padding duplicates
         batch_size = self.batch_size if batch_size is not None else batch_size
-        
-        indexed_dataset = [
-            {"_sample_idx": idx, **sample}
-            for idx, sample in enumerate(self.evaluate_dataset)
-        ]
+
+        # Lazy indexing: use HuggingFace Dataset.map() instead of list comprehension
+        # This avoids loading all images into memory upfront
+        indexed_dataset = self.evaluate_dataset.map(
+            lambda example, idx: {"_sample_idx": idx, **example},
+            with_indices=True,
+            desc="Adding sample indices (lazy)",
+        )
 
         # Split indexed dataset across GPUs with padding
         with self.distributed_state.split_between_processes(
@@ -345,12 +349,15 @@ class LVLMEvaluator(BaseEvaluator):
             results = []
             mitigator = self._build_mitigator()
 
-            # Create dataloader for batch processing
+            # Create dataloader for batch processing with parallel loading
             dataloader = DataLoader(
                 process_dataset,
                 batch_size=batch_size,
                 shuffle=False,
-                collate_fn=default_collate_fn
+                collate_fn=default_collate_fn,
+                num_workers=4,
+                prefetch_factor=2,
+                pin_memory=True,
             )
 
             def run_batch(batch_inputs, batch_samples):
@@ -425,6 +432,13 @@ class LVLMEvaluator(BaseEvaluator):
         Returns:
             None. Results are saved to output_dir.
         """
+        # Skip if results already exist and overwrite is disabled
+        if self.output_dir is not None:
+            result_path = os.path.join(self.output_dir, f'{self.dataset_name}.json')
+            if not self.overwrite_results and os.path.exists(result_path):
+                logger.info(f"Skipping {self.dataset_name} - results already exist at {result_path}")
+                return
+
         # Generate answers for all samples
         results = self._generate_answers(batch_size)
 

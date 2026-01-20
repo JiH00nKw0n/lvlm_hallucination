@@ -98,7 +98,7 @@ class SSLMitigator(BaseMitigator):
         self._d_hall = None
         self._d_non_hall = None
 
-    def _hook(self, module: nn.Module, _, outputs):
+    def _hook(self, module: nn.Module, _, outputs: object) -> object:
         d_hall = self._d_hall
         d_non_hall = self._d_non_hall
         if d_hall is None or d_non_hall is None:
