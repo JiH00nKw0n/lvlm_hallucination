@@ -512,11 +512,13 @@ class POPEEvaluator(LVLMEvaluator):
         Returns:
             Conversation list for chat template
         """
+        question_with_instruction = f"{sample['question']} Please answer this question with one word."
+        
         return [{
             "role": "user",
             "content": [
                 {"type": "image", "image": sample["image"]},
-                {"type": "text", "text": sample["question"]}
+                {"type": "text", "text": question_with_instruction}
             ]
         }]
 
