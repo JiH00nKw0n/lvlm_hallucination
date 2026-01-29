@@ -198,6 +198,45 @@ class MultiDatasetEvaluateTask(BaseEvaluateTask):
         return container
 
 
+# Mitigators that require eager attention (cannot use Flash Attention)
+ATTENTION_BASED_MITIGATORS = frozenset({
+    "MiddleLayersMitigator",
+    "FarSightMitigator",
+    "OPERAMitigator",
+    "AvisCMitigator",
+})
+
+
+def _should_use_flash_attention(mitigators_config: Optional[List] = None) -> bool:
+    """
+    Determine if Flash Attention can be used based on mitigator configuration.
+
+    Flash Attention is incompatible with mitigators that need direct attention weight access:
+    - MiddleLayersMitigator: modifies attention weights pre-softmax
+    - FarSightMitigator: replaces attention forward entirely
+    - OPERAMitigator: reads attention weights for rollback
+    - AvisCMitigator: reads attention weights for blind token detection
+
+    Args:
+        mitigators_config: List of mitigator configurations
+
+    Returns:
+        True if Flash Attention can be safely used, False otherwise
+    """
+    if not mitigators_config:
+        return True
+
+    for mitigator_cfg in mitigators_config:
+        mitigator_name = mitigator_cfg.get("name", "")
+        if mitigator_name in ATTENTION_BASED_MITIGATORS:
+            logger.info(
+                f"Flash Attention disabled: {mitigator_name} requires eager attention"
+            )
+            return False
+
+    return True
+
+
 @add_end_docstrings(EVALUATE_TASK_DOCSTRING)
 @registry.register_task("MultiDatasetEvaluateTaskWithPretrainedModel")
 class MultiDatasetEvaluateTaskWithPretrainedModel(MultiDatasetEvaluateTask, TaskWithPretrainedModel):
@@ -215,6 +254,10 @@ class MultiDatasetEvaluateTaskWithPretrainedModel(MultiDatasetEvaluateTask, Task
         """
         Builds and returns a pretrained model for evaluation. Optionally applies LoRA configurations.
 
+        Automatically enables Flash Attention 2 for compatible mitigators to improve inference speed.
+        Flash Attention is disabled for attention-based mitigators (MiddleLayersMitigator,
+        FarSightMitigator, OPERAMitigator, AvisCMitigator) which require direct attention weight access.
+
         Args:
             model_config (Optional[Dict]): The model configuration.
             If not provided, defaults to `self.config.model_config`.
@@ -231,6 +274,16 @@ class MultiDatasetEvaluateTaskWithPretrainedModel(MultiDatasetEvaluateTask, Task
 
         # Convert OmegaConf to dict to avoid issues with transformers
         model_kwargs = OmegaConf.to_container(model_config.config, resolve=True)
+
+        # Auto-enable Flash Attention 2 if no attention-based mitigators are configured
+        mitigators_config = getattr(self.config, "mitigators", None) or []
+        if "attn_implementation" not in model_kwargs:
+            if _should_use_flash_attention(mitigators_config):
+                model_kwargs["attn_implementation"] = "flash_attention_2"
+                logger.info("Flash Attention 2 enabled for faster inference")
+            else:
+                model_kwargs["attn_implementation"] = "eager"
+
         model = model_cls.from_pretrained(**model_kwargs)
 
         return model.eval()
@@ -279,6 +332,10 @@ class MultiDatasetEvaluateTaskWithCustomModel(MultiDatasetEvaluateTask, TaskWith
         """
         Builds and returns a custom model for evaluation.
 
+        Automatically enables Flash Attention 2 for compatible mitigators to improve inference speed.
+        Flash Attention is disabled for attention-based mitigators (MiddleLayersMitigator,
+        FarSightMitigator, OPERAMitigator, AvisCMitigator) which require direct attention weight access.
+
         Args:
             model_config (Optional[Dict]): The model configuration.
             If not provided, defaults to `self.config.model_config`.
@@ -293,7 +350,19 @@ class MultiDatasetEvaluateTaskWithCustomModel(MultiDatasetEvaluateTask, TaskWith
 
         assert model_cls is not None, f"Model {model_cls} not properly registered."
 
-        model = model_cls.from_pretrained(**model_config.config)
+        # Convert OmegaConf to dict to avoid issues with transformers
+        model_kwargs = OmegaConf.to_container(model_config.config, resolve=True)
+
+        # Auto-enable Flash Attention 2 if no attention-based mitigators are configured
+        mitigators_config = getattr(self.config, "mitigators", None) or []
+        if "attn_implementation" not in model_kwargs:
+            if _should_use_flash_attention(mitigators_config):
+                model_kwargs["attn_implementation"] = "flash_attention_2"
+                logger.info("Flash Attention 2 enabled for faster inference")
+            else:
+                model_kwargs["attn_implementation"] = "eager"
+
+        model = model_cls.from_pretrained(**model_kwargs)
 
         return model.eval()
 
@@ -342,6 +411,10 @@ class MultiDatasetEvaluateTaskWithPEFTModel(MultiDatasetEvaluateTaskWithPretrain
         """
         Builds and returns a pretrained model for evaluation. Optionally applies LoRA configurations.
 
+        Automatically enables Flash Attention 2 for compatible mitigators to improve inference speed.
+        Flash Attention is disabled for attention-based mitigators (MiddleLayersMitigator,
+        FarSightMitigator, OPERAMitigator, AvisCMitigator) which require direct attention weight access.
+
         Args:
             model_config (Optional[Dict]): The model configuration.
             If not provided, defaults to `self.config.model_config`.
@@ -358,10 +431,20 @@ class MultiDatasetEvaluateTaskWithPEFTModel(MultiDatasetEvaluateTaskWithPretrain
 
         # Convert OmegaConf to dict to avoid issues with transformers
         model_kwargs = OmegaConf.to_container(model_config.config, resolve=True)
+
+        # Auto-enable Flash Attention 2 if no attention-based mitigators are configured
+        mitigators_config = getattr(self.config, "mitigators", None) or []
+        if "attn_implementation" not in model_kwargs:
+            if _should_use_flash_attention(mitigators_config):
+                model_kwargs["attn_implementation"] = "flash_attention_2"
+                logger.info("Flash Attention 2 enabled for faster inference")
+            else:
+                model_kwargs["attn_implementation"] = "eager"
+
         base_model = model_cls.from_pretrained(**model_kwargs)
 
         peft_model = PeftModel.from_pretrained(base_model, model_config.adapter_path)
-        
+
         model = peft_model.merge_and_unload().eval()
 
         return model.eval()

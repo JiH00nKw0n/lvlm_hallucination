@@ -524,38 +524,51 @@ class POPEEvaluator(LVLMEvaluator):
 
     def _parse_answer(self, generated_text: str, sample: dict) -> str:
         """
-        Parse generated text to extract yes/no answer.
+        Parse generated text to extract yes/no answer following POPE official logic.
 
-        Looks for "yes" or "no" in the first few characters of the generated text.
+        Official POPE evaluation:
+        1. Keep only the first sentence (before '.')
+        2. Remove commas and split into words
+        3. If "No", "not", or "no" in words -> "no"
+        4. Otherwise -> "yes"
+
+        Reference: https://github.com/AoiDragon/POPE
 
         Args:
             generated_text: Raw generated text from model
             sample: Original sample (unused but required by interface)
 
         Returns:
-            "yes", "no", or "other" if neither is found
+            "yes" or "no" (no "other" category in official POPE)
         """
-        text_lower = generated_text.strip().lower()
+        text = generated_text.strip()
 
-        # Check if answer is exactly "yes" or "no"
-        if text_lower in ["yes", "no"]:
-            return text_lower
+        # Only keep the first sentence
+        if '.' in text:
+            text = text.split('.')[0]
 
-        # Check first 4 characters for yes/no
-        prefix = text_lower[:4]
-        if "yes" in prefix:
-            return "yes"
-        elif "no" in prefix:
+        # Remove commas and split into words
+        text = text.replace(',', '')
+        words = text.split(' ')
+
+        # Check for negative indicators
+        if 'No' in words or 'not' in words or 'no' in words:
             return "no"
         else:
-            return "other"
+            return "yes"
 
     def _compute_metrics(self, results: List[Dict]) -> dict:
         """
-        Compute POPE evaluation metrics.
+        Compute POPE evaluation metrics following the official calculation method.
 
-        Metrics include overall statistics and per-category breakdown
-        (random, popular, adversarial).
+        Official POPE metrics:
+        - Accuracy: (TP + TN) / Total
+        - Precision: TP / (TP + FP)  [yes=positive]
+        - Recall: TP / (TP + FN)
+        - F1: 2 * Precision * Recall / (Precision + Recall)
+        - Yes ratio: predicted "yes" count / total count
+
+        Reference: https://github.com/AoiDragon/POPE
 
         Args:
             results: List of result dicts with 'parsed_answer', 'answer', 'category'
@@ -563,8 +576,6 @@ class POPEEvaluator(LVLMEvaluator):
         Returns:
             Dictionary with overall and per-category metrics
         """
-        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-
         # Group results by category
         category_results = {"all": results}
         for category in ["random", "popular", "adversarial"]:
@@ -578,41 +589,43 @@ class POPEEvaluator(LVLMEvaluator):
             if len(category_data) == 0:
                 continue
 
-            # Extract labels and predictions
-            y_true = [r["answer"] for r in category_data]
-            y_pred = [r["parsed_answer"] for r in category_data]
-
-            # Convert to binary (yes=1, no=0), filter out "other"
+            # Convert to binary: yes=1 (positive), no=0 (negative)
             label_map = {"yes": 1, "no": 0}
+            y_true = [label_map.get(r["answer"], 1) for r in category_data]
+            y_pred = [label_map.get(r["parsed_answer"], 1) for r in category_data]
 
-            valid_indices = [
-                i for i, pred in enumerate(y_pred)
-                if pred in label_map
-            ]
+            # Calculate confusion matrix components
+            TP = TN = FP = FN = 0
+            for pred, label in zip(y_pred, y_true):
+                if pred == 1 and label == 1:
+                    TP += 1
+                elif pred == 1 and label == 0:
+                    FP += 1
+                elif pred == 0 and label == 0:
+                    TN += 1
+                elif pred == 0 and label == 1:
+                    FN += 1
 
-            y_true_binary = [label_map[y_true[i]] for i in valid_indices]
-            y_pred_binary = [label_map[y_pred[i]] for i in valid_indices]
+            # Calculate metrics (with zero division handling)
+            total = TP + TN + FP + FN
+            acc = (TP + TN) / total if total > 0 else 0.0
+            prec = TP / (TP + FP) if (TP + FP) > 0 else 0.0
+            rec = TP / (TP + FN) if (TP + FN) > 0 else 0.0
+            f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+            yes_ratio = sum(y_pred) / len(y_pred) if len(y_pred) > 0 else 0.0
 
-            # Count "other" responses
-            other_count = len(y_pred) - len(valid_indices)
-
-            # Compute metrics
-            if len(y_true_binary) > 0:
-                acc = accuracy_score(y_true_binary, y_pred_binary)
-                prec = precision_score(y_true_binary, y_pred_binary, zero_division=0)
-                rec = recall_score(y_true_binary, y_pred_binary, zero_division=0)
-                f1 = f1_score(y_true_binary, y_pred_binary, zero_division=0)
-                yes_ratio = sum(y_pred_binary) / len(y_pred_binary)
-
-                metrics[category_name] = {
-                    "accuracy": float(acc),
-                    "precision": float(prec),
-                    "recall": float(rec),
-                    "f1": float(f1),
-                    "yes_ratio": float(yes_ratio),
-                    "other_count": other_count,
-                    "total_count": len(category_data)
-                }
+            metrics[category_name] = {
+                "accuracy": float(acc),
+                "precision": float(prec),
+                "recall": float(rec),
+                "f1": float(f1),
+                "yes_ratio": float(yes_ratio),
+                "TP": TP,
+                "FP": FP,
+                "TN": TN,
+                "FN": FN,
+                "total_count": len(category_data)
+            }
 
         return metrics
 
