@@ -1,13 +1,15 @@
 import logging
-from typing import Union
+from typing import Union, Optional
 
 from accelerate import PartialState
 from datasets import Dataset, IterableDataset
+import torch
 from transformers import (
     PreTrainedTokenizerBase,
     BaseImageProcessor,
     FeatureExtractionMixin,
-    ProcessorMixin
+    ProcessorMixin,
+    Trainer,
 )
 from trl import DPOConfig, maybe_extract_prompt, maybe_apply_chat_template, is_conversational, \
     prepare_multimodal_messages
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CustomSFTTrainer",
     "CustomDPOTrainer",
+    "SAETrainer",
 ]
 
 
@@ -97,3 +100,128 @@ class CustomDPOTrainer(DPOTrainer):
             )
 
         return dataset
+
+
+@registry.register_trainer("SAETrainer")
+class SAETrainer(Trainer):
+    supports_sae_weights = True
+
+    def __init__(
+        self,
+        *args,
+        auxk_weight: float = 0.0,
+        shared_weight: float = 0.0,
+        dead_feature_threshold: int = 10_000_000,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.auxk_weight = float(auxk_weight)
+        self.shared_weight = float(shared_weight)
+        self.dead_feature_threshold = int(dead_feature_threshold)
+        self.num_tokens_since_fired = None
+        self._last_epoch_save_idx = None
+        self.model_accepts_loss_kwargs = False
+        self._sae_loss_keys = [
+            "recon_loss",
+            "auxk_loss",
+            "shared_recon_loss",
+            "mean_l2_loss",
+            "min_l2_loss",
+            "max_l2_loss",
+            "shared_mean_l2_loss",
+            "shared_min_l2_loss",
+            "shared_max_l2_loss",
+        ]
+
+    def _init_dead_mask_state(self, model, device):
+        latent_size = getattr(model, "latent_size", None)
+        if latent_size is None:
+            latent_size = getattr(model, "latent_size_total", None)
+        if latent_size is None:
+            raise ValueError("Model missing latent_size/latent_size_total for dead feature tracking.")
+        self.num_tokens_since_fired = torch.zeros(latent_size, device=device, dtype=torch.long)
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        hidden_states = inputs["hidden_states"]
+        attention_mask = inputs.get("attention_mask")
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(hidden_states.device)
+        visual_mask = inputs.get("visual_mask")
+        if visual_mask is not None:
+            visual_mask = visual_mask.to(hidden_states.device)
+
+        use_vl = "VL" in model.__class__.__name__
+        model_kwargs = {"hidden_states": hidden_states}
+        if use_vl:
+            if visual_mask is None:
+                raise ValueError("visual_mask is required for VL SAE models.")
+            model_kwargs["visual_mask"] = visual_mask
+            model_kwargs["attention_mask"] = attention_mask
+
+        dead_mask = None
+        if self.auxk_weight:
+            if self.num_tokens_since_fired is None:
+                self._init_dead_mask_state(model, hidden_states.device)
+            dead_mask = self.num_tokens_since_fired > self.dead_feature_threshold
+            model_kwargs["dead_mask"] = dead_mask
+
+        outputs = model(**model_kwargs)
+        loss = outputs.recon_loss
+        if self.auxk_weight:
+            loss = loss + self.auxk_weight * outputs.auxk_loss
+        if self.shared_weight and hasattr(outputs, "shared_recon_loss"):
+            loss = loss + self.shared_weight * outputs.shared_recon_loss
+
+        self._update_sae_loss_state(outputs)
+
+        if self.auxk_weight:
+            if attention_mask is not None:
+                num_tokens = int(attention_mask.sum().item())
+            else:
+                num_tokens = hidden_states.shape[0] * hidden_states.shape[1]
+            self.num_tokens_since_fired += num_tokens
+            fired = outputs.latent_indices.flatten()
+            if fired.numel() > 0:
+                self.num_tokens_since_fired[fired] = 0
+
+        return (loss, outputs) if return_outputs else loss
+
+    def _update_sae_loss_state(self, outputs):
+        recon_value = getattr(outputs, "mean_l2_loss", None)
+        if recon_value is None:
+            recon_value = outputs.recon_loss
+        shared_value = getattr(outputs, "shared_mean_l2_loss", None)
+        if shared_value is None:
+            shared_value = getattr(outputs, "shared_recon_loss", None)
+
+        metrics = {
+            "recon_loss": recon_value,
+            "auxk_loss": getattr(outputs, "auxk_loss", None),
+            "shared_recon_loss": shared_value,
+            "mean_l2_loss": getattr(outputs, "mean_l2_loss", None),
+            "min_l2_loss": getattr(outputs, "min_l2_loss", None),
+            "max_l2_loss": getattr(outputs, "max_l2_loss", None),
+            "shared_mean_l2_loss": getattr(outputs, "shared_mean_l2_loss", None),
+            "shared_min_l2_loss": getattr(outputs, "shared_min_l2_loss", None),
+            "shared_max_l2_loss": getattr(outputs, "shared_max_l2_loss", None),
+        }
+        for key, value in metrics.items():
+            if value is None:
+                continue
+            current = getattr(self.state, key, torch.tensor(0.0, device=value.device))
+            setattr(self.state, key, current + value.detach())
+
+    def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
+        steps = self.state.global_step - getattr(self.state, "sae_last_logged", 0)
+        if steps <= 0:
+            steps = 1
+
+        for key in self._sae_loss_keys:
+            if hasattr(self.state, key):
+                val = self._nested_gather(getattr(self.state, key)).mean().item()
+                logs[key] = round(val / steps, 6)
+                setattr(self.state, key, torch.tensor(0.0, device=self.args.device))
+
+        self.state.sae_last_logged = self.state.global_step
+        super().log(logs, start_time=start_time)
+

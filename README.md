@@ -2,6 +2,40 @@
 
 Research project for studying hallucinations in Large Vision-Language Models.
 
+## Research Notes
+
+### Research Goal / Scope
+- Analyze LVLM hallucinations through the lens of low image attention and language-prior dominance, and evaluate whether image–text modality mismatch is a core driver.
+
+### Hypothesis
+- Because images encode multiple overlapping attributes while text prompts focus on a subset, the dot-product attention between image and text embeddings is systematically weakened.
+- Reducing the influence of image features that are irrelevant to the query will increase image attention and, in turn, reduce hallucinations.
+
+### Related Work
+
+#### Paper Inventory
+- [List papers with 1-line summaries.]
+
+#### Key Insights
+- [Synthesize common, conflicting, or missing insights from papers.]
+
+#### Logical Review (Prior Work vs. Our Hypothesis)
+- **Assumptions**: [Shared or conflicting assumptions.]
+- **Evidence**: [Empirical or theoretical support.]
+- **Counterexamples**: [Contradictions or failure cases.]
+- **Weaknesses**: [Gaps, confounds, or untested claims.]
+
+### Experimental Design
+- [If the hypothesis is correct, what small effect should be observable?]
+- [Design experiments referencing related work setups.]
+- [Define datasets, metrics, and controls.]
+
+### Expected Outcomes & Interpretation
+- [Decision criteria for supporting vs. refuting the hypothesis.]
+
+### Change Log
+- [Track hypothesis and design changes with dates.]
+
 ## Requirements
 
 ### System Requirements

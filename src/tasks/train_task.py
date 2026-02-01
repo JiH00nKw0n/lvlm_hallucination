@@ -3,7 +3,6 @@ from typing import Optional, Dict, Type, TypeVar, Any
 
 from datasets import Dataset, IterableDataset, interleave_datasets, concatenate_datasets
 from omegaconf import OmegaConf
-from peft import get_peft_config
 from transformers import (
     PreTrainedModel,
     ProcessorMixin,
@@ -60,20 +59,28 @@ class SingleTrainTask(BaseTrainTask):
             **self.config.collator_config.config,
         )
 
-        # Extract peft_config from trainer_config if present
-        peft_config = None
-        peft_config_dict: dict[str, Any] = trainer_config.pop('peft_config', {})
-        if peft_config_dict:
-            # Use get_peft_config to automatically determine the correct PEFT config type
-            peft_config = get_peft_config(peft_config_dict)
-            logger.info(f"PEFT Config: {peft_config}")
+        sae_auxk_weight = trainer_config.pop("sae_auxk_weight", None)
+        sae_shared_weight = trainer_config.pop("sae_shared_weight", None)
+        sae_dead_feature_threshold = trainer_config.pop("sae_dead_feature_threshold", None)
+        extra_trainer_kwargs: dict[str, Any] = {}
+        if sae_auxk_weight is not None or sae_shared_weight is not None:
+            if getattr(trainer_cls, "supports_sae_weights", False):
+                extra_trainer_kwargs["auxk_weight"] = sae_auxk_weight or 0.0
+                extra_trainer_kwargs["shared_weight"] = sae_shared_weight or 0.0
+            else:
+                raise ValueError("SAE loss weights provided but trainer does not support them.")
+        if sae_dead_feature_threshold is not None:
+            if getattr(trainer_cls, "supports_sae_weights", False):
+                extra_trainer_kwargs["dead_feature_threshold"] = int(sae_dead_feature_threshold)
+            else:
+                raise ValueError("SAE dead_feature_threshold provided but trainer does not support it.")
 
         return trainer_cls(
             model=self.build_model(),
             args=TrainingArguments(**trainer_config),
             train_dataset=train_dataset,
             data_collator=collator,
-            peft_config=peft_config,
+            **extra_trainer_kwargs,
         )
 
 
@@ -197,10 +204,11 @@ class SingleTrainTaskWithCustomModel(SingleTrainTask, TaskWithCustomModel):
         # Initialize the model configuration and model
         config_cls_config = OmegaConf.to_container(model_config.config_cls_config, resolve=True)
         model_cfg = model_cfg_cls(**config_cls_config)
-        model = model_cls.from_pretrained(config=model_cfg, **model_config.model_cls_config)
-
-        for name, p in model.named_parameters():
-            p.requires_grad = ("reweight_attention" in name)
+        model_cls_config = model_config.model_cls_config.copy()
+        if "pretrained_model_name_or_path" in model_cls_config:
+            model = model_cls.from_pretrained(config=model_cfg, **model_cls_config)
+        else:
+            model = model_cls(config=model_cfg)
 
         # Log trainable parameters
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

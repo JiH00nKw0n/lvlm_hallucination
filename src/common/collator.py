@@ -4,9 +4,11 @@ from typing import Dict, List, Optional
 
 import PIL
 import aiohttp
+import torch
 from PIL import Image
 from tqdm.asyncio import tqdm_asyncio
 from transformers.utils import add_end_docstrings, logging
+from transformers import LlavaNextForConditionalGeneration
 from trl.trainer.dpo_trainer import DataCollatorForPreference
 from trl.trainer.sft_trainer import DataCollatorForVisionLanguageModeling
 
@@ -20,6 +22,7 @@ __all__ = [
     "ImageCollator",
     "ImageURLCollator",
     "RLHFVForDPOImageCollator",
+    "LlavaNextSAECollator",
     "DummyImageCollator",
 ]
 
@@ -220,3 +223,107 @@ class DummyImageCollator(BaseCollator):
             The input features unchanged.
         """
         return features
+
+
+@add_end_docstrings(BASE_COLLATOR_DOCSTRING)
+@dataclass
+@registry.register_collator("LlavaNextSAECollator")
+class LlavaNextSAECollator(BaseCollator):
+    model_name_or_path: str = ""
+    layer_index: int = 24
+    attn_implementation: Optional[str] = "flash_attention_3"
+    torch_dtype: Optional[str] = "bfloat16"
+    device: Optional[str] = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        if not self.model_name_or_path:
+            raise ValueError("model_name_or_path must be provided for LlavaNextSAECollator.")
+        dtype = getattr(torch, self.torch_dtype) if isinstance(self.torch_dtype, str) else self.torch_dtype
+        model = LlavaNextForConditionalGeneration.from_pretrained(
+            self.model_name_or_path,
+            torch_dtype=dtype,
+            attn_implementation=self.attn_implementation,
+        )
+        device = (
+            torch.device(self.device)
+            if self.device is not None
+            else torch.device(
+                f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
+            )
+        )
+        model.to(device)
+        model.eval()
+        for p in model.parameters():
+            p.requires_grad = False
+        self.model = model
+        self.device = device
+
+    def _build_prompt(self, conversations: List[Dict]) -> str:
+        messages = []
+        for turn in conversations:
+            role = turn.get("from", turn.get("role", "user"))
+            if role == "human":
+                role = "user"
+            elif role == "gpt":
+                role = "assistant"
+            content = turn.get("value", turn.get("content", ""))
+            messages.append({"role": role, "content": content})
+        return self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+
+    def __call__(self, features: List[Dict], return_tensors: Optional[str] = None):
+        texts = []
+        images = []
+        for example in features:
+            conversations = example.get("conversations")
+            if conversations is None:
+                raise ValueError("Expected 'conversations' field in dataset examples.")
+            texts.append(self._build_prompt(conversations))
+            image = example.get("image", example.get("images"))
+            if isinstance(image, list):
+                image = [img.convert(self.color_model) for img in image]
+            elif isinstance(image, PIL.Image.Image):
+                image = image.convert(self.color_model)
+            images.append(image)
+
+        inputs = self.processor(
+            images=images,
+            text=texts,
+            padding=self.padding,
+            truncation=self.truncation,
+            max_length=self.max_length,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            return_tensors=return_tensors or self.return_tensors,
+            return_mm_token_type_ids=True,
+        )
+
+        with torch.no_grad():
+            outputs = self.model(
+                input_ids=inputs["input_ids"].to(self.device),
+                attention_mask=inputs.get("attention_mask", None).to(self.device)
+                if inputs.get("attention_mask", None) is not None
+                else None,
+                pixel_values=inputs.get("pixel_values", None).to(self.device)
+                if inputs.get("pixel_values", None) is not None
+                else None,
+                image_sizes=inputs.get("image_sizes", None),
+                output_hidden_states=True,
+                use_cache=False,
+            )
+
+        hidden_states = outputs.hidden_states[self.layer_index]
+        attention_mask = inputs.get("attention_mask", None)
+        visual_mask = inputs.get("mm_token_type_ids", None)
+        if visual_mask is None:
+            raise ValueError("mm_token_type_ids missing from processor output.")
+        visual_mask = visual_mask.bool()
+
+        return {
+            "hidden_states": hidden_states,
+            "attention_mask": attention_mask,
+            "visual_mask": visual_mask,
+        }

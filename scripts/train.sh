@@ -39,6 +39,7 @@ echo "Parent directory: $PARENT_DIR"
 # Configuration files to train
 CFG_PATHS=(
     "$PROJECT_DIR/config/train/llava_lrv_lora.yaml"
+    "$PROJECT_DIR/config/train/llava_next_sae.yaml"
     # Add more config paths here as needed
 )
 
