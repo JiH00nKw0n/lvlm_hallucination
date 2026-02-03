@@ -59,6 +59,23 @@ class SingleTrainTask(BaseTrainTask):
             **self.config.collator_config.config,
         )
 
+        if getattr(getattr(collator, "device", None), "type", None) == "cuda":
+            if trainer_config.get("dataloader_num_workers", 0) != 0:
+                logger.warning(
+                    "Forcing dataloader_num_workers=0 because collator uses CUDA."
+                )
+                trainer_config["dataloader_num_workers"] = 0
+            if trainer_config.get("dataloader_pin_memory", False):
+                logger.warning(
+                    "Forcing dataloader_pin_memory=False because collator returns CUDA tensors."
+                )
+                trainer_config["dataloader_pin_memory"] = False
+            if trainer_config.get("dataloader_persistent_workers", False):
+                logger.warning(
+                    "Forcing dataloader_persistent_workers=False because collator uses CUDA."
+                )
+                trainer_config["dataloader_persistent_workers"] = False
+
         sae_auxk_weight = trainer_config.pop("sae_auxk_weight", None)
         sae_shared_weight = trainer_config.pop("sae_shared_weight", None)
         sae_dead_feature_threshold = trainer_config.pop("sae_dead_feature_threshold", None)

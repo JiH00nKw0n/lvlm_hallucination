@@ -30,7 +30,7 @@ def _decoder_impl(top_indices: Tensor, top_activations: Tensor, decoder_weight: 
     Args:
         top_indices: Indices of the top-k latents. Shape: (batch, seq_len, k).
         top_activations: Values of the top-k latents. Shape: (batch, seq_len, k).
-        decoder_weight: Decoder matrix with shape (hidden_size, latent_size).
+        decoder_weight: Decoder matrix with shape (latent_size, hidden_size).
 
     Returns:
         Dense reconstruction in the original activation space. Shape: (batch, seq_len, hidden_size).
@@ -39,9 +39,9 @@ def _decoder_impl(top_indices: Tensor, top_activations: Tensor, decoder_weight: 
     # Input shapes:
     #   - top_indices: (batch, seq_len, k)
     #   - top_activations: (batch, seq_len, k)
-    #   - decoder_weight: (hidden_size, latent_size)
+    #   - decoder_weight: (latent_size, hidden_size)
     dense_latents = top_activations.new_zeros(
-        top_activations.shape[:-1] + (decoder_weight.shape[-1],)
+        top_activations.shape[:-1] + (decoder_weight.shape[0],)
     )
 
     # Scatter top-k activations into the dense latent vector.
@@ -49,7 +49,7 @@ def _decoder_impl(top_indices: Tensor, top_activations: Tensor, decoder_weight: 
     dense_latents = dense_latents.scatter_(dim=-1, index=top_indices, src=top_activations)
 
     # Decode: dense_latents @ W_dec -> (batch, seq_len, hidden_size)
-    return dense_latents @ decoder_weight.mT
+    return dense_latents @ decoder_weight
 
 
 def _vl_split_indices(latent_size: int) -> tuple[int, int, int]:
@@ -85,13 +85,17 @@ def _vl_masks(latent_size: int, device: torch.device) -> tuple[Tensor, Tensor, T
 
 def _masked_total_variance(x: Tensor, attention_mask: Optional[Tensor]) -> tuple[Tensor, Optional[Tensor]]:
     if attention_mask is None:
-        return (x - x.mean(0)).pow(2).sum(), None
+        total_variance = (x - x.mean(0)).pow(2).sum()
+        eps = torch.finfo(x.dtype).eps
+        return total_variance + eps, None
 
     mask = attention_mask.reshape(-1).bool()
     if int(mask.sum()) == 0:
         raise ValueError("attention_mask selects no valid tokens.")
     x_flat = x.reshape(-1, x.shape[-1])[mask]
-    return (x_flat - x_flat.mean(0)).pow(2).sum(), mask
+    total_variance = (x_flat - x_flat.mean(0)).pow(2).sum()
+    eps = torch.finfo(x.dtype).eps
+    return total_variance + eps, mask
 
 
 def _masked_l2_sum(residual: Tensor, flat_mask: Optional[Tensor]) -> Tensor:
@@ -108,6 +112,11 @@ def _masked_mse_mean(diff: Tensor, flat_mask: Optional[Tensor]) -> Tensor:
     return diff_flat[flat_mask].pow(2).mean()
 
 
+def _sanitize_topk_acts(acts: Tensor) -> Tensor:
+    """Replace NaN/Inf activations with zeros to keep aux losses finite."""
+    return torch.nan_to_num(acts, nan=0.0, posinf=0.0, neginf=0.0)
+
+
 @dataclass
 class SAEOutput(ModelOutput):
     """
@@ -122,10 +131,10 @@ class SAEOutput(ModelOutput):
     """
 
     output: Tensor
-    latent_activations: Tensor
-    latent_indices: Tensor
-    recon_loss: Tensor
-    auxk_loss: Tensor
+    latent_activations: Optional[Tensor] = None
+    latent_indices: Optional[Tensor] = None
+    recon_loss: Optional[Tensor] = None
+    auxk_loss: Optional[Tensor] = None
 
 
 @dataclass
@@ -143,11 +152,11 @@ class VLSAEOutput(ModelOutput):
     """
 
     output: Tensor
-    latent_activations: Tensor
-    latent_indices: Tensor
-    recon_loss: Tensor
-    auxk_loss: Tensor
-    shared_recon_loss: Tensor
+    latent_activations: Optional[Tensor] = None
+    latent_indices: Optional[Tensor] = None
+    recon_loss: Optional[Tensor] = None
+    auxk_loss: Optional[Tensor] = None
+    shared_recon_loss: Optional[Tensor] = None
 
 
 @dataclass
@@ -167,13 +176,13 @@ class MatryoshkaSAEOutput(ModelOutput):
     """
 
     output: Tensor
-    latent_activations: Tensor
-    latent_indices: Tensor
-    recon_loss: Tensor
-    auxk_loss: Tensor
-    mean_l2_loss: Tensor
-    min_l2_loss: Tensor
-    max_l2_loss: Tensor
+    latent_activations: Optional[Tensor] = None
+    latent_indices: Optional[Tensor] = None
+    recon_loss: Optional[Tensor] = None
+    auxk_loss: Optional[Tensor] = None
+    mean_l2_loss: Optional[Tensor] = None
+    min_l2_loss: Optional[Tensor] = None
+    max_l2_loss: Optional[Tensor] = None
 
 
 @dataclass
@@ -197,17 +206,17 @@ class VLMatryoshkaSAEOutput(ModelOutput):
     """
 
     output: Tensor
-    latent_activations: Tensor
-    latent_indices: Tensor
-    recon_loss: Tensor
-    auxk_loss: Tensor
-    mean_l2_loss: Tensor
-    min_l2_loss: Tensor
-    max_l2_loss: Tensor
-    shared_mean_l2_loss: Tensor
-    shared_min_l2_loss: Tensor
-    shared_max_l2_loss: Tensor
-    shared_recon_loss: Tensor
+    latent_activations: Optional[Tensor] = None
+    latent_indices: Optional[Tensor] = None
+    recon_loss: Optional[Tensor] = None
+    auxk_loss: Optional[Tensor] = None
+    mean_l2_loss: Optional[Tensor] = None
+    min_l2_loss: Optional[Tensor] = None
+    max_l2_loss: Optional[Tensor] = None
+    shared_mean_l2_loss: Optional[Tensor] = None
+    shared_min_l2_loss: Optional[Tensor] = None
+    shared_max_l2_loss: Optional[Tensor] = None
+    shared_recon_loss: Optional[Tensor] = None
 
 
 class TopKSAE(PreTrainedModel):
@@ -304,7 +313,7 @@ class TopKSAE(PreTrainedModel):
         Output shape:
             - recon: (batch, seq_len, hidden_size)
         """
-        y = _decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec.mT)
+        y = _decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec)
         return y + self.b_dec
 
     def forward(self, hidden_states: Tensor, dead_mask: Optional[Tensor] = None) -> SAEOutput:
@@ -358,6 +367,7 @@ class TopKSAE(PreTrainedModel):
             # Take top-k among dead latents.
             # auxk_acts/auxk_indices: (batch, seq_len, k_aux)
             auxk_acts, auxk_indices = auxk_latents.topk(k_aux, sorted=False)
+            auxk_acts = _sanitize_topk_acts(auxk_acts)
 
             # Try to predict the residual using dead features.
             # e_hat: (batch, seq_len, hidden_size)
@@ -365,6 +375,7 @@ class TopKSAE(PreTrainedModel):
             auxk_loss = (e_hat - residual).pow(2).sum()
             # normalize and scale aux loss (scalar)
             auxk_loss = scale * auxk_loss / total_variance
+            auxk_loss = torch.nan_to_num(auxk_loss, nan=0.0, posinf=0.0, neginf=0.0)
         else:
             auxk_loss = sae_out.new_tensor(0.0)
 
@@ -540,7 +551,7 @@ class BatchTopKSAE(PreTrainedModel):
 
         # 3) Decode sparse latents back to input space.
         # sparse_acts: (batch, seq_len, latent_size) -> sae_out: (batch, seq_len, hidden_size)
-        sae_out = sparse_acts.to(self.dtype) @ self.W_dec.mT + self.b_dec
+        sae_out = sparse_acts.to(self.dtype) @ self.W_dec + self.b_dec
 
         # 4) Reconstruction residual.
         # residual: (batch, seq_len, hidden_size)
@@ -562,12 +573,14 @@ class BatchTopKSAE(PreTrainedModel):
             auxk_latents = torch.where(dead_mask[None], pre_acts, -torch.inf)
             # auxk_acts/auxk_indices: (batch, seq_len, k_aux)
             auxk_acts, auxk_indices = auxk_latents.topk(k_aux, sorted=False)
+            auxk_acts = _sanitize_topk_acts(auxk_acts)
 
             # e_hat: (batch, seq_len, hidden_size)
-            e_hat = _decoder_impl(auxk_indices, auxk_acts.to(self.dtype), self.W_dec.mT) + self.b_dec
+            e_hat = _decoder_impl(auxk_indices, auxk_acts.to(self.dtype), self.W_dec) + self.b_dec
             auxk_loss = (e_hat - residual).pow(2).sum()
             # normalize and scale aux loss (scalar)
             auxk_loss = scale * auxk_loss / total_variance
+            auxk_loss = torch.nan_to_num(auxk_loss, nan=0.0, posinf=0.0, neginf=0.0)
         else:
             auxk_loss = sae_out.new_tensor(0.0)
 
@@ -642,6 +655,7 @@ class MatryoshkaSAE(PreTrainedModel):
             total_latents = config.latent_size
         else:
             total_latents = int(sum(config.group_sizes))
+        self.latent_size_total = total_latents
 
         # group_indices: prefix boundaries for each Matryoshka group
         self.group_sizes = list(config.group_sizes)
@@ -773,7 +787,7 @@ class MatryoshkaSAE(PreTrainedModel):
         Output:
             - recon: (batch, seq_len, hidden_size)
         """
-        return acts_topk.to(self.dtype) @ self.W_dec.mT + self.b_dec
+        return acts_topk.to(self.dtype) @ self.W_dec + self.b_dec
 
     def forward(self, hidden_states: Tensor, dead_mask: Optional[Tensor] = None) -> MatryoshkaSAEOutput:
         """
@@ -809,27 +823,27 @@ class MatryoshkaSAE(PreTrainedModel):
             acts_slice = acts_topk[:, :, start:end]
 
             # acts_slice: (batch, seq_len, group_size) @ W_dec_slice^T -> (batch, seq_len, hidden_size)
-            reconstruct = acts_slice.to(self.dtype) @ W_dec_slice.mT + reconstruct
+            reconstruct = acts_slice.to(self.dtype) @ W_dec_slice + reconstruct
             intermediate_reconstructs.append(reconstruct)
 
         # Final reconstruction uses all active groups.
         sae_out = reconstruct
 
         # 4) Compute Matryoshka losses (mean/min/max across prefixes).
-        # Each prefix reconstruction: (batch, seq_len, hidden_size) -> scalar mean L2.
+        # Each prefix reconstruction: (batch, seq_len, hidden_size) -> normalized L2 sum.
+        total_variance = (x - x.mean(0)).pow(2).sum()
         l2_losses = torch.stack(
-            [(r.float() - x.float()).pow(2).mean() for r in intermediate_reconstructs],
+            [(r.float() - x.float()).pow(2).sum() / total_variance for r in intermediate_reconstructs],
             dim=0,
         )
         min_l2_loss = l2_losses.min()
         max_l2_loss = l2_losses.max()
         # Baseline (bias-only) reconstruction: (hidden_size,) broadcasts to (batch, seq_len, hidden_size) -> scalar.
-        base_l2_loss = (self.b_dec - x.float()).pow(2).mean()
+        base_l2_loss = (self.b_dec - x.float()).pow(2).sum() / total_variance
         mean_l2_loss = (l2_losses.sum() + base_l2_loss) / (len(intermediate_reconstructs) + 1)
 
         # 5) Normalized reconstruction loss based on the final reconstruction.
         # total_variance: scalar normalization term
-        total_variance = (x - x.mean(0)).pow(2).sum()
         residual = sae_out - x
         # l2_loss: scalar
         l2_loss = residual.pow(2).sum()
@@ -847,11 +861,13 @@ class MatryoshkaSAE(PreTrainedModel):
             # aux_latents: (batch, seq_len, latent_size_total)
             aux_latents = torch.where(dead_mask[None], pre_acts, -torch.inf)
             aux_acts, aux_indices = aux_latents.topk(k_aux, sorted=False)
+            aux_acts = _sanitize_topk_acts(aux_acts)
             # aux_acts/aux_indices: (batch, seq_len, k_aux) -> e_hat: (batch, seq_len, hidden_size)
-            e_hat = _decoder_impl(aux_indices, aux_acts.to(self.dtype), self.W_dec.mT) + self.b_dec
+            e_hat = _decoder_impl(aux_indices, aux_acts.to(self.dtype), self.W_dec) + self.b_dec
             auxk_loss = (e_hat - residual).pow(2).sum()
             # normalize and scale aux loss (scalar)
             auxk_loss = scale * auxk_loss / total_variance
+            auxk_loss = torch.nan_to_num(auxk_loss, nan=0.0, posinf=0.0, neginf=0.0)
         else:
             auxk_loss = sae_out.new_tensor(0.0)
 
@@ -1064,7 +1080,7 @@ class VLTopKSAE(PreTrainedModel):
 
         # 4) Decode sparse latents back to input space.
         # top_acts/top_indices: (batch, seq_len, k) -> sae_out: (batch, seq_len, hidden_size)
-        sae_out = _decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec.mT) + self.b_dec
+        sae_out = _decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec) + self.b_dec
 
         # 5) Reconstruction residual.
         # residual: (batch, seq_len, hidden_size)
@@ -1090,12 +1106,14 @@ class VLTopKSAE(PreTrainedModel):
                 )
             # auxk_acts/auxk_indices: (batch, seq_len, k_aux)
             auxk_acts, auxk_indices = auxk_latents.topk(k_aux, sorted=False)
+            auxk_acts = _sanitize_topk_acts(auxk_acts)
 
             # e_hat: (batch, seq_len, hidden_size)
-            e_hat = _decoder_impl(auxk_indices, auxk_acts.to(self.dtype), self.W_dec.mT) + self.b_dec
+            e_hat = _decoder_impl(auxk_indices, auxk_acts.to(self.dtype), self.W_dec) + self.b_dec
             auxk_loss = (e_hat - residual).pow(2).sum()
             # normalize and scale aux loss (scalar)
             auxk_loss = scale * auxk_loss / total_variance
+            auxk_loss = torch.nan_to_num(auxk_loss, nan=0.0, posinf=0.0, neginf=0.0)
         else:
             auxk_loss = sae_out.new_tensor(0.0)
 
@@ -1112,7 +1130,7 @@ class VLTopKSAE(PreTrainedModel):
         shared_mask_broadcast = shared_mask.view(1, 1, -1)
         shared_acts = torch.where(shared_mask_broadcast, dense_latents, torch.zeros_like(dense_latents))
         # shared_recon: (batch, seq_len, hidden_size)
-        shared_recon = shared_acts.to(self.dtype) @ self.W_dec.mT + self.b_dec
+        shared_recon = shared_acts.to(self.dtype) @ self.W_dec + self.b_dec
         # shared_recon_loss: scalar
         shared_recon_loss = _masked_l2_sum(shared_recon - x, flat_mask) / total_variance
 
@@ -1309,7 +1327,7 @@ class VLBatchTopKSAE(PreTrainedModel):
 
         # 4) Decode sparse latents back to input space.
         # sparse_acts: (batch, seq_len, latent_size) -> sae_out: (batch, seq_len, hidden_size)
-        sae_out = sparse_acts.to(self.dtype) @ self.W_dec.mT + self.b_dec
+        sae_out = sparse_acts.to(self.dtype) @ self.W_dec + self.b_dec
 
         # 5) Reconstruction residual.
         # residual: (batch, seq_len, hidden_size)
@@ -1335,12 +1353,14 @@ class VLBatchTopKSAE(PreTrainedModel):
                 )
             # auxk_acts/auxk_indices: (batch, seq_len, k_aux)
             auxk_acts, auxk_indices = auxk_latents.topk(k_aux, sorted=False)
+            auxk_acts = _sanitize_topk_acts(auxk_acts)
 
             # e_hat: (batch, seq_len, hidden_size)
-            e_hat = _decoder_impl(auxk_indices, auxk_acts.to(self.dtype), self.W_dec.mT) + self.b_dec
+            e_hat = _decoder_impl(auxk_indices, auxk_acts.to(self.dtype), self.W_dec) + self.b_dec
             auxk_loss = (e_hat - residual).pow(2).sum()
             # normalize and scale aux loss (scalar)
             auxk_loss = scale * auxk_loss / total_variance
+            auxk_loss = torch.nan_to_num(auxk_loss, nan=0.0, posinf=0.0, neginf=0.0)
         else:
             auxk_loss = sae_out.new_tensor(0.0)
 
@@ -1353,7 +1373,7 @@ class VLBatchTopKSAE(PreTrainedModel):
         shared_mask_broadcast = shared_mask.view(1, 1, -1)
         shared_acts = torch.where(shared_mask_broadcast, sparse_acts, torch.zeros_like(sparse_acts))
         # shared_recon: (batch, seq_len, hidden_size)
-        shared_recon = shared_acts.to(self.dtype) @ self.W_dec.mT + self.b_dec
+        shared_recon = shared_acts.to(self.dtype) @ self.W_dec + self.b_dec
         # shared_recon_loss: scalar
         shared_recon_loss = _masked_l2_sum(shared_recon - x, flat_mask) / total_variance
 
@@ -1421,6 +1441,7 @@ class VLMatryoshkaSAE(PreTrainedModel):
             total_latents = config.latent_size
         else:
             total_latents = int(sum(config.group_sizes))
+        self.latent_size_total = total_latents
 
         # group_indices: prefix boundaries for each Matryoshka group
         self.group_sizes = list(config.group_sizes)
@@ -1644,7 +1665,7 @@ class VLMatryoshkaSAE(PreTrainedModel):
             acts_slice = acts_topk[:, :, start:end]
 
             # acts_slice: (batch, seq_len, group_size) @ W_dec_slice^T -> (batch, seq_len, hidden_size)
-            reconstruct = acts_slice.to(self.dtype) @ W_dec_slice.mT + reconstruct
+            reconstruct = acts_slice.to(self.dtype) @ W_dec_slice + reconstruct
             intermediate_reconstructs.append(reconstruct)
 
         for i in range(self.shared_active_groups):
@@ -1652,26 +1673,26 @@ class VLMatryoshkaSAE(PreTrainedModel):
             end = self.shared_start + self.shared_group_indices[i + 1]
             W_dec_slice = self.W_dec[start:end, :]
             acts_slice = acts_topk[:, :, start:end]
-            shared_reconstruct = acts_slice.to(self.dtype) @ W_dec_slice.mT + shared_reconstruct
+            shared_reconstruct = acts_slice.to(self.dtype) @ W_dec_slice + shared_reconstruct
             shared_intermediate_reconstructs.append(shared_reconstruct)
 
         # Final reconstruction uses all active groups.
         sae_out = reconstruct
 
         # 5) Compute Matryoshka losses (mean/min/max across prefixes).
-        # Each prefix reconstruction: (batch, seq_len, hidden_size) -> scalar mean L2.
+        # Each prefix reconstruction: (batch, seq_len, hidden_size) -> normalized L2 sum.
         total_variance, flat_mask = _masked_total_variance(x, attention_mask)
         l2_losses = torch.stack(
-            [_masked_mse_mean(r.float() - x.float(), flat_mask) for r in intermediate_reconstructs],
+            [_masked_l2_sum(r.float() - x.float(), flat_mask) / total_variance for r in intermediate_reconstructs],
             dim=0,
         )
         min_l2_loss = l2_losses.min()
         max_l2_loss = l2_losses.max()
         # Baseline (bias-only) reconstruction: (hidden_size,) broadcasts to (batch, seq_len, hidden_size) -> scalar.
-        base_l2_loss = _masked_mse_mean(self.b_dec - x.float(), flat_mask)
+        base_l2_loss = _masked_l2_sum(self.b_dec - x.float(), flat_mask) / total_variance
         mean_l2_loss = (l2_losses.sum() + base_l2_loss) / (len(intermediate_reconstructs) + 1)
         shared_l2_losses = torch.stack(
-            [_masked_mse_mean(r.float() - x.float(), flat_mask) for r in shared_intermediate_reconstructs],
+            [_masked_l2_sum(r.float() - x.float(), flat_mask) / total_variance for r in shared_intermediate_reconstructs],
             dim=0,
         )
         shared_min_l2_loss = shared_l2_losses.min()
@@ -1704,11 +1725,13 @@ class VLMatryoshkaSAE(PreTrainedModel):
                     attention_mask.bool().unsqueeze(-1), aux_latents, torch.full_like(aux_latents, -torch.inf)
                 )
             aux_acts, aux_indices = aux_latents.topk(k_aux, sorted=False)
+            aux_acts = _sanitize_topk_acts(aux_acts)
             # aux_acts/aux_indices: (batch, seq_len, k_aux) -> e_hat: (batch, seq_len, hidden_size)
-            e_hat = _decoder_impl(aux_indices, aux_acts.to(self.dtype), self.W_dec.mT) + self.b_dec
+            e_hat = _decoder_impl(aux_indices, aux_acts.to(self.dtype), self.W_dec) + self.b_dec
             auxk_loss = (e_hat - residual).pow(2).sum()
             # normalize and scale aux loss (scalar)
             auxk_loss = scale * auxk_loss / total_variance
+            auxk_loss = torch.nan_to_num(auxk_loss, nan=0.0, posinf=0.0, neginf=0.0)
         else:
             auxk_loss = sae_out.new_tensor(0.0)
 
@@ -1717,7 +1740,7 @@ class VLMatryoshkaSAE(PreTrainedModel):
         shared_mask_broadcast = shared_mask.view(1, 1, -1)
         shared_acts = torch.where(shared_mask_broadcast, acts_topk, torch.zeros_like(acts_topk))
         # shared_recon: (batch, seq_len, hidden_size)
-        shared_recon = shared_acts.to(self.dtype) @ self.W_dec.mT + self.b_dec
+        shared_recon = shared_acts.to(self.dtype) @ self.W_dec + self.b_dec
         # shared_recon_loss: scalar
         shared_recon_loss = _masked_l2_sum(shared_recon - x, flat_mask) / total_variance
 

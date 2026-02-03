@@ -9,8 +9,8 @@ model:
   model_cls: VLTopKSAE
   config_cls: VLTopKSAEConfig
   config_cls_config:
-    d_in: 4096
-    num_latents: 131072
+    hidden_size: 4096
+    latent_size: 131072
     k: 256
     normalize_decoder: true
   model_cls_config: {}
@@ -39,7 +39,7 @@ trainer:
   gradient_accumulation_steps: 4
   push_to_hub: true
   hub_model_id: Mayfull/Llava_Next_VLTopKSAE
-  hub_token: HUB_TOKEN
+  hub_token: null
   hub_strategy: every_save
   learning_rate: 1.0e-4
   optim: adamw_torch
@@ -54,6 +54,7 @@ trainer:
   bf16: false
   fp16: true
   dataloader_num_workers: 0
+  dataloader_pin_memory: false
   remove_unused_columns: false
   report_to: none
   run_name: llava-next-sae

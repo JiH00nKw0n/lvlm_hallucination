@@ -3,6 +3,10 @@ from src.runners.evaluator import (
     LVLMEvaluator,
     POPEEvaluator,
     MMEEvaluator,
+    TextAutoInterpEvaluator,
+    ImageAutoInterpEvaluator,
+    L0Evaluator,
+    LossRecoveredEvaluator,
 )
 from src.runners.trainer import (
     CustomSFTTrainer,
@@ -15,6 +19,10 @@ __all__ = [
     "LVLMEvaluator",
     "POPEEvaluator",
     "MMEEvaluator",
+    "TextAutoInterpEvaluator",
+    "ImageAutoInterpEvaluator",
+    "L0Evaluator",
+    "LossRecoveredEvaluator",
     "CustomSFTTrainer",
     "CustomDPOTrainer",
 ]

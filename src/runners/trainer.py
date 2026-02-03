@@ -166,11 +166,23 @@ class SAETrainer(Trainer):
             model_kwargs["dead_mask"] = dead_mask
 
         outputs = model(**model_kwargs)
-        loss = outputs.recon_loss
+        loss = getattr(outputs, "mean_l2_loss", None)
+        if loss is None:
+            loss = outputs.recon_loss
         if self.auxk_weight:
-            loss = loss + self.auxk_weight * outputs.auxk_loss
-        if self.shared_weight and hasattr(outputs, "shared_recon_loss"):
-            loss = loss + self.shared_weight * outputs.shared_recon_loss
+            auxk = outputs.auxk_loss
+            if auxk is not None and not torch.isfinite(auxk):
+                logger.warning("auxk_loss is non-finite; setting to 0 for this step.")
+                auxk = auxk.new_tensor(0.0)
+            loss = loss + self.auxk_weight * (auxk if auxk is not None else 0.0)
+        if self.shared_weight and (hasattr(outputs, "shared_recon_loss") or hasattr(outputs, "shared_mean_l2_loss")):
+            shared = getattr(outputs, "shared_mean_l2_loss", None)
+            if shared is None:
+                shared = outputs.shared_recon_loss
+            if shared is not None and not torch.isfinite(shared):
+                logger.warning("shared_recon_loss is non-finite; setting to 0 for this step.")
+                shared = shared.new_tensor(0.0)
+            loss = loss + self.shared_weight * (shared if shared is not None else 0.0)
 
         self._update_sae_loss_state(outputs)
 
@@ -187,12 +199,8 @@ class SAETrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
     def _update_sae_loss_state(self, outputs):
-        recon_value = getattr(outputs, "mean_l2_loss", None)
-        if recon_value is None:
-            recon_value = outputs.recon_loss
-        shared_value = getattr(outputs, "shared_mean_l2_loss", None)
-        if shared_value is None:
-            shared_value = getattr(outputs, "shared_recon_loss", None)
+        recon_value = outputs.recon_loss
+        shared_value = getattr(outputs, "shared_recon_loss", None)
 
         metrics = {
             "recon_loss": recon_value,
@@ -224,4 +232,3 @@ class SAETrainer(Trainer):
 
         self.state.sae_last_logged = self.state.global_step
         super().log(logs, start_time=start_time)
-

@@ -2,10 +2,10 @@
 transformers==4.57.6
 peft==0.17.1
 accelerate==1.10.0
-deepspeed==0.18.0
 
 # Data processing
 datasets==4.1.1
+fsspec[http]>=2023.1.0,<=2025.9.0
 pillow==11.3.0
 
 # Async and networking
@@ -42,3 +42,6 @@ huggingface-hub==0.34.6
 natsort==8.4.0
 safetensors==0.6.2
 simple-parsing==0.1.7
+
+# FlashAttention
+flash-attn==2.8.3
