@@ -1,0 +1,82 @@
+# Evaluation configuration for text/image auto-interpretation
+
+run:
+  task: MultiDatasetEvaluateTaskWithPretrainedModel
+  seed: 2025
+
+model:
+  model_cls: LlavaNextForConditionalGeneration
+  config:
+    pretrained_model_name_or_path: llava-hf/llama3-llava-next-8b-hf
+    dtype: float16
+
+processor:
+  config:
+    pretrained_model_name_or_path: llava-hf/llama3-llava-next-8b-hf
+    use_fast: true
+
+dataset:
+  - PileUncopyrightedDatasetBuilder:
+      split: train
+      streaming: true
+  - SaeSampleCacheDatasetBuilder:
+      split: train
+
+evaluator:
+  - TextAutoInterpEvaluator:
+      collator:
+        collator_cls: DummyImageCollator
+        config: {}
+      output_dir: ./results/autointerp/text
+      text_column: text
+      ctx_len: 128
+      total_tokens: 2000000
+      llm_batch_size: 8
+      buffer: 10
+      no_overlap: true
+      act_threshold_frac: 0.01
+      n_latents: 1000
+      dead_latent_threshold: 15
+      random_seed: 42
+      openai_api_key_path: ./openai_api_key.txt
+      openai_model: gpt-4o-mini
+      sae_model_cls: TopKSAE
+      sae_path: <PATH_TO_SAE>
+      sae_dtype: float16
+      hidden_state_layer: 24
+      artifacts_dir: ./artifacts
+      n_top_ex_for_generation: 10
+      n_iw_sampled_ex_for_generation: 5
+      n_top_ex_for_scoring: 2
+      n_random_ex_for_scoring: 10
+      n_iw_sampled_ex_for_scoring: 2
+  - ImageAutoInterpEvaluator:
+      collator:
+        collator_cls: DummyImageCollator
+        config: {}
+      output_dir: ./results/autointerp/image
+      dataset_split: train
+      model_name: llava-hf/llama3-llava-next-8b-hf
+      run_cache: true
+      run_explain: true
+      sae_path: <SAE_PATH>
+      cache_save_dir: <ACTIVATION_DIR>
+      explain_save_dir: <EXPLANATION_DIR>
+      explanation_dir: <EXPLANATION_DIR>
+      activation_dir: <ACTIVATION_DIR>
+      selected_layer: model.layers.24
+      width: 131072
+      n_splits: 128
+      filters_path: <FILTERS_JSON>
+      run_segment: true
+      segment_eval_type: default
+      detector: IDEA-Research/grounding-dino-base
+      segmentor: facebook/sam-vit-huge
+      save_refine_path: ./results/autointerp/image/refine.json
+      save_segment_score_path: ./results/autointerp/image/segment_scores.json
+      run_clip: true
+      clip_eval_type: default
+      clip_model_name_or_path: openai/clip-vit-base-patch16
+      clip_k: 5
+      clip_random_runs: 30
+      save_clip_score_path: ./results/autointerp/image/clip_scores.json

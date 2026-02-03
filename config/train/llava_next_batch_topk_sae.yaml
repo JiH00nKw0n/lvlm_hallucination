@@ -1,0 +1,63 @@
+# Training configuration for SAE on LLaVA-NeXT (layer 25 / index 24)
+
+run:
+  task: DatasetTrainTaskWithCustomModel
+  runner: SAETrainer
+  seed: 2025
+
+model:
+  model_cls: BatchTopKSAE
+  config_cls: BatchTopKSAEConfig
+  config_cls_config:
+    hidden_size: 4096
+    latent_size: 131072
+    k: 256
+    normalize_decoder: true
+  model_cls_config: {}
+
+processor:
+  config:
+    pretrained_model_name_or_path: llava-hf/llama3-llava-next-8b-hf
+    use_fast: true
+
+dataset:
+  LlavaNextDataDatasetBuilder:
+    split: train
+
+collator:
+  collator_cls: LlavaNextSAECollator
+  config:
+    model_name_or_path: llava-hf/llama3-llava-next-8b-hf
+    layer_index: 24
+    attn_implementation: flash_attention_3
+    torch_dtype: float16
+
+trainer:
+  output_dir: ./checkpoints/llava-next-batch-topk-sae
+  num_train_epochs: 1
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 1
+  push_to_hub: true
+  hub_model_id: Mayfull/Llava_Next_BatchTopKSAE
+  hub_token: HUB_TOKEN
+  hub_strategy: every_save
+  learning_rate: 1.0e-4
+  optim: adamw_torch
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.0
+  max_grad_norm: 0.0
+  logging_steps: 1
+  save_strategy: steps
+  save_steps: 0.2
+  save_total_limit: 2
+  bf16: false
+  fp16: true
+  dataloader_num_workers: 0
+  dataloader_pin_memory: false
+  remove_unused_columns: false
+  report_to: none
+  run_name: llava-next-batch-topk-sae
+  sae_auxk_weight: 0.03125
+  sae_shared_weight: 0.5
+  sae_dead_feature_threshold: 10000000
