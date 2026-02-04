@@ -192,8 +192,14 @@ class SAETrainer(Trainer):
             else:
                 num_tokens = hidden_states.shape[0] * hidden_states.shape[1]
             self.num_tokens_since_fired += num_tokens
-            fired = outputs.latent_indices.flatten()
-            if fired.numel() > 0:
+            fired = None
+            acts = getattr(outputs, "latent_activations", None)
+            indices = getattr(outputs, "latent_indices", None)
+            if acts is not None and indices is not None:
+                fired = indices[acts > 0]
+            elif indices is not None:
+                fired = indices.flatten()
+            if fired is not None and fired.numel() > 0:
                 self.num_tokens_since_fired[fired] = 0
 
         return (loss, outputs) if return_outputs else loss

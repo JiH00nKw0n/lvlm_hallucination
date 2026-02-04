@@ -1075,6 +1075,8 @@ class VLTopKSAE(PreTrainedModel):
         # 3) TopK within active subspace.
         # masked_pre_acts: (batch, seq_len, latent_size) -> top_acts/top_indices: (batch, seq_len, k)
         top_acts, top_indices = masked_pre_acts.topk(self.cfg.k, sorted=False)
+        valid = active_mask.gather(dim=-1, index=top_indices)
+        top_acts = torch.where(valid, top_acts, torch.zeros_like(top_acts))
         if attention_mask is not None:
             top_acts = torch.where(attention_mask.bool().unsqueeze(-1), top_acts, torch.zeros_like(top_acts))
 
@@ -1121,16 +1123,28 @@ class VLTopKSAE(PreTrainedModel):
         l2_loss = _masked_l2_sum(residual, flat_mask)
         recon_loss = l2_loss / total_variance
 
-        # 10) Shared-subspace-only reconstruction loss.
-        # Build dense sparse latents from TopK indices.
-        # dense_latents: (batch, seq_len, latent_size)
-        dense_latents = top_acts.new_zeros(pre_acts.shape)
-        dense_latents = dense_latents.scatter_(dim=-1, index=top_indices, src=top_acts)
-        # shared_mask: (latent_size,) -> shared_acts: (batch, seq_len, latent_size)
-        shared_mask_broadcast = shared_mask.view(1, 1, -1)
-        shared_acts = torch.where(shared_mask_broadcast, dense_latents, torch.zeros_like(dense_latents))
-        # shared_recon: (batch, seq_len, hidden_size)
-        shared_recon = shared_acts.to(self.dtype) @ self.W_dec + self.b_dec
+        # 10) Shared-subspace-only reconstruction loss (shared-only TopK).  # shared-only loss block
+        shared_mask_broadcast = shared_mask.view(1, 1, -1)  # (1, 1, latent_size) broadcast mask
+        shared_pre_acts = torch.where(  # (batch, seq_len, latent_size) keep shared, else -inf
+            shared_mask_broadcast, pre_acts, torch.full_like(pre_acts, -torch.inf)  # mask pre_acts
+        )
+        if attention_mask is not None:  # optional token mask
+            shared_pre_acts = torch.where(  # (batch, seq_len, latent_size) drop masked tokens
+                attention_mask.bool().unsqueeze(-1),  # (batch, seq_len, 1) token mask
+                shared_pre_acts,  # (batch, seq_len, latent_size) candidate acts
+                torch.full_like(shared_pre_acts, -torch.inf),  # (batch, seq_len, latent_size) masked
+            )
+        shared_top_acts, shared_top_indices = shared_pre_acts.topk(self.cfg.k, sorted=False)  # (batch, seq_len, k)
+        shared_valid = shared_mask_broadcast.gather(dim=-1, index=shared_top_indices)  # (batch, seq_len, k) in-shared
+        shared_top_acts = torch.where(shared_valid, shared_top_acts, torch.zeros_like(shared_top_acts))  # zero invalid
+        if attention_mask is not None:  # optional token mask
+            shared_top_acts = torch.where(  # (batch, seq_len, k) drop masked tokens
+                attention_mask.bool().unsqueeze(-1), shared_top_acts, torch.zeros_like(shared_top_acts)  # mask k-acts
+            )
+        shared_recon = (  # (batch, seq_len, hidden_size) shared-only reconstruction
+            _decoder_impl(shared_top_indices, shared_top_acts.to(self.dtype), self.W_dec)  # decode top-k
+            + self.b_dec  # add decoder bias
+        )
         # shared_recon_loss: scalar
         shared_recon_loss = _masked_l2_sum(shared_recon - x, flat_mask) / total_variance
 
@@ -1321,6 +1335,7 @@ class VLBatchTopKSAE(PreTrainedModel):
         # 3) BatchTopK within active subspace.
         # masked_pre_acts: (batch, seq_len, latent_size) -> sparse_acts: (batch, seq_len, latent_size)
         batch_mask = self._batch_topk_mask(masked_pre_acts)
+        batch_mask = batch_mask & active_mask
         if attention_mask is not None:
             batch_mask = batch_mask & attention_mask.bool().unsqueeze(-1)
         sparse_acts = torch.where(batch_mask, pre_acts, torch.zeros_like(pre_acts))
@@ -1368,12 +1383,23 @@ class VLBatchTopKSAE(PreTrainedModel):
         l2_loss = _masked_l2_sum(residual, flat_mask)
         recon_loss = l2_loss / total_variance
 
-        # 10) Shared-subspace-only reconstruction loss.
-        # shared_mask: (latent_size,) -> shared_acts: (batch, seq_len, latent_size)
-        shared_mask_broadcast = shared_mask.view(1, 1, -1)
-        shared_acts = torch.where(shared_mask_broadcast, sparse_acts, torch.zeros_like(sparse_acts))
-        # shared_recon: (batch, seq_len, hidden_size)
-        shared_recon = shared_acts.to(self.dtype) @ self.W_dec + self.b_dec
+        # 10) Shared-subspace-only reconstruction loss (shared-only BatchTopK).  # shared-only loss block
+        shared_mask_broadcast = shared_mask.view(1, 1, -1)  # (1, 1, latent_size) broadcast mask
+        shared_pre_acts = torch.where(  # (batch, seq_len, latent_size) keep shared, else -inf
+            shared_mask_broadcast, pre_acts, torch.full_like(pre_acts, -torch.inf)  # mask pre_acts
+        )
+        if attention_mask is not None:  # optional token mask
+            shared_pre_acts = torch.where(  # (batch, seq_len, latent_size) drop masked tokens
+                attention_mask.bool().unsqueeze(-1),  # (batch, seq_len, 1) token mask
+                shared_pre_acts,  # (batch, seq_len, latent_size) candidate acts
+                torch.full_like(shared_pre_acts, -torch.inf),  # (batch, seq_len, latent_size) masked
+            )
+        shared_batch_mask = self._batch_topk_mask(shared_pre_acts)  # (batch, seq_len, latent_size) global top-k mask
+        shared_batch_mask = shared_batch_mask & shared_mask_broadcast  # (batch, seq_len, latent_size) keep shared only
+        if attention_mask is not None:  # optional token mask
+            shared_batch_mask = shared_batch_mask & attention_mask.bool().unsqueeze(-1)  # (batch, seq_len, latent)
+        shared_acts = torch.where(shared_batch_mask, pre_acts, torch.zeros_like(pre_acts))  # (batch, seq_len, latent)
+        shared_recon = shared_acts.to(self.dtype) @ self.W_dec + self.b_dec  # (batch, seq_len, hidden_size)
         # shared_recon_loss: scalar
         shared_recon_loss = _masked_l2_sum(shared_recon - x, flat_mask) / total_variance
 
@@ -1646,6 +1672,7 @@ class VLMatryoshkaSAE(PreTrainedModel):
         # 3) BatchTopK within active subspace.
         # masked_pre_acts: (batch, seq_len, latent_size_total) -> acts_topk: (batch, seq_len, latent_size_total)
         batch_mask = self._batch_topk_mask(masked_pre_acts)
+        batch_mask = batch_mask & active_mask
         if attention_mask is not None:
             batch_mask = batch_mask & attention_mask.bool().unsqueeze(-1)
         acts_topk = torch.where(batch_mask, pre_acts, torch.zeros_like(pre_acts))
@@ -1735,12 +1762,23 @@ class VLMatryoshkaSAE(PreTrainedModel):
         else:
             auxk_loss = sae_out.new_tensor(0.0)
 
-        # 8) Shared-subspace-only reconstruction loss.
-        # shared_mask: (latent_size_total,) -> shared_acts: (batch, seq_len, latent_size_total)
-        shared_mask_broadcast = shared_mask.view(1, 1, -1)
-        shared_acts = torch.where(shared_mask_broadcast, acts_topk, torch.zeros_like(acts_topk))
-        # shared_recon: (batch, seq_len, hidden_size)
-        shared_recon = shared_acts.to(self.dtype) @ self.W_dec + self.b_dec
+        # 8) Shared-subspace-only reconstruction loss (shared-only BatchTopK).  # shared-only loss block
+        shared_mask_broadcast = shared_mask.view(1, 1, -1)  # (1, 1, latent_size_total) broadcast mask
+        shared_pre_acts = torch.where(  # (batch, seq_len, latent_size_total) keep shared, else -inf
+            shared_mask_broadcast, pre_acts, torch.full_like(pre_acts, -torch.inf)  # mask pre_acts
+        )
+        if attention_mask is not None:  # optional token mask
+            shared_pre_acts = torch.where(  # (batch, seq_len, latent_size_total) drop masked tokens
+                attention_mask.bool().unsqueeze(-1),  # (batch, seq_len, 1) token mask
+                shared_pre_acts,  # (batch, seq_len, latent_size_total) candidate acts
+                torch.full_like(shared_pre_acts, -torch.inf),  # (batch, seq_len, latent_size_total) masked
+            )
+        shared_batch_mask = self._batch_topk_mask(shared_pre_acts)  # (batch, seq_len, latent_size_total) top-k mask
+        shared_batch_mask = shared_batch_mask & shared_mask_broadcast  # (batch, seq_len, latent_size_total) shared
+        if attention_mask is not None:  # optional token mask
+            shared_batch_mask = shared_batch_mask & attention_mask.bool().unsqueeze(-1)  # (batch, seq_len, latent)
+        shared_acts = torch.where(shared_batch_mask, pre_acts, torch.zeros_like(pre_acts))  # (batch, seq_len, latent)
+        shared_recon = shared_acts.to(self.dtype) @ self.W_dec + self.b_dec  # (batch, seq_len, hidden_size)
         # shared_recon_loss: scalar
         shared_recon_loss = _masked_l2_sum(shared_recon - x, flat_mask) / total_variance
 
