@@ -1124,7 +1124,7 @@ class VLTopKSAE(PreTrainedModel):
         recon_loss = l2_loss / total_variance
 
         # 10) Shared-subspace-only reconstruction loss (shared-only TopK).  # shared-only loss block
-        shared_mask_broadcast = shared_mask.view(1, 1, -1)  # (1, 1, latent_size) broadcast mask
+        shared_mask_broadcast = shared_mask.view(1, 1, -1).expand_as(pre_acts)  # (batch, seq_len, latent_size)
         shared_pre_acts = torch.where(  # (batch, seq_len, latent_size) keep shared, else -inf
             shared_mask_broadcast, pre_acts, torch.full_like(pre_acts, -torch.inf)  # mask pre_acts
         )
