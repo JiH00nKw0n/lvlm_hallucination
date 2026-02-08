@@ -159,7 +159,7 @@ def collect_top_patches(
     sae,
     args: argparse.Namespace,
     device: torch.device,
-) -> tuple[dict[int, list[tuple[float, int, int]]], dict[int, int], float]:
+) -> tuple[dict[int, list[tuple[float, int, int]]], dict[int, int], float, int]:
     """Collect top activating patches per feature across the dataset.
 
     Returns:
@@ -167,6 +167,7 @@ def collect_top_patches(
                     maintained as a max-heap of size `top_patches`.
         feature_freq: feature_idx → total positive activation count.
         mean_mse_image: average reconstruction MSE over all image passes.
+        n_passes: number of successfully processed images.
     """
     top_buffer: dict[int, list[tuple[float, int, int]]] = {}
     feature_freq: dict[int, int] = {}
@@ -269,7 +270,7 @@ def collect_top_patches(
         "Collection done: %d samples processed, %d skipped, %d features found, mean_mse=%.6f",
         num_samples, skipped, len(top_buffer), mean_mse_image,
     )
-    return top_buffer, feature_freq, mean_mse_image
+    return top_buffer, feature_freq, mean_mse_image, n_passes
 
 
 def score_features(
@@ -513,7 +514,7 @@ def main():
 
     # Phase 2: Collect top-K patches per feature
     logger.info("=== Phase 2: Collecting top-%d patches per feature ===", args.top_patches)
-    top_buffer, feature_freq, mean_mse_image = collect_top_patches(dataset, model, processor, sae, args, device)
+    top_buffer, feature_freq, mean_mse_image, n_passes = collect_top_patches(dataset, model, processor, sae, args, device)
 
     # Free LLaVA memory before DINOv2 scoring
     del model
@@ -527,7 +528,7 @@ def main():
     # Phase 4: Save results
     logger.info("=== Phase 4: Saving results ===")
     save_results(scores, top_buffer, args, mean_mse_image=mean_mse_image)
-    weights_dict = {fi: float(feature_freq.get(fi, 0)) for fi in scores} if args.weighted else None
+    weights_dict = {fi: feature_freq.get(fi, 0) / max(n_passes, 1) for fi in scores} if args.weighted else None
     plot_histogram(scores, args.output_dir, args.sae_path, args.k, args.bin_width, weights=weights_dict)
 
     # Summary

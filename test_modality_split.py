@@ -431,7 +431,12 @@ def main():
 
     ratio_tensor = torch.tensor(ratio_result["ratio"])
     alive_tensor = torch.tensor(ratio_result["alive_mask"], dtype=torch.bool)
-    weights_tensor = (img_counts + text_counts).float().cpu() if args.weighted else None
+    if args.weighted:
+        density_img = img_counts.float() / max(total_img_tokens, 1)
+        density_text = text_counts.float() / max(total_text_tokens, 1)
+        weights_tensor = (density_img + density_text).cpu()
+    else:
+        weights_tensor = None
     plot_histogram(
         ratio_tensor, alive_tensor, args.output_dir, args.sae_path, args.k, args.bin_width,
         weights=weights_tensor,
