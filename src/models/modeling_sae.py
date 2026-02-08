@@ -526,6 +526,15 @@ class BatchTopKSAE(PreTrainedModel):
         mask[top_indices] = True
         return mask.view(batch, seq_len, latent_size)
 
+    def encode(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        """Encode inputs and return top-k activations and indices."""
+        return self.pre_acts(x).topk(self.cfg.k, sorted=False)
+
+    def decode(self, top_acts: Tensor, top_indices: Tensor) -> Tensor:
+        """Decode a sparse (top-k) representation back to input space."""
+        y = _decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec)
+        return y + self.b_dec
+
     def forward(self, hidden_states: Tensor, dead_mask: Optional[Tensor] = None) -> SAEOutput:
         """
         Run a forward pass and compute reconstruction + auxiliary metrics.
@@ -656,6 +665,7 @@ class MatryoshkaSAE(PreTrainedModel):
         else:
             total_latents = int(sum(config.group_sizes))
         self.latent_size_total = total_latents
+        self.latent_size = total_latents
 
         # group_indices: prefix boundaries for each Matryoshka group
         self.group_sizes = list(config.group_sizes)
@@ -761,9 +771,9 @@ class MatryoshkaSAE(PreTrainedModel):
         acts_topk = torch.where(mask, acts, torch.zeros_like(acts))
         return acts, acts_topk
 
-    def encode(self, x: Tensor) -> Tensor:
+    def encode_dense(self, x: Tensor) -> Tensor:
         """
-        Encode inputs into sparse Matryoshka activations.
+        Encode inputs into dense sparse Matryoshka activations.
 
         Input:
             - x: (batch, seq_len, hidden_size)
@@ -778,9 +788,9 @@ class MatryoshkaSAE(PreTrainedModel):
         acts_topk[:, :, max_index:] = 0
         return acts_topk
 
-    def decode(self, acts_topk: Tensor) -> Tensor:
+    def decode_dense(self, acts_topk: Tensor) -> Tensor:
         """
-        Decode sparse activations into the input space.
+        Decode dense sparse activations into the input space.
 
         Input:
             - acts_topk: (batch, seq_len, latent_size_total)
@@ -788,6 +798,15 @@ class MatryoshkaSAE(PreTrainedModel):
             - recon: (batch, seq_len, hidden_size)
         """
         return acts_topk.to(self.dtype) @ self.W_dec + self.b_dec
+
+    def encode(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        """Encode inputs and return top-k activations and indices."""
+        return self.pre_acts(x).topk(self.cfg.k, sorted=False)
+
+    def decode(self, top_acts: Tensor, top_indices: Tensor) -> Tensor:
+        """Decode a sparse (top-k) representation back to input space."""
+        y = _decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec)
+        return y + self.b_dec
 
     def forward(self, hidden_states: Tensor, dead_mask: Optional[Tensor] = None) -> MatryoshkaSAEOutput:
         """
@@ -1003,6 +1022,15 @@ class VLTopKSAE(PreTrainedModel):
         # ReLU keeps positive activations only.
         # out: (batch, seq_len, latent_size) -> pre_acts: (batch, seq_len, latent_size)
         return nn.functional.relu(out)
+
+    def encode(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        """Encode inputs and return top-k activations and indices."""
+        return self.pre_acts(x).topk(self.cfg.k, sorted=False)
+
+    def decode(self, top_acts: Tensor, top_indices: Tensor) -> Tensor:
+        """Decode a sparse (top-k) representation back to input space."""
+        y = _decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec)
+        return y + self.b_dec
 
     def forward(
         self,
@@ -1298,6 +1326,15 @@ class VLBatchTopKSAE(PreTrainedModel):
         mask[top_indices] = True
         return mask.view(batch, seq_len, latent_size)
 
+    def encode(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        """Encode inputs and return top-k activations and indices."""
+        return self.pre_acts(x).topk(self.cfg.k, sorted=False)
+
+    def decode(self, top_acts: Tensor, top_indices: Tensor) -> Tensor:
+        """Decode a sparse (top-k) representation back to input space."""
+        y = _decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec)
+        return y + self.b_dec
+
     def forward(
             self,
             hidden_states: Tensor,
@@ -1468,6 +1505,7 @@ class VLMatryoshkaSAE(PreTrainedModel):
         else:
             total_latents = int(sum(config.group_sizes))
         self.latent_size_total = total_latents
+        self.latent_size = total_latents
 
         # group_indices: prefix boundaries for each Matryoshka group
         self.group_sizes = list(config.group_sizes)
@@ -1617,6 +1655,15 @@ class VLMatryoshkaSAE(PreTrainedModel):
         # acts_topk: (batch, seq_len, latent_size_total)
         acts_topk = torch.where(mask, acts, torch.zeros_like(acts))
         return acts, acts_topk
+
+    def encode(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        """Encode inputs and return top-k activations and indices."""
+        return self.pre_acts(x).topk(self.cfg.k, sorted=False)
+
+    def decode(self, top_acts: Tensor, top_indices: Tensor) -> Tensor:
+        """Decode a sparse (top-k) representation back to input space."""
+        y = _decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec)
+        return y + self.b_dec
 
     def forward(
         self,

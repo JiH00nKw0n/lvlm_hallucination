@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Modality split analysis for SAE features
+# Modality split analysis for SAE features — multi-model loop
 # Usage: ./scripts/test_modality_split.sh [gpu_id]
 # Example: ./scripts/test_modality_split.sh 0
 
@@ -19,29 +19,63 @@ export CUDA_VISIBLE_DEVICES=$DEVICE
 
 # Create log directory
 mkdir -p "$PROJECT_DIR/.log"
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-LOG_FILE="$PROJECT_DIR/.log/modality_split_${TIMESTAMP}.log"
+
+# SAE model paths to evaluate
+SAE_PATHS=(
+    "lmms-lab/llama3-llava-next-8b-hf-sae-131k"
+    "Mayfull/LLaVA_Next_VLTopKSAE"
+    "Mayfull/LLaVA_Next_VLTopKSAE_SL"
+    "Mayfull/LLaVA_Next_VLBatchTopKSAE"
+    "Mayfull/LLaVA_Next_VLBatchTopKSAE_SL"
+    "Mayfull/LLaVA_Next_VLMatryoshkaSAE"
+    "Mayfull/LLaVA_Next_VLMatryoshkaSAE_SL"
+    "Mayfull/LLaVA_Next_MatryoshkaSAE"
+    "Mayfull/LLaVA_Next_BatchTopKSAE"
+)
+
+run_experiment() {
+    local sae_path="$1"
+    local extra_args="$2"
+    local sae_name="${sae_path##*/}"
+    local suffix=""
+    if [[ "$extra_args" == *"--weighted"* ]]; then
+        suffix="_weighted"
+    fi
+    local TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+    local LOG_FILE="$PROJECT_DIR/.log/modality_split_${sae_name}${suffix}_${TIMESTAMP}.log"
+
+    echo "=========================================="
+    echo "SAE Feature Modality Split Analysis"
+    echo "SAE: $sae_path"
+    echo "Extra args: $extra_args"
+    echo "GPU: $DEVICE"
+    echo "Log: $LOG_FILE"
+    echo "=========================================="
+
+    python "$PROJECT_DIR/test_modality_split.py" \
+        --model_name llava-hf/llama3-llava-next-8b-hf \
+        --sae_path "$sae_path" \
+        --layer_index 24 \
+        --num_samples 5000 \
+        --k 256 \
+        --bin_width 0.05 \
+        --seed 42 \
+        --dtype float16 \
+        --output_dir "$PROJECT_DIR/results/modality_split" \
+        $extra_args \
+        2>&1 | tee -a "$LOG_FILE"
+
+    echo "=========================================="
+    echo "Done: $sae_name $extra_args"
+    echo "=========================================="
+    echo ""
+}
+
+for sae_path in "${SAE_PATHS[@]}"; do
+    run_experiment "$sae_path" ""           # unweighted
+    run_experiment "$sae_path" "--weighted"  # weighted
+done
 
 echo "=========================================="
-echo "SAE Feature Modality Split Analysis"
-echo "=========================================="
-echo "GPU: $DEVICE"
-echo "Log: $LOG_FILE"
-echo "=========================================="
-
-python "$PROJECT_DIR/test_modality_split.py" \
-    --model_name llava-hf/llama3-llava-next-8b-hf \
-    --sae_path lmms-lab/llama3-llava-next-8b-hf-sae-131k \
-    --layer_index 24 \
-    --num_samples 5000 \
-    --k 256 \
-    --bin_width 0.05 \
-    --seed 42 \
-    --dtype float16 \
-    --output_dir "$PROJECT_DIR/results/modality_split" \
-    --weighted \
-    2>&1 | tee -a "$LOG_FILE"
-
-echo "=========================================="
-echo "Done. Results in: $PROJECT_DIR/results/modality_split/"
+echo "All experiments done. Results in: $PROJECT_DIR/results/modality_split/"
 echo "=========================================="

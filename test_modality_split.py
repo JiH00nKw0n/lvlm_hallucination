@@ -23,7 +23,14 @@ from datasets import load_dataset
 from torch import Tensor
 from tqdm import tqdm
 
-from src.models.modeling_sae import TopKSAE
+from src.models.modeling_sae import (
+    BatchTopKSAE,
+    MatryoshkaSAE,
+    TopKSAE,
+    VLBatchTopKSAE,
+    VLMatryoshkaSAE,
+    VLTopKSAE,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -76,7 +83,22 @@ def load_models(
         hookpoint = f"model.layers.{args.layer_index}"
         sae = Sae.load_from_hub(args.sae_path, hookpoint=hookpoint, device=device)
     else:
-        sae = TopKSAE.from_pretrained(args.sae_path)
+        from transformers import PretrainedConfig
+
+        _SAE_ARCH_MAP = {
+            "TopKSAE": TopKSAE,
+            "VLTopKSAE": VLTopKSAE,
+            "BatchTopKSAE": BatchTopKSAE,
+            "VLBatchTopKSAE": VLBatchTopKSAE,
+            "MatryoshkaSAE": MatryoshkaSAE,
+            "VLMatryoshkaSAE": VLMatryoshkaSAE,
+        }
+
+        sae_config = PretrainedConfig.from_pretrained(args.sae_path)
+        arch_name = getattr(sae_config, "architectures", ["TopKSAE"])[0]
+        sae_cls = _SAE_ARCH_MAP.get(arch_name, TopKSAE)
+        logger.info("Resolved SAE architecture: %s -> %s", arch_name, sae_cls.__name__)
+        sae = sae_cls.from_pretrained(args.sae_path)
     logger.info("Setting SAE k = %d (user-specified)", args.k)
     sae.cfg.k = args.k
     sae.to(device)
@@ -85,7 +107,10 @@ def load_models(
 
     # Unify latent_size attribute
     if not hasattr(sae, "latent_size"):
-        sae.latent_size = sae.num_latents
+        if hasattr(sae, "latent_size_total"):
+            sae.latent_size = sae.latent_size_total
+        elif hasattr(sae, "num_latents"):
+            sae.latent_size = sae.num_latents
 
     return model, processor, sae, device
 
@@ -299,11 +324,12 @@ def plot_histogram(
     return filepath
 
 
-def save_results(result: dict, output_dir: str, sae_path: str, k: int) -> str:
+def save_results(result: dict, output_dir: str, sae_path: str, k: int, weighted: bool = False) -> str:
     """Save results to JSON. Returns the output file path."""
     os.makedirs(output_dir, exist_ok=True)
     sae_name = sae_path.rstrip("/").split("/")[-1]
-    filename = f"MODALITY_SPLIT_{sae_name}_k{k}.json"
+    suffix = "_weighted" if weighted else ""
+    filename = f"MODALITY_SPLIT_{sae_name}_k{k}{suffix}.json"
     filepath = os.path.join(output_dir, filename)
     with open(filepath, "w") as f:
         json.dump(result, f, indent=2)
@@ -401,7 +427,7 @@ def main():
         },
     }
 
-    save_results(result, args.output_dir, args.sae_path, args.k)
+    save_results(result, args.output_dir, args.sae_path, args.k, weighted=args.weighted)
 
     ratio_tensor = torch.tensor(ratio_result["ratio"])
     alive_tensor = torch.tensor(ratio_result["alive_mask"], dtype=torch.bool)
