@@ -253,7 +253,7 @@ def compute_modality_ratio(
     }
 
     return {
-        "ratio": ratio.tolist(),
+        "ratio": [None if x != x else x for x in ratio.tolist()],
         "alive_mask": alive_mask.tolist(),
         "summary": summary,
     }
