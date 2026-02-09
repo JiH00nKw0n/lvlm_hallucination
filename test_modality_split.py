@@ -237,12 +237,16 @@ def compute_modality_ratio(
     num_alive = alive_mask.sum().item()
     num_dead = latent_size - num_alive
 
+    num_shared = ((alive_ratios >= 0.2) & (alive_ratios <= 0.8)).sum().item()
+    sfp = round(num_shared / max(num_alive, 1) * 100, 2) if num_alive > 0 else 0.0
+
     summary = {
         "num_alive_features": num_alive,
         "num_dead_features": num_dead,
         "num_image_specific": (alive_ratios > 0.8).sum().item(),
         "num_text_specific": (alive_ratios < 0.2).sum().item(),
-        "num_shared": ((alive_ratios >= 0.2) & (alive_ratios <= 0.8)).sum().item(),
+        "num_shared": num_shared,
+        "shared_feature_percentage": sfp,
         "mean_ratio": alive_ratios.mean().item() if num_alive > 0 else 0.0,
         "median_ratio": alive_ratios.median().item() if num_alive > 0 else 0.0,
         "std_ratio": alive_ratios.std().item() if num_alive > 0 else 0.0,
@@ -286,18 +290,20 @@ def plot_histogram(
     ax.axvline(x=0.8, color="blue", linestyle="--", linewidth=1, label="Image-specific (>0.8)")
     ax.axvline(x=0.5, color="gray", linestyle=":", linewidth=1, alpha=0.6)
 
+    shared_mask = (alive_ratios >= 0.2) & (alive_ratios <= 0.8)
     if weighted:
         w = alive_weights
         text_mask = alive_ratios < 0.2
-        shared_mask = (alive_ratios >= 0.2) & (alive_ratios <= 0.8)
         image_mask = alive_ratios > 0.8
         n_text = int(w[text_mask].sum())
         n_shared = int(w[shared_mask].sum())
         n_image = int(w[image_mask].sum())
+        sfp = w[shared_mask].sum() / max(w.sum(), 1e-12) * 100
     else:
         n_text = int((alive_ratios < 0.2).sum())
-        n_shared = int(((alive_ratios >= 0.2) & (alive_ratios <= 0.8)).sum())
+        n_shared = int(shared_mask.sum())
         n_image = int((alive_ratios > 0.8).sum())
+        sfp = n_shared / max(len(alive_ratios), 1) * 100
 
     ax.set_xlabel("Modality Ratio (0=Text-only, 1=Image-only)", fontsize=12)
     ylabel = "Activation-Weighted Count" if weighted else "Number of Features"
@@ -309,7 +315,7 @@ def plot_histogram(
     )
     ax.legend(fontsize=10)
 
-    stats_text = f"Text-specific: {n_text:,}\nShared: {n_shared:,}\nImage-specific: {n_image:,}"
+    stats_text = f"Text-specific: {n_text:,}\nShared: {n_shared:,}\nImage-specific: {n_image:,}\nSFP: {sfp:.1f}%"
     ax.text(0.97, 0.95, stats_text, transform=ax.transAxes, fontsize=10,
             verticalalignment="top", horizontalalignment="right",
             bbox=dict(boxstyle="round,pad=0.4", facecolor="wheat", alpha=0.8))
@@ -398,6 +404,10 @@ def main():
 
     ratio_result = compute_modality_ratio(
         img_counts.cpu(), text_counts.cpu(), total_img_tokens, total_text_tokens, latent_size,
+    )
+    logger.info(
+        "SFP (Shared Feature Percentage): %.2f%%",
+        ratio_result["summary"]["shared_feature_percentage"],
     )
 
     mean_mse_img = mse_img_sum / max(n_img_passes, 1)
