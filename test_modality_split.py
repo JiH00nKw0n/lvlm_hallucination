@@ -281,6 +281,9 @@ def plot_histogram(
     if weighted:
         alive_weights = weights[alive_mask].numpy()
         hist_kwargs["weights"] = alive_weights
+    else:
+        # Normalize to proportions (each bar = fraction of alive features)
+        hist_kwargs["weights"] = np.ones_like(alive_ratios) / max(len(alive_ratios), 1)
 
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.hist(alive_ratios, **hist_kwargs)
@@ -300,13 +303,14 @@ def plot_histogram(
         n_image = int(w[image_mask].sum())
         sfp = w[shared_mask].sum() / max(w.sum(), 1e-12) * 100
     else:
-        n_text = int((alive_ratios < 0.2).sum())
-        n_shared = int(shared_mask.sum())
-        n_image = int((alive_ratios > 0.8).sum())
-        sfp = n_shared / max(len(alive_ratios), 1) * 100
+        total = max(len(alive_ratios), 1)
+        n_text = (alive_ratios < 0.2).sum() / total * 100
+        n_shared = shared_mask.sum() / total * 100
+        n_image = (alive_ratios > 0.8).sum() / total * 100
+        sfp = n_shared
 
     ax.set_xlabel("Modality Ratio (0=Text-only, 1=Image-only)", fontsize=12)
-    ylabel = "Activation-Weighted Count" if weighted else "Number of Features"
+    ylabel = "Activation-Weighted Count" if weighted else "Proportion of Features"
     ax.set_ylabel(ylabel, fontsize=12)
     weight_tag = ", weighted" if weighted else ""
     ax.set_title(
@@ -315,7 +319,10 @@ def plot_histogram(
     )
     ax.legend(fontsize=10)
 
-    stats_text = f"Text-specific: {n_text:,}\nShared: {n_shared:,}\nImage-specific: {n_image:,}\nSFP: {sfp:.1f}%"
+    if weighted:
+        stats_text = f"Text-specific: {n_text:,}\nShared: {n_shared:,}\nImage-specific: {n_image:,}\nSFP: {sfp:.1f}%"
+    else:
+        stats_text = f"Text-specific: {n_text:.1f}%\nShared: {n_shared:.1f}%\nImage-specific: {n_image:.1f}%\nSFP: {sfp:.1f}%"
     ax.text(0.97, 0.95, stats_text, transform=ax.transAxes, fontsize=10,
             verticalalignment="top", horizontalalignment="right",
             bbox=dict(boxstyle="round,pad=0.4", facecolor="wheat", alpha=0.8))
