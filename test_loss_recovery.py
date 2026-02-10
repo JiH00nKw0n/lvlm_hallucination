@@ -197,7 +197,7 @@ def make_sae_replacement_hook(sae, token_mask: Tensor):
         top_acts, top_indices = sae.encode(tokens)
         recon = sae.decode(top_acts, top_indices)
         modified = hidden.clone()
-        modified[:, mask, :] = recon
+        modified[:, mask, :] = recon.to(hidden.dtype)
         return modified
     return hook
 
