@@ -273,6 +273,47 @@ def collect_top_patches(
     return top_buffer, feature_freq, mean_mse_image, n_passes
 
 
+def _build_patch_embedding_cache(
+    needed_images: set[int],
+    dataset,
+    dinov2,
+    dino_processor,
+    device: torch.device,
+    batch_size: int = 32,
+) -> tuple[dict[int, Tensor], int]:
+    """Run DINOv2 on full images and cache per-patch token embeddings.
+
+    Returns:
+        cache: dataset_idx → (dino_grid*dino_grid, hidden_dim) patch embeddings
+        dino_grid: spatial grid size of DINOv2 output (e.g. 16 for 224/14)
+    """
+    dino_patch_size: int = dinov2.config.patch_size  # 14
+    crop_size = getattr(dino_processor, "crop_size", None) or {}
+    dino_img_size: int = crop_size.get("height", 224)
+    dino_grid = dino_img_size // dino_patch_size  # 16 for 224/14
+
+    cache: dict[int, Tensor] = {}
+    image_list = sorted(needed_images)
+
+    for batch_start in tqdm(range(0, len(image_list), batch_size), desc="DINOv2 images"):
+        batch_indices = image_list[batch_start : batch_start + batch_size]
+        images = [dataset[idx]["image"].convert("RGB") for idx in batch_indices]
+
+        dino_inputs = dino_processor(images=images, return_tensors="pt")
+        dino_inputs = {k: v.to(device) for k, v in dino_inputs.items()}
+
+        with torch.no_grad():
+            dino_out = dinov2(**dino_inputs)
+
+        # last_hidden_state: (batch, 1 + n_patches, hidden_dim) — skip CLS at idx 0
+        patch_tokens = dino_out.last_hidden_state[:, 1:, :]  # (batch, dino_grid², hidden_dim)
+
+        for i, idx in enumerate(batch_indices):
+            cache[idx] = patch_tokens[i]  # (dino_grid², hidden_dim)
+
+    return cache, dino_grid
+
+
 def score_features(
     top_buffer: dict[int, list[tuple[float, int, int]]],
     dataset,
@@ -281,6 +322,10 @@ def score_features(
     device: torch.device,
 ) -> dict[int, float]:
     """Score each feature by DINOv2 pairwise cosine similarity of its top patches.
+
+    Processes full images through DINOv2 to obtain context-aware patch token
+    embeddings (with self-attention across the entire image), then maps LLaVA
+    patch positions to the corresponding DINOv2 patch tokens.
 
     Returns:
         scores: feature_idx → mean off-diagonal cosine similarity
@@ -291,31 +336,34 @@ def score_features(
     scorable = {k: v for k, v in top_buffer.items() if len(v) >= 2}
     logger.info("Scoring %d features (of %d total with >= 2 patches)", len(scorable), len(top_buffer))
 
+    # Collect unique images needed across all scorable features
+    needed_images: set[int] = {
+        dataset_idx
+        for entries in scorable.values()
+        for _, dataset_idx, _ in entries
+    }
+    logger.info("Computing DINOv2 patch embeddings for %d unique images", len(needed_images))
+
+    patch_cache, dino_grid = _build_patch_embedding_cache(
+        needed_images, dataset, dinov2, dino_processor, device,
+    )
+    logger.info("Cached %d image embeddings (grid %dx%d), scoring features", len(patch_cache), dino_grid, dino_grid)
+
+    # Score each feature using cached patch-token embeddings
     for feat_idx, entries in tqdm(scorable.items(), desc="Scoring features"):
-        embeddings = []
+        embeddings: list[Tensor] = []
 
         for _act_val, dataset_idx, patch_pos in entries:
-            sample = dataset[dataset_idx]
-            image = sample["image"].convert("RGB")
+            # Map LLaVA 24×24 patch position → DINOv2 grid position
+            llava_row = patch_pos // BASE_GRID_SIZE
+            llava_col = patch_pos % BASE_GRID_SIZE
+            dino_row = min(int(llava_row * dino_grid / BASE_GRID_SIZE), dino_grid - 1)
+            dino_col = min(int(llava_col * dino_grid / BASE_GRID_SIZE), dino_grid - 1)
+            dino_idx = dino_row * dino_grid + dino_col
 
-            # Resize to base image size (336x336) for consistent crop coordinates
-            base_image = image.resize((BASE_GRID_SIZE * BASE_PATCH_PX, BASE_GRID_SIZE * BASE_PATCH_PX))
+            embeddings.append(patch_cache[dataset_idx][dino_idx])  # (hidden_dim,)
 
-            box = get_patch_box(patch_pos)
-            crop = base_image.crop(box)
-
-            # DINOv2 forward
-            dino_inputs = dino_processor(images=crop, return_tensors="pt")
-            dino_inputs = {k: v.to(device) for k, v in dino_inputs.items()}
-
-            with torch.no_grad():
-                dino_out = dinov2(**dino_inputs)
-
-            cls_emb = dino_out.last_hidden_state[:, 0, :]  # (1, hidden_dim)
-            embeddings.append(cls_emb)
-
-        # Stack and compute pairwise cosine similarity
-        emb_matrix = torch.cat(embeddings, dim=0)  # (n, hidden_dim)
+        emb_matrix = torch.stack(embeddings, dim=0)  # (n, hidden_dim)
         emb_matrix = F.normalize(emb_matrix, dim=-1)
         sim_matrix = emb_matrix @ emb_matrix.T  # (n, n)
 
