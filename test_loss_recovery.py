@@ -188,7 +188,8 @@ def make_sae_replacement_hook(sae, token_mask: Tensor):
         token_mask: Boolean mask of shape (seq_len,) indicating which tokens to replace.
     """
     def hook(module, input, output):
-        hidden = output[0]  # (B, seq_len, hidden_size)
+        # LlamaDecoderLayer returns a plain tensor, not a tuple
+        hidden = output  # (B, seq_len, hidden_size)
         if not token_mask.any():
             return output
         mask = token_mask.to(hidden.device)
@@ -197,7 +198,7 @@ def make_sae_replacement_hook(sae, token_mask: Tensor):
         recon = sae.decode(top_acts, top_indices)
         modified = hidden.clone()
         modified[:, mask, :] = recon
-        return (modified,) + output[1:]
+        return modified
     return hook
 
 
@@ -208,13 +209,14 @@ def make_zero_ablation_hook(token_mask: Tensor):
         token_mask: Boolean mask of shape (seq_len,) indicating which tokens to zero.
     """
     def hook(module, input, output):
-        hidden = output[0]  # (B, seq_len, hidden_size)
+        # LlamaDecoderLayer returns a plain tensor, not a tuple
+        hidden = output  # (B, seq_len, hidden_size)
         if not token_mask.any():
             return output
         mask = token_mask.to(hidden.device)
         modified = hidden.clone()
         modified[:, mask, :] = 0.0
-        return (modified,) + output[1:]
+        return modified
     return hook
 
 
