@@ -280,17 +280,16 @@ def _build_patch_embedding_cache(
     dino_processor,
     device: torch.device,
     batch_size: int = 32,
-) -> tuple[dict[int, Tensor], int]:
-    """Run DINOv2 on full images and cache per-patch token embeddings.
+) -> dict[int, Tensor]:
+    """Run DINOv2 on full images at LLaVA resolution and cache patch token embeddings.
+
+    Uses 336×336 input (matching LLaVA's 24×24 grid with patch_size=14) so that
+    DINOv2 patch positions map 1:1 to LLaVA patch positions.
 
     Returns:
-        cache: dataset_idx → (dino_grid*dino_grid, hidden_dim) patch embeddings
-        dino_grid: spatial grid size of DINOv2 output (e.g. 16 for 224/14)
+        cache: dataset_idx → (576, hidden_dim) patch embeddings
     """
-    dino_patch_size: int = dinov2.config.patch_size  # 14
-    crop_size = getattr(dino_processor, "crop_size", None) or {}
-    dino_img_size: int = crop_size.get("height", 224)
-    dino_grid = dino_img_size // dino_patch_size  # 16 for 224/14
+    dino_img_size = BASE_GRID_SIZE * BASE_PATCH_PX  # 336 — match LLaVA base grid
 
     cache: dict[int, Tensor] = {}
     image_list = sorted(needed_images)
@@ -299,19 +298,25 @@ def _build_patch_embedding_cache(
         batch_indices = image_list[batch_start : batch_start + batch_size]
         images = [dataset[idx]["image"].convert("RGB") for idx in batch_indices]
 
-        dino_inputs = dino_processor(images=images, return_tensors="pt")
+        dino_inputs = dino_processor(
+            images=images,
+            return_tensors="pt",
+            do_resize=True,
+            size={"height": dino_img_size, "width": dino_img_size},
+            do_center_crop=False,
+        )
         dino_inputs = {k: v.to(device) for k, v in dino_inputs.items()}
 
         with torch.no_grad():
             dino_out = dinov2(**dino_inputs)
 
-        # last_hidden_state: (batch, 1 + n_patches, hidden_dim) — skip CLS at idx 0
-        patch_tokens = dino_out.last_hidden_state[:, 1:, :]  # (batch, dino_grid², hidden_dim)
+        # last_hidden_state: (batch, 1 + 576, hidden_dim) — skip CLS at idx 0
+        patch_tokens = dino_out.last_hidden_state[:, 1:, :]  # (batch, 576, hidden_dim)
 
         for i, idx in enumerate(batch_indices):
-            cache[idx] = patch_tokens[i]  # (dino_grid², hidden_dim)
+            cache[idx] = patch_tokens[i]  # (576, hidden_dim)
 
-    return cache, dino_grid
+    return cache
 
 
 def score_features(
@@ -344,24 +349,18 @@ def score_features(
     }
     logger.info("Computing DINOv2 patch embeddings for %d unique images", len(needed_images))
 
-    patch_cache, dino_grid = _build_patch_embedding_cache(
+    patch_cache = _build_patch_embedding_cache(
         needed_images, dataset, dinov2, dino_processor, device,
     )
-    logger.info("Cached %d image embeddings (grid %dx%d), scoring features", len(patch_cache), dino_grid, dino_grid)
+    logger.info("Cached %d image embeddings (24x24 grid, 1:1 with LLaVA), scoring features", len(patch_cache))
 
     # Score each feature using cached patch-token embeddings
     for feat_idx, entries in tqdm(scorable.items(), desc="Scoring features"):
         embeddings: list[Tensor] = []
 
         for _act_val, dataset_idx, patch_pos in entries:
-            # Map LLaVA 24×24 patch position → DINOv2 grid position
-            llava_row = patch_pos // BASE_GRID_SIZE
-            llava_col = patch_pos % BASE_GRID_SIZE
-            dino_row = min(int(llava_row * dino_grid / BASE_GRID_SIZE), dino_grid - 1)
-            dino_col = min(int(llava_col * dino_grid / BASE_GRID_SIZE), dino_grid - 1)
-            dino_idx = dino_row * dino_grid + dino_col
-
-            embeddings.append(patch_cache[dataset_idx][dino_idx])  # (hidden_dim,)
+            # 1:1 mapping — DINOv2 at 336×336 has same 24×24 grid as LLaVA
+            embeddings.append(patch_cache[dataset_idx][patch_pos])  # (hidden_dim,)
 
         emb_matrix = torch.stack(embeddings, dim=0)  # (n, hidden_dim)
         emb_matrix = F.normalize(emb_matrix, dim=-1)
