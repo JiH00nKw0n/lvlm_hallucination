@@ -8,12 +8,12 @@ Reference:
 Supports: LLaVA-NeXT only (llava_next)
 """
 
+import types
 from pathlib import Path
 from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch.utils.hooks import RemovableHandle
 
 from .base import BaseMitigator
 from .ssl_utils import Sae
@@ -48,6 +48,7 @@ class SSLMitigator(BaseMitigator):
         gamma: float = 0.2,
         hall_index: int = 36992,
         non_hall_index: int = 47230,
+        null_steering: bool = False,
         **kwargs,
     ):
         super().__init__(model, model_type, **kwargs)
@@ -58,8 +59,10 @@ class SSLMitigator(BaseMitigator):
         self.gamma = gamma
         self.hall_index = hall_index
         self.non_hall_index = non_hall_index
+        self.null_steering = null_steering
 
-        self._handle: Optional[RemovableHandle] = None
+        self._hooked_module: Optional[nn.Module] = None
+        self._original_forward = None
         self._image_start: int = 0
         self._num_img_tokens: int = 0
         self._d_hall: Optional[torch.Tensor] = None
@@ -90,48 +93,63 @@ class SSLMitigator(BaseMitigator):
             raise ValueError(f"Layer index {self.layer} out of range (0-{len(layers)-1}).")
 
         hooked_module = layers[self.layer]
-        self._handle = hooked_module.register_forward_hook(self._hook)
+        self._hooked_module = hooked_module
+        self._original_forward = hooked_module.forward
+        hooked_module.forward = types.MethodType(self._build_layer_forward(), hooked_module)
 
     def cleanup(self) -> None:
-        if self._handle is not None:
-            self._handle.remove()
-            self._handle = None
+        if self._hooked_module is not None and self._original_forward is not None:
+            self._hooked_module.forward = self._original_forward
+        self._hooked_module = None
+        self._original_forward = None
         self._d_hall = None
         self._d_non_hall = None
 
-    def _hook(self, module: nn.Module, _, outputs: object) -> object:
-        d_hall = self._d_hall
-        d_non_hall = self._d_non_hall
-        if d_hall is None or d_non_hall is None:
-            return outputs
+    def _build_layer_forward(self):
+        """Build a wrapped forward that applies SSL steering after the original forward."""
+        mitigator = self
+        original_forward_fn = self._original_forward
 
-        if isinstance(outputs, tuple):
-            unpack_outputs = list(outputs)
-        else:
-            unpack_outputs = list(outputs)
+        def forward(_self, *args, **kwargs):
+            outputs = original_forward_fn(*args, **kwargs)
 
-        hidden = unpack_outputs[0]
-
-        with torch.no_grad():
-            if hidden.dim() < 3:
+            if mitigator.null_steering:
                 return outputs
-            if hidden.shape[1] != 1:
-                x_img = hidden[:, self._image_start:self._image_start + self._num_img_tokens, :]
-                x_norm = x_img.norm(dim=-1, keepdim=True)
-                d_norm = d_non_hall.norm() + 1e-6
-                alpha_img = self.gamma * x_norm / d_norm
-                hidden[:, self._image_start:self._image_start + self._num_img_tokens, :] = (
-                    x_img + alpha_img * d_non_hall.to(hidden.dtype)
-                )
-            else:
-                x_gen = hidden
-                x_norm = x_gen.norm()
-                d_norm = d_hall.norm() + 1e-6
-                alpha_gen = self.gamma * x_norm / d_norm
-                hidden = x_gen - alpha_gen * d_hall.to(hidden.dtype)
-                unpack_outputs[0] = hidden
 
-        return tuple(unpack_outputs) if isinstance(outputs, tuple) else unpack_outputs[0]
+            d_hall = mitigator._d_hall
+            d_non_hall = mitigator._d_non_hall
+            if d_hall is None or d_non_hall is None:
+                return outputs
+
+            if isinstance(outputs, tuple):
+                unpack_outputs = list(outputs)
+            else:
+                unpack_outputs = [outputs]
+
+            hidden = unpack_outputs[0]
+
+            with torch.no_grad():
+                if hidden.dim() < 3:
+                    return outputs
+                if hidden.shape[1] != 1:
+                    x_img = hidden[:, mitigator._image_start:mitigator._image_start + mitigator._num_img_tokens, :]
+                    x_norm = x_img.norm(dim=-1, keepdim=True)
+                    d_norm = d_non_hall.norm() + 1e-6
+                    alpha_img = mitigator.gamma * x_norm / d_norm
+                    hidden[:, mitigator._image_start:mitigator._image_start + mitigator._num_img_tokens, :] = (
+                        x_img + alpha_img * d_non_hall.to(hidden.dtype)
+                    )
+                else:
+                    x_gen = hidden
+                    x_norm = x_gen.norm()
+                    d_norm = d_hall.norm() + 1e-6
+                    alpha_gen = mitigator.gamma * x_norm / d_norm
+                    hidden = x_gen - alpha_gen * d_hall.to(hidden.dtype)
+                    unpack_outputs[0] = hidden
+
+            return tuple(unpack_outputs) if isinstance(outputs, tuple) else unpack_outputs[0]
+
+        return forward
 
     def generate(
         self,
@@ -140,11 +158,10 @@ class SSLMitigator(BaseMitigator):
         pixel_values: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
-        if self._num_img_tokens == 0:
-            config = getattr(self.model, "config", None)
-            img_start, img_end = self._get_image_token_indices(input_ids, config)
-            self._image_start = img_start
-            self._num_img_tokens = img_end - img_start
+        config = getattr(self.model, "config", None)
+        img_start, img_end = self._get_image_token_indices(input_ids, config)
+        self._image_start = img_start
+        self._num_img_tokens = img_end - img_start
 
         gen_kwargs = {
             "max_new_tokens": self.config.max_new_tokens,
