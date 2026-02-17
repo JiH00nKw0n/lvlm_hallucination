@@ -1,4 +1,5 @@
 from src.datasets.base import BaseBuilder
+from src.datasets.coco_karpathy import COCOKarpathyDatasetBuilder
 from src.datasets.llava_next_data import LlavaNextDataDatasetBuilder
 from src.datasets.lrv_instruct import LRVInstructDatasetBuilder
 from src.datasets.mme import MMEDatasetBuilder, EVAL_TYPE_DICT
@@ -9,6 +10,7 @@ from src.datasets.sae_sample_cache import SaeSampleCacheDatasetBuilder
 
 __all__ = [
     "BaseBuilder",
+    "COCOKarpathyDatasetBuilder",
     "LRVInstructDatasetBuilder",
     "LlavaNextDataDatasetBuilder",
     "MMEDatasetBuilder",

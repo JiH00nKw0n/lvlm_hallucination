@@ -1,0 +1,64 @@
+# Training configuration for TopKSAE on CLIP embedding space (no group-sparse loss)
+
+run:
+  task: DatasetTrainTaskWithCustomModel
+  runner: CLIPSAETrainer
+  seed: 2025
+
+model:
+  model_cls: TopKSAE
+  config_cls: TopKSAEConfig
+  config_cls_config:
+    hidden_size: 768
+    latent_size: 0
+    expansion_factor: 16
+    k: 32
+    normalize_decoder: true
+  model_cls_config: {}
+
+processor:
+  config:
+    pretrained_model_name_or_path: openai/clip-vit-large-patch14
+    use_fast: true
+
+dataset:
+  COCOKarpathyDatasetBuilder:
+    split: train
+
+collator:
+  collator_cls: CLIPSAECollator
+  config:
+    model_name_or_path: openai/clip-vit-large-patch14
+    torch_dtype: float32
+
+trainer:
+  output_dir: ./checkpoints/clip-topk-sae
+  num_train_epochs: 1
+  per_device_train_batch_size: 128
+  gradient_accumulation_steps: 1
+  push_to_hub: true
+  hub_model_id: Mayfull/CLIP_TopKSAE
+  hub_token: HUB_TOKEN
+  hub_strategy: every_save
+  learning_rate: 2.0e-4
+  optim: adamw_torch
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.0
+  max_grad_norm: 0.0
+  logging_steps: 1
+  save_strategy: steps
+  save_steps: 0.2
+  save_total_limit: 2
+  bf16: false
+  fp16: false
+  dataloader_num_workers: 0
+  dataloader_pin_memory: false
+  remove_unused_columns: false
+  report_to: none
+  run_name: clip-topk-sae
+  sae_auxk_weight: 0.03125
+  sae_shared_weight: 0.0
+  sae_dead_feature_threshold: 10000000
+  use_group_sparse_loss: false
+  group_sparse_lambda: 0.05

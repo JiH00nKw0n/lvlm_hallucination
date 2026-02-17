@@ -23,6 +23,7 @@ __all__ = [
     "CustomSFTTrainer",
     "CustomDPOTrainer",
     "SAETrainer",
+    "CLIPSAETrainer",
 ]
 
 
@@ -218,6 +219,186 @@ class SAETrainer(Trainer):
             "shared_mean_l2_loss": getattr(outputs, "shared_mean_l2_loss", None),
             "shared_min_l2_loss": getattr(outputs, "shared_min_l2_loss", None),
             "shared_max_l2_loss": getattr(outputs, "shared_max_l2_loss", None),
+        }
+        for key, value in metrics.items():
+            if value is None:
+                continue
+            current = getattr(self.state, key, torch.tensor(0.0, device=value.device))
+            setattr(self.state, key, current + value.detach())
+
+    def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
+        steps = self.state.global_step - getattr(self.state, "sae_last_logged", 0)
+        if steps <= 0:
+            steps = 1
+
+        for key in self._sae_loss_keys:
+            if hasattr(self.state, key):
+                val = self._nested_gather(getattr(self.state, key)).mean().item()
+                logs[key] = round(val / steps, 6)
+                setattr(self.state, key, torch.tensor(0.0, device=self.args.device))
+
+        self.state.sae_last_logged = self.state.global_step
+        super().log(logs, start_time=start_time)
+
+
+@registry.register_trainer("CLIPSAETrainer")
+class CLIPSAETrainer(Trainer):
+    """
+    Trainer for CLIP SAE: forwards the SAE twice per batch (image + text embeddings)
+    and optionally computes a group-sparse loss (L_{2,1} norm) on paired latent codes.
+    """
+
+    supports_sae_weights = True
+
+    def __init__(
+        self,
+        *args,
+        auxk_weight: float = 0.0,
+        shared_weight: float = 0.0,
+        dead_feature_threshold: int = 10_000_000,
+        use_group_sparse_loss: bool = False,
+        group_sparse_lambda: float = 0.05,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.auxk_weight = float(auxk_weight)
+        self.shared_weight = float(shared_weight)
+        self.dead_feature_threshold = int(dead_feature_threshold)
+        self.use_group_sparse_loss = use_group_sparse_loss
+        self.group_sparse_lambda = float(group_sparse_lambda)
+        self.num_tokens_since_fired = None
+        self._last_epoch_save_idx = None
+        self.model_accepts_loss_kwargs = False
+        self._sae_loss_keys = [
+            "recon_loss",
+            "auxk_loss",
+            "shared_recon_loss",
+            "group_sparse_loss",
+        ]
+
+    def _init_dead_mask_state(self, model, device):
+        latent_size = getattr(model, "latent_size", None)
+        if latent_size is None:
+            latent_size = getattr(model, "latent_size_total", None)
+        if latent_size is None:
+            raise ValueError("Model missing latent_size/latent_size_total for dead feature tracking.")
+        self.num_tokens_since_fired = torch.zeros(latent_size, device=device, dtype=torch.long)
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        image_embeds = inputs["image_embeds"]
+        text_embeds = inputs["text_embeds"]
+
+        # Unsqueeze to (batch, 1, hidden_size) for SAE seq_len dimension
+        img_input = image_embeds.unsqueeze(1)
+        txt_input = text_embeds.unsqueeze(1)
+
+        use_vl = "VL" in model.__class__.__name__
+        need_dense = self.use_group_sparse_loss
+
+        # Dead feature mask
+        dead_mask = None
+        if self.auxk_weight:
+            if self.num_tokens_since_fired is None:
+                self._init_dead_mask_state(model, image_embeds.device)
+            dead_mask = self.num_tokens_since_fired > self.dead_feature_threshold
+
+        # Forward SAE for image embeddings
+        if use_vl:
+            visual_mask_img = inputs["visual_mask"]
+            outputs_img = model(
+                hidden_states=img_input,
+                visual_mask=visual_mask_img,
+                dead_mask=dead_mask,
+                return_dense_latents=need_dense,
+            )
+        else:
+            outputs_img = model(
+                hidden_states=img_input,
+                dead_mask=dead_mask,
+                return_dense_latents=need_dense,
+            )
+
+        # Forward SAE for text embeddings
+        if use_vl:
+            text_mask = inputs["text_mask"]
+            outputs_txt = model(
+                hidden_states=txt_input,
+                visual_mask=text_mask,
+                dead_mask=dead_mask,
+                return_dense_latents=need_dense,
+            )
+        else:
+            outputs_txt = model(
+                hidden_states=txt_input,
+                dead_mask=dead_mask,
+                return_dense_latents=need_dense,
+            )
+
+        # Reconstruction loss (sum of image + text)
+        loss = outputs_img.recon_loss + outputs_txt.recon_loss
+
+        # AuxK loss
+        auxk_total = outputs_img.recon_loss.new_tensor(0.0)
+        if self.auxk_weight:
+            for out in (outputs_img, outputs_txt):
+                auxk = out.auxk_loss
+                if auxk is not None:
+                    if not torch.isfinite(auxk):
+                        logger.warning("auxk_loss is non-finite; setting to 0 for this step.")
+                        auxk = auxk.new_tensor(0.0)
+                    auxk_total = auxk_total + auxk
+            loss = loss + self.auxk_weight * auxk_total
+
+        # Shared reconstruction loss (VL models only)
+        shared_total = outputs_img.recon_loss.new_tensor(0.0)
+        if self.shared_weight and use_vl:
+            for out in (outputs_img, outputs_txt):
+                shared = getattr(out, "shared_recon_loss", None)
+                if shared is not None:
+                    if not torch.isfinite(shared):
+                        logger.warning("shared_recon_loss is non-finite; setting to 0 for this step.")
+                        shared = shared.new_tensor(0.0)
+                    shared_total = shared_total + shared
+            loss = loss + self.shared_weight * shared_total
+
+        # Group-sparse loss: L_{2,1} norm over paired latent codes
+        gs_loss = outputs_img.recon_loss.new_tensor(0.0)
+        if self.use_group_sparse_loss and need_dense:
+            z_x = outputs_img.dense_latents.squeeze(1)  # (batch, latent_size)
+            z_y = outputs_txt.dense_latents.squeeze(1)   # (batch, latent_size)
+            eps = torch.finfo(z_x.dtype).eps
+            gs_loss = (z_x.pow(2) + z_y.pow(2) + eps).sqrt().sum()
+            loss = loss + self.group_sparse_lambda * gs_loss
+
+        # Track metrics
+        self._update_clip_sae_loss_state(
+            outputs_img, outputs_txt, auxk_total, shared_total, gs_loss,
+        )
+
+        # Dead feature tracking
+        if self.auxk_weight:
+            num_tokens = img_input.shape[0] + txt_input.shape[0]
+            self.num_tokens_since_fired += num_tokens
+            for out in (outputs_img, outputs_txt):
+                acts = getattr(out, "latent_activations", None)
+                indices = getattr(out, "latent_indices", None)
+                fired = None
+                if acts is not None and indices is not None:
+                    fired = indices[acts > 0]
+                elif indices is not None:
+                    fired = indices.flatten()
+                if fired is not None and fired.numel() > 0:
+                    self.num_tokens_since_fired[fired] = 0
+
+        return (loss, outputs_img) if return_outputs else loss
+
+    def _update_clip_sae_loss_state(self, outputs_img, outputs_txt, auxk_total, shared_total, gs_loss):
+        recon_value = outputs_img.recon_loss + outputs_txt.recon_loss
+        metrics = {
+            "recon_loss": recon_value,
+            "auxk_loss": auxk_total,
+            "shared_recon_loss": shared_total,
+            "group_sparse_loss": gs_loss,
         }
         for key, value in metrics.items():
             if value is None:

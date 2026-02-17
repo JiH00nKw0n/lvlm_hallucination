@@ -52,27 +52,39 @@ def _decoder_impl(top_indices: Tensor, top_activations: Tensor, decoder_weight: 
     return dense_latents @ decoder_weight
 
 
-def _vl_split_indices(latent_size: int) -> tuple[int, int, int]:
+def _vl_split_indices(
+    latent_size: int,
+    ratio: tuple[int, int, int] = (1, 2, 1),
+) -> tuple[int, int, int]:
     """
-    Split total latents into (visual, shared, text) with a 1:2:1 ratio.
+    Split total latents into (visual, shared, text) by the given ratio.
+
+    Args:
+        latent_size: Total number of latent dimensions.
+        ratio: (visual, shared, text) proportions (default (1, 2, 1)).
 
     Returns:
         Tuple (v_size, s_size, t_size) where v+s+t == latent_size.
     """
-    v_size = latent_size // 4
-    s_size = latent_size // 2
+    total = sum(ratio)
+    v_size = latent_size * ratio[0] // total
+    s_size = latent_size * ratio[1] // total
     t_size = latent_size - v_size - s_size
     return v_size, s_size, t_size
 
 
-def _vl_masks(latent_size: int, device: torch.device) -> tuple[Tensor, Tensor, Tensor]:
+def _vl_masks(
+    latent_size: int,
+    device: torch.device,
+    ratio: tuple[int, int, int] = (1, 2, 1),
+) -> tuple[Tensor, Tensor, Tensor]:
     """
     Build boolean masks for [visual | shared | text] blocks.
 
     Returns:
         (v_mask, s_mask, t_mask) each shaped (latent_size,)
     """
-    v_size, s_size, t_size = _vl_split_indices(latent_size)
+    v_size, s_size, t_size = _vl_split_indices(latent_size, ratio)
     v_mask = torch.zeros(latent_size, dtype=torch.bool, device=device)
     s_mask = torch.zeros(latent_size, dtype=torch.bool, device=device)
     t_mask = torch.zeros(latent_size, dtype=torch.bool, device=device)
@@ -128,6 +140,7 @@ class SAEOutput(ModelOutput):
         latent_indices: Indices for the top-k latent activations.
         recon_loss: Normalized reconstruction loss (lower is better).
         auxk_loss: Auxiliary loss for dead features (0 if not applicable).
+        dense_latents: Dense latent vector (batch, seq_len, latent_size) when requested.
     """
 
     output: Tensor
@@ -135,6 +148,7 @@ class SAEOutput(ModelOutput):
     latent_indices: Optional[Tensor] = None
     recon_loss: Optional[Tensor] = None
     auxk_loss: Optional[Tensor] = None
+    dense_latents: Optional[Tensor] = None
 
 
 @dataclass
@@ -149,6 +163,7 @@ class VLSAEOutput(ModelOutput):
         recon_loss: Normalized reconstruction loss (lower is better).
         auxk_loss: Auxiliary loss for dead features (0 if not applicable).
         shared_recon_loss: Normalized reconstruction loss using only the shared subspace.
+        dense_latents: Dense latent vector (batch, seq_len, latent_size) when requested.
     """
 
     output: Tensor
@@ -157,6 +172,7 @@ class VLSAEOutput(ModelOutput):
     recon_loss: Optional[Tensor] = None
     auxk_loss: Optional[Tensor] = None
     shared_recon_loss: Optional[Tensor] = None
+    dense_latents: Optional[Tensor] = None
 
 
 @dataclass
@@ -316,13 +332,20 @@ class TopKSAE(PreTrainedModel):
         y = _decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec)
         return y + self.b_dec
 
-    def forward(self, hidden_states: Tensor, dead_mask: Optional[Tensor] = None) -> SAEOutput:
+    def forward(
+        self,
+        hidden_states: Tensor,
+        dead_mask: Optional[Tensor] = None,
+        return_dense_latents: bool = False,
+    ) -> SAEOutput:
         """
         Run a forward pass and compute reconstruction + auxiliary metrics.
 
         Args:
             hidden_states: Input activations. Shape: (batch, seq_len, hidden_size).
             dead_mask: Optional boolean mask of dead features. Shape: (latent_size,).
+            return_dense_latents: If True, scatter top_acts into a dense (batch, seq, latent_size)
+                tensor and return it in the output.
 
         Returns:
             SAEOutput with reconstruction and training metrics.
@@ -383,12 +406,21 @@ class TopKSAE(PreTrainedModel):
         l2_loss = residual.pow(2).sum()
         recon_loss = l2_loss / total_variance
 
+        # 8) Optionally build dense latent vector.
+        dense_latents = None
+        if return_dense_latents:
+            dense_latents = top_acts.new_zeros(
+                top_acts.shape[:-1] + (self.latent_size,)
+            )
+            dense_latents.scatter_(dim=-1, index=top_indices, src=top_acts)
+
         return SAEOutput(
             output=sae_out,
             latent_activations=top_acts,
             latent_indices=top_indices,
             recon_loss=recon_loss,
             auxk_loss=auxk_loss,
+            dense_latents=dense_latents,
         )
 
     @torch.no_grad()
@@ -941,7 +973,8 @@ class VLTopKSAE(PreTrainedModel):
     """
     Vision-language TopK SAE with [visual | shared | text] subspaces.
 
-    We split the latent dictionary into 1:2:1 blocks and apply TopK within the
+    We split the latent dictionary into [visual | shared | text] blocks
+    (ratio controlled by config.vl_split_ratio) and apply TopK within the
     active modality subspace only.
     """
 
@@ -951,6 +984,7 @@ class VLTopKSAE(PreTrainedModel):
     def __init__(self, config: VLTopKSAEConfig):
         super().__init__(config)
         self.cfg = config
+        self.vl_ratio = tuple(config.vl_split_ratio)
         # hidden_size: width of input activations (feature dimension)
         self.hidden_size = config.hidden_size
         # latent_size: size of latent dictionary
@@ -997,7 +1031,7 @@ class VLTopKSAE(PreTrainedModel):
         if visual_mask.dim() != 2:
             raise ValueError("visual_mask must be (batch, seq_len).")
 
-        v_mask, s_mask, t_mask = _vl_masks(self.latent_size, self.device)
+        v_mask, s_mask, t_mask = _vl_masks(self.latent_size, self.device, self.vl_ratio)
         active_visual = (v_mask | s_mask).view(1, 1, -1)
         active_text = (s_mask | t_mask).view(1, 1, -1)
         visual_mask_broadcast = visual_mask.bool().unsqueeze(-1)
@@ -1039,6 +1073,7 @@ class VLTopKSAE(PreTrainedModel):
         visual_mask: Tensor,
         attention_mask: Optional[Tensor] = None,
         dead_mask: Optional[Tensor] = None,
+        return_dense_latents: bool = False,
     ) -> VLSAEOutput:
         """
         Run a forward pass with modality masking and shared reconstruction loss.
@@ -1048,6 +1083,8 @@ class VLTopKSAE(PreTrainedModel):
             visual_mask: Boolean mask for visual tokens. Shape: (batch, seq_len).
             attention_mask: Boolean mask for valid tokens. Shape: (batch, seq_len).
             dead_mask: Optional boolean mask of dead features. Shape: (latent_size,).
+            return_dense_latents: If True, scatter top_acts into a dense (batch, seq, latent_size)
+                tensor and return it in the output.
 
         Returns:
             VLSAEOutput with reconstruction and training metrics.
@@ -1057,7 +1094,7 @@ class VLTopKSAE(PreTrainedModel):
             total_tokens = visual_mask.numel()
             visual_tokens = int(visual_mask.sum().item())
             attn_tokens = int(attention_mask.sum().item()) if attention_mask is not None else None
-            v_size, s_size, t_size = _vl_split_indices(self.latent_size)
+            v_size, s_size, t_size = _vl_split_indices(self.latent_size, self.vl_ratio)
             logger.debug(
                 "VLSAE stats: tokens=%d vis=%d attn=%s v/s/t=%d/%d/%d",
                 total_tokens,
@@ -1071,7 +1108,7 @@ class VLTopKSAE(PreTrainedModel):
             total_tokens = visual_mask.numel()
             visual_tokens = int(visual_mask.sum().item())
             attn_tokens = int(attention_mask.sum().item()) if attention_mask is not None else None
-            v_size, s_size, t_size = _vl_split_indices(self.latent_size)
+            v_size, s_size, t_size = _vl_split_indices(self.latent_size, self.vl_ratio)
             logger.debug(
                 "VLBatch stats: tokens=%d vis=%d attn=%s v/s/t=%d/%d/%d",
                 total_tokens,
@@ -1176,6 +1213,14 @@ class VLTopKSAE(PreTrainedModel):
         # shared_recon_loss: scalar
         shared_recon_loss = _masked_l2_sum(shared_recon - x, flat_mask) / total_variance
 
+        # Optionally build dense latent vector.
+        dense_latents = None
+        if return_dense_latents:
+            dense_latents = top_acts.new_zeros(
+                top_acts.shape[:-1] + (self.latent_size,)
+            )
+            dense_latents.scatter_(dim=-1, index=top_indices, src=top_acts)
+
         return VLSAEOutput(
             output=sae_out,
             latent_activations=top_acts,
@@ -1183,6 +1228,7 @@ class VLTopKSAE(PreTrainedModel):
             recon_loss=recon_loss,
             auxk_loss=auxk_loss,
             shared_recon_loss=shared_recon_loss,
+            dense_latents=dense_latents,
         )
 
     @torch.no_grad()
@@ -1221,7 +1267,8 @@ class VLBatchTopKSAE(PreTrainedModel):
     """
     Vision-language BatchTopK SAE with [visual | shared | text] subspaces.
 
-    We split the latent dictionary into 1:2:1 blocks and apply BatchTopK within
+    We split the latent dictionary into [visual | shared | text] blocks
+    (ratio controlled by config.vl_split_ratio) and apply BatchTopK within
     the active modality subspace only.
     """
 
@@ -1231,6 +1278,7 @@ class VLBatchTopKSAE(PreTrainedModel):
     def __init__(self, config: VLBatchTopKSAEConfig):
         super().__init__(config)
         self.cfg = config
+        self.vl_ratio = tuple(config.vl_split_ratio)
         # hidden_size: width of input activations (feature dimension)
         self.hidden_size = config.hidden_size
         # latent_size: size of latent dictionary
@@ -1277,7 +1325,7 @@ class VLBatchTopKSAE(PreTrainedModel):
         if visual_mask.dim() != 2:
             raise ValueError("visual_mask must be (batch, seq_len).")
 
-        v_mask, s_mask, t_mask = _vl_masks(self.latent_size, self.device)
+        v_mask, s_mask, t_mask = _vl_masks(self.latent_size, self.device, self.vl_ratio)
         active_visual = (v_mask | s_mask).view(1, 1, -1)
         active_text = (s_mask | t_mask).view(1, 1, -1)
         visual_mask_broadcast = visual_mask.bool().unsqueeze(-1)
@@ -1496,6 +1544,7 @@ class VLMatryoshkaSAE(PreTrainedModel):
     def __init__(self, config: VLMatryoshkaSAEConfig):
         super().__init__(config)
         self.cfg = config
+        self.vl_ratio = tuple(config.vl_split_ratio)
         # hidden_size: width of input activations (feature dimension)
         self.hidden_size = config.hidden_size
 
@@ -1538,7 +1587,7 @@ class VLMatryoshkaSAE(PreTrainedModel):
         self.b_dec = nn.Parameter(torch.zeros(self.hidden_size))
 
         # Shared-group configuration within the shared subspace.
-        v_size, s_size, t_size = _vl_split_indices(total_latents)
+        v_size, s_size, t_size = _vl_split_indices(total_latents, self.vl_ratio)
         self.shared_start = v_size
         self.shared_end = v_size + s_size
         if config.shared_group_sizes is None:
@@ -1589,7 +1638,7 @@ class VLMatryoshkaSAE(PreTrainedModel):
         if visual_mask.dim() != 2:
             raise ValueError("visual_mask must be (batch, seq_len).")
 
-        v_mask, s_mask, t_mask = _vl_masks(self.W_dec.shape[0], self.device)
+        v_mask, s_mask, t_mask = _vl_masks(self.W_dec.shape[0], self.device, self.vl_ratio)
         active_visual = (v_mask | s_mask).view(1, 1, -1)
         active_text = (s_mask | t_mask).view(1, 1, -1)
         visual_mask_broadcast = visual_mask.bool().unsqueeze(-1)
@@ -1690,7 +1739,7 @@ class VLMatryoshkaSAE(PreTrainedModel):
             total_tokens = visual_mask.numel()
             visual_tokens = int(visual_mask.sum().item())
             attn_tokens = int(attention_mask.sum().item()) if attention_mask is not None else None
-            v_size, s_size, t_size = _vl_split_indices(self.W_dec.shape[0])
+            v_size, s_size, t_size = _vl_split_indices(self.W_dec.shape[0], self.vl_ratio)
             logger.debug(
                 "VLMatry stats: tokens=%d vis=%d attn=%s v/s/t=%d/%d/%d",
                 total_tokens,

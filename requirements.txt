@@ -11,6 +11,8 @@ pillow==11.3.0
 # Async and networking
 aiohttp==3.12.15
 tqdm==4.67.1
+openai>=1.68.0
+tabulate>=0.9.0
 
 # Configuration management
 omegaconf==2.3.0

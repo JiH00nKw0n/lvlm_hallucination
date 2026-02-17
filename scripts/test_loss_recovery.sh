@@ -50,7 +50,7 @@ run_experiment() {
         --model_name llava-hf/llama3-llava-next-8b-hf \
         --sae_path "$sae_path" \
         --layer_index 24 \
-        --num_samples 5000 \
+        --num_samples 90 \
         --k 256 \
         --seed 42 \
         --dtype float16 \

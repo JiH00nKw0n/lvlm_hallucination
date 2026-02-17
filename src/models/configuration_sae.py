@@ -141,7 +141,8 @@ class VLTopKSAEConfig(TopKSAEConfig):
     """
     Configuration for VLTopKSAE.
 
-    The dictionary is split into [visual | shared | text] with a 1:2:1 ratio.
+    The dictionary is split into [visual | shared | text] subspaces whose
+    proportions are controlled by ``vl_split_ratio`` (default 1:2:1).
     """
 
     model_type = "vl_topk_sae"
@@ -154,6 +155,7 @@ class VLTopKSAEConfig(TopKSAEConfig):
         normalize_decoder: bool = True,
         k: int = 256,
         multi_topk: bool = False,
+        vl_split_ratio: list[int] | None = None,
         **kwargs,
     ):
         """
@@ -164,6 +166,7 @@ class VLTopKSAEConfig(TopKSAEConfig):
             normalize_decoder: Whether to normalize decoder rows to unit norm.
             k: Number of non-zero latent activations (top-k) to keep per sample.
             multi_topk: Whether to compute Multi-TopK FVU in the forward pass.
+            vl_split_ratio: [visual, shared, text] proportions (default [1, 2, 1]).
             **kwargs: Additional config args passed to PretrainedConfig.
         """
         super().__init__(
@@ -175,13 +178,15 @@ class VLTopKSAEConfig(TopKSAEConfig):
             multi_topk=multi_topk,
             **kwargs,
         )
+        self.vl_split_ratio = vl_split_ratio or [1, 2, 1]
 
 
 class VLBatchTopKSAEConfig(BatchTopKSAEConfig):
     """
     Configuration for VLBatchTopKSAE.
 
-    The dictionary is split into [visual | shared | text] with a 1:2:1 ratio.
+    The dictionary is split into [visual | shared | text] subspaces whose
+    proportions are controlled by ``vl_split_ratio`` (default 1:2:1).
     """
 
     model_type = "vl_batch_topk_sae"
@@ -194,6 +199,7 @@ class VLBatchTopKSAEConfig(BatchTopKSAEConfig):
         normalize_decoder: bool = True,
         k: int = 256,
         multi_topk: bool = False,
+        vl_split_ratio: list[int] | None = None,
         **kwargs,
     ):
         """
@@ -204,6 +210,7 @@ class VLBatchTopKSAEConfig(BatchTopKSAEConfig):
             normalize_decoder: Whether to normalize decoder rows to unit norm.
             k: Target average number of active latents per sample.
             multi_topk: Whether to compute Multi-TopK FVU in the forward pass.
+            vl_split_ratio: [visual, shared, text] proportions (default [1, 2, 1]).
             **kwargs: Additional config args passed to PretrainedConfig.
         """
         super().__init__(
@@ -215,13 +222,15 @@ class VLBatchTopKSAEConfig(BatchTopKSAEConfig):
             multi_topk=multi_topk,
             **kwargs,
         )
+        self.vl_split_ratio = vl_split_ratio or [1, 2, 1]
 
 
 class VLMatryoshkaSAEConfig(MatryoshkaSAEConfig):
     """
     Configuration for VLMatryoshkaSAE.
 
-    The dictionary is split into [visual | shared | text] with a 1:2:1 ratio,
+    The dictionary is split into [visual | shared | text] subspaces whose
+    proportions are controlled by ``vl_split_ratio`` (default 1:2:1),
     and Matryoshka prefix reconstruction losses are applied.
     """
 
@@ -239,6 +248,7 @@ class VLMatryoshkaSAEConfig(MatryoshkaSAEConfig):
         active_groups: int | None = None,
         shared_group_sizes: list[int] | None = None,
         shared_active_groups: int | None = None,
+        vl_split_ratio: list[int] | None = None,
         **kwargs,
     ):
         """
@@ -254,6 +264,7 @@ class VLMatryoshkaSAEConfig(MatryoshkaSAEConfig):
             shared_group_sizes: Sizes of shared-subspace Matryoshka groups. If None,
                 defaults to a single shared group.
             shared_active_groups: Number of shared groups to activate (defaults to all).
+            vl_split_ratio: [visual, shared, text] proportions (default [1, 2, 1]).
             **kwargs: Additional config args passed to PretrainedConfig.
         """
         super().__init__(
@@ -271,6 +282,7 @@ class VLMatryoshkaSAEConfig(MatryoshkaSAEConfig):
             group_sizes = []
         self.shared_group_sizes = shared_group_sizes
         self.shared_active_groups = shared_active_groups
+        self.vl_split_ratio = vl_split_ratio or [1, 2, 1]
 
 
 __all__ = [

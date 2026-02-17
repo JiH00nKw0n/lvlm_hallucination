@@ -79,6 +79,8 @@ class SingleTrainTask(BaseTrainTask):
         sae_auxk_weight = trainer_config.pop("sae_auxk_weight", None)
         sae_shared_weight = trainer_config.pop("sae_shared_weight", None)
         sae_dead_feature_threshold = trainer_config.pop("sae_dead_feature_threshold", None)
+        use_group_sparse_loss = trainer_config.pop("use_group_sparse_loss", None)
+        group_sparse_lambda = trainer_config.pop("group_sparse_lambda", None)
         extra_trainer_kwargs: dict[str, Any] = {}
         if sae_auxk_weight is not None or sae_shared_weight is not None:
             if getattr(trainer_cls, "supports_sae_weights", False):
@@ -91,6 +93,10 @@ class SingleTrainTask(BaseTrainTask):
                 extra_trainer_kwargs["dead_feature_threshold"] = int(sae_dead_feature_threshold)
             else:
                 raise ValueError("SAE dead_feature_threshold provided but trainer does not support it.")
+        if use_group_sparse_loss is not None:
+            extra_trainer_kwargs["use_group_sparse_loss"] = bool(use_group_sparse_loss)
+        if group_sparse_lambda is not None:
+            extra_trainer_kwargs["group_sparse_lambda"] = float(group_sparse_lambda)
 
         return trainer_cls(
             model=self.build_model(),

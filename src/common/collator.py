@@ -8,7 +8,7 @@ import torch
 from PIL import Image
 from tqdm.asyncio import tqdm_asyncio
 from transformers.utils import add_end_docstrings, logging
-from transformers import LlavaNextForConditionalGeneration
+from transformers import CLIPModel, CLIPProcessor, LlavaNextForConditionalGeneration
 from trl.trainer.dpo_trainer import DataCollatorForPreference
 from trl.trainer.sft_trainer import DataCollatorForVisionLanguageModeling
 
@@ -23,6 +23,7 @@ __all__ = [
     "ImageURLCollator",
     "RLHFVForDPOImageCollator",
     "LlavaNextSAECollator",
+    "CLIPSAECollator",
     "DummyImageCollator",
 ]
 
@@ -326,4 +327,86 @@ class LlavaNextSAECollator(BaseCollator):
             "hidden_states": hidden_states,
             "attention_mask": attention_mask,
             "visual_mask": visual_mask,
+        }
+
+
+@add_end_docstrings(BASE_COLLATOR_DOCSTRING)
+@dataclass
+@registry.register_collator("CLIPSAECollator")
+class CLIPSAECollator(BaseCollator):
+    """
+    Collator for CLIP SAE training. Loads a frozen CLIPModel and extracts
+    image_embeds and text_embeds from paired image-text data.
+
+    Each example is expected to have an 'image' (PIL) and 'captions' (list[str]).
+    One caption per example is randomly selected at each call.
+    """
+
+    model_name_or_path: str = ""
+    torch_dtype: Optional[str] = "float32"
+    device: Optional[str] = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        if not self.model_name_or_path:
+            raise ValueError("model_name_or_path must be provided for CLIPSAECollator.")
+        dtype = getattr(torch, self.torch_dtype) if isinstance(self.torch_dtype, str) else self.torch_dtype
+        model = CLIPModel.from_pretrained(self.model_name_or_path, torch_dtype=dtype)
+        device = (
+            torch.device(self.device)
+            if self.device is not None
+            else torch.device(
+                f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
+            )
+        )
+        model.to(device)
+        model.eval()
+        for p in model.parameters():
+            p.requires_grad = False
+        self.model = model
+        self.device = device
+        self.clip_processor = CLIPProcessor.from_pretrained(self.model_name_or_path)
+
+    def __call__(self, features: List[Dict], return_tensors: Optional[str] = None):
+        images = []
+        texts = []
+        for example in features:
+            image = example.get("image")
+            if image is None:
+                raise ValueError("Expected 'image' field in dataset examples.")
+            if isinstance(image, PIL.Image.Image):
+                image = image.convert(self.color_model)
+            images.append(image)
+
+            captions = example.get("captions")
+            if captions is None:
+                raise ValueError("Expected 'captions' field in dataset examples.")
+            if isinstance(captions, list):
+                caption = self.rng.choice(captions)
+            else:
+                caption = captions
+            texts.append(caption)
+
+        inputs = self.clip_processor(
+            text=texts,
+            images=images,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+        )
+
+        with torch.no_grad():
+            outputs = self.model(
+                input_ids=inputs["input_ids"].to(self.device),
+                attention_mask=inputs.get("attention_mask", torch.ones_like(inputs["input_ids"])).to(self.device),
+                pixel_values=inputs["pixel_values"].to(self.device),
+            )
+
+        batch_size = outputs.image_embeds.shape[0]
+
+        return {
+            "image_embeds": outputs.image_embeds,
+            "text_embeds": outputs.text_embeds,
+            "visual_mask": torch.ones(batch_size, 1, dtype=torch.bool, device=self.device),
+            "text_mask": torch.zeros(batch_size, 1, dtype=torch.bool, device=self.device),
         }
