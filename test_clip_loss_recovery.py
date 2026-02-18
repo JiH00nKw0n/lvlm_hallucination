@@ -36,6 +36,7 @@ from src.models.modeling_sae import (
     VLBatchTopKSAE,
     VLMatryoshkaSAE,
     VLTopKSAE,
+    vl_encode,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -104,10 +105,12 @@ def clip_contrastive_loss(image_embeds: torch.Tensor, text_embeds: torch.Tensor,
     return (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels)).item() / 2
 
 
-def sae_reconstruct(sae, embeds: torch.Tensor) -> torch.Tensor:
+def sae_reconstruct(sae, embeds: torch.Tensor, is_visual: bool = True) -> torch.Tensor:
     """Pass embeddings through SAE encode/decode. Input: (B, d) -> (B, d)."""
     x = embeds.unsqueeze(0) if embeds.dim() == 2 else embeds  # (1, B, d)
-    top_acts, top_indices = sae.encode(x)
+    mask_val = is_visual  # True for image, False for text
+    visual_mask = torch.full(x.shape[:2], mask_val, dtype=torch.bool, device=x.device)
+    top_acts, top_indices = vl_encode(sae, x, visual_mask=visual_mask)
     recon = sae.decode(top_acts, top_indices)
     return recon.squeeze(0) if embeds.dim() == 2 else recon
 
@@ -159,8 +162,8 @@ def main():
         txt_emb = outputs.text_embeds   # (bs, d)
 
         with torch.no_grad():
-            img_recon = sae_reconstruct(sae, img_emb)
-            txt_recon = sae_reconstruct(sae, txt_emb)
+            img_recon = sae_reconstruct(sae, img_emb, is_visual=True)
+            txt_recon = sae_reconstruct(sae, txt_emb, is_visual=False)
 
         zeros = torch.zeros_like(img_emb)
 

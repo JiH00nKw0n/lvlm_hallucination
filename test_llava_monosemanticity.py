@@ -38,6 +38,7 @@ from src.models.modeling_sae import (
     VLBatchTopKSAE,
     VLMatryoshkaSAE,
     VLTopKSAE,
+    vl_encode,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -64,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", type=str, default="./results/monosemanticity")
     parser.add_argument("--dataset_name", type=str, default="Multimodal-Fatima/COCO_captions_test")
     parser.add_argument("--weighted", action="store_true", help="Weight histogram by activation frequency")
-    parser.add_argument("--activation_weighted_score", action=argparse.BooleanOptionalAction, default=True,
+    parser.add_argument("--activation_weighted_score", action=argparse.BooleanOptionalAction, default=False,
                         help="Use paper's activation-weighted MS formula (Eq. 7-9)")
     return parser.parse_args()
 
@@ -245,7 +246,8 @@ def collect_top_patches(
             img_hidden = img_hidden[:, :BASE_IMG_TOKENS, :]
             n_img = BASE_IMG_TOKENS
 
-        top_acts, top_indices = sae.encode(img_hidden)  # (1, n_img, k)
+        top_acts, top_indices = vl_encode(sae, img_hidden,
+                                          visual_mask=torch.ones(1, n_img, dtype=torch.bool, device=device))
 
         recon = sae.decode(top_acts, top_indices)
         mse_sum += (img_hidden - recon).pow(2).mean().item()

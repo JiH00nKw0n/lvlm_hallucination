@@ -39,6 +39,7 @@ from src.models.modeling_sae import (
     VLBatchTopKSAE,
     VLMatryoshkaSAE,
     VLTopKSAE,
+    vl_encode,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -68,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset_name", type=str, default="Multimodal-Fatima/COCO_captions_test")
     parser.add_argument("--bin_width", type=float, default=0.05, help="Histogram bin width (0~1 range)")
     parser.add_argument("--weighted", action="store_true", help="Weight histogram by activation frequency")
-    parser.add_argument("--activation_weighted_score", action=argparse.BooleanOptionalAction, default=True,
+    parser.add_argument("--activation_weighted_score", action=argparse.BooleanOptionalAction, default=False,
                         help="Use paper's activation-weighted MS formula (Eq. 7-9)")
     return parser.parse_args()
 
@@ -164,7 +165,8 @@ def collect_activations(
             img_emb = clip_model.get_image_features(**inputs)  # (1, d)
 
         img_emb_3d = img_emb.unsqueeze(0)  # (1, 1, d)
-        top_acts, top_indices = sae.encode(img_emb_3d)  # (1, 1, k)
+        top_acts, top_indices = vl_encode(sae, img_emb_3d,
+                                          visual_mask=torch.ones(1, 1, dtype=torch.bool, device=device))
 
         recon = sae.decode(top_acts, top_indices)
         mse_sum += (img_emb_3d - recon).pow(2).mean().item()

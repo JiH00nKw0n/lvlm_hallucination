@@ -30,6 +30,7 @@ from src.models.modeling_sae import (
     VLBatchTopKSAE,
     VLMatryoshkaSAE,
     VLTopKSAE,
+    vl_encode,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -167,7 +168,8 @@ def process_image_pass(
     if n_img == 0:
         return None
 
-    top_acts, top_indices = sae.encode(img_hidden)  # (1, n_img, k)
+    top_acts, top_indices = vl_encode(sae, img_hidden,
+                                       visual_mask=torch.ones(1, n_img, dtype=torch.bool, device=img_hidden.device))
     counts = torch.bincount(top_indices.reshape(-1), minlength=sae.latent_size)
 
     recon = sae.decode(top_acts, top_indices)
@@ -202,7 +204,8 @@ def process_text_pass(
     if n_txt == 0:
         return None
 
-    top_acts, top_indices = sae.encode(hidden_states)  # (1, n_txt, k)
+    top_acts, top_indices = vl_encode(sae, hidden_states,
+                                       visual_mask=torch.zeros(1, n_txt, dtype=torch.bool, device=hidden_states.device))
     counts = torch.bincount(top_indices.reshape(-1), minlength=sae.latent_size)
 
     recon = sae.decode(top_acts, top_indices)

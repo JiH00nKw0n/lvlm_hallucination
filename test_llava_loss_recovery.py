@@ -38,6 +38,7 @@ from src.models.modeling_sae import (
     VLBatchTopKSAE,
     VLMatryoshkaSAE,
     VLTopKSAE,
+    vl_encode,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -180,12 +181,14 @@ def compute_ce_loss_on_answer(logits: Tensor, input_ids: Tensor, answer_start_id
     return F.cross_entropy(shift_logits.float(), shift_labels).item()
 
 
-def make_sae_replacement_hook(sae, token_mask: Tensor):
+def make_sae_replacement_hook(sae, token_mask: Tensor, is_visual: bool = True):
     """Create a forward hook that replaces specified token hidden states with SAE reconstruction.
 
     Args:
         sae: SAE model with encode() and decode() methods.
         token_mask: Boolean mask of shape (seq_len,) indicating which tokens to replace.
+        is_visual: Whether the selected tokens are visual (True) or text (False).
+                   Used for VL SAE models to apply the correct modality mask.
     """
     def hook(module, input, output):
         # LlamaDecoderLayer returns a plain tensor, not a tuple
@@ -194,7 +197,10 @@ def make_sae_replacement_hook(sae, token_mask: Tensor):
             return output
         mask = token_mask.to(hidden.device)
         tokens = hidden[:, mask, :]  # (B, n_selected, hidden_size)
-        top_acts, top_indices = sae.encode(tokens)
+        n_selected = tokens.shape[1]
+        visual_mask = torch.full((tokens.shape[0], n_selected), is_visual,
+                                 dtype=torch.bool, device=hidden.device)
+        top_acts, top_indices = vl_encode(sae, tokens, visual_mask=visual_mask)
         recon = sae.decode(top_acts, top_indices)
         modified = hidden.clone()
         modified[:, mask, :] = recon.to(hidden.dtype)
@@ -283,7 +289,7 @@ def process_sample(
     # 2. Image Loss Recovery
     ce_sae_img = run_forward_with_hook(
         model, inputs, layer_index,
-        hook_fn=make_sae_replacement_hook(sae, image_mask),
+        hook_fn=make_sae_replacement_hook(sae, image_mask, is_visual=True),
     )
     ce_zero_img = run_forward_with_hook(
         model, inputs, layer_index,
@@ -295,7 +301,7 @@ def process_sample(
     # 3. Text Loss Recovery
     ce_sae_txt = run_forward_with_hook(
         model, inputs, layer_index,
-        hook_fn=make_sae_replacement_hook(sae, answer_mask),
+        hook_fn=make_sae_replacement_hook(sae, answer_mask, is_visual=False),
     )
     ce_zero_txt = run_forward_with_hook(
         model, inputs, layer_index,

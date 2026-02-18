@@ -95,6 +95,48 @@ def _vl_masks(
     return v_mask, s_mask, t_mask
 
 
+_VL_CLASSES: tuple[str, ...] = ("VLTopKSAE", "VLBatchTopKSAE", "VLMatryoshkaSAE")
+
+
+def is_vl_sae(model: nn.Module) -> bool:
+    """Check if the SAE model is a vision-language variant that requires visual_mask."""
+    return model.__class__.__name__ in _VL_CLASSES
+
+
+def vl_encode(
+    sae: nn.Module,
+    hidden_states: Tensor,
+    visual_mask: Optional[Tensor] = None,
+) -> tuple[Tensor, Tensor]:
+    """Encode hidden_states through SAE with proper modality masking.
+
+    For VL models, runs ``forward(visual_mask=...)`` so that TopK is restricted
+    to the correct modality subspace (visual+shared or shared+text).
+    For non-VL models, falls back to ``sae.encode()``.
+
+    Args:
+        sae: SAE model (TopKSAE, VLTopKSAE, etc.).
+        hidden_states: Input activations. Shape: (batch, seq_len, hidden_size).
+        visual_mask: Boolean mask where True = visual token.
+                     Required for VL models, ignored for non-VL models.
+                     Shape: (batch, seq_len).
+
+    Returns:
+        (top_acts, top_indices) — same as ``sae.encode()``.
+    """
+    if is_vl_sae(sae):
+        if visual_mask is None:
+            raise ValueError(
+                f"{sae.__class__.__name__} requires visual_mask for correct "
+                f"modality-masked encoding. Pass visual_mask=(batch, seq_len) "
+                f"with True for visual tokens, False for text tokens."
+            )
+        with torch.no_grad():
+            out = sae(hidden_states=hidden_states, visual_mask=visual_mask)
+        return out.latent_activations, out.latent_indices
+    return sae.encode(hidden_states)
+
+
 def _masked_total_variance(x: Tensor, attention_mask: Optional[Tensor]) -> tuple[Tensor, Optional[Tensor]]:
     if attention_mask is None:
         total_variance = (x - x.mean(0)).pow(2).sum()

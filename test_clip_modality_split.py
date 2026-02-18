@@ -32,6 +32,8 @@ from src.models.modeling_sae import (
     VLBatchTopKSAE,
     VLMatryoshkaSAE,
     VLTopKSAE,
+    is_vl_sae,
+    vl_encode,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -255,7 +257,8 @@ def main():
             img_emb = clip_model.get_image_features(**img_inputs)  # (1, d)
 
         img_emb_3d = img_emb.unsqueeze(0)  # (1, 1, d)
-        top_acts, top_indices = sae.encode(img_emb_3d)
+        top_acts, top_indices = vl_encode(sae, img_emb_3d,
+                                          visual_mask=torch.ones(1, 1, dtype=torch.bool, device=device))
         img_counts += torch.bincount(top_indices.reshape(-1), minlength=latent_size)
         total_img_tokens += 1
         recon = sae.decode(top_acts, top_indices)
@@ -269,7 +272,8 @@ def main():
             txt_emb = clip_model.get_text_features(**txt_inputs)  # (1, d)
 
         txt_emb_3d = txt_emb.unsqueeze(0)  # (1, 1, d)
-        top_acts, top_indices = sae.encode(txt_emb_3d)
+        top_acts, top_indices = vl_encode(sae, txt_emb_3d,
+                                          visual_mask=torch.zeros(1, 1, dtype=torch.bool, device=device))
         text_counts += torch.bincount(top_indices.reshape(-1), minlength=latent_size)
         total_text_tokens += 1
         recon = sae.decode(top_acts, top_indices)
