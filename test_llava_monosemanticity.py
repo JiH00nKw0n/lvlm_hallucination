@@ -1,12 +1,17 @@
 """
-Patch-Level Monosemanticity Analysis for SAE Features.
+Patch-Level Monosemanticity Analysis for SAE Features (LLaVA).
 
 Quantifies whether each SAE feature activates on semantically similar image patches
-by collecting top-K activating patches, cropping them from source images, embedding
-with DINOv2, and computing pairwise cosine similarity.
+by collecting activating patches, embedding with DINOv2, and scoring similarity.
+
+Two scoring modes:
+    --activation_weighted_score (default): Paper's MS formula (Eq. 7-9) using
+        activation-weighted similarity over ALL patches. Efficient O(P*d) trick.
+    --no_activation_weighted_score: Top-K patches + unweighted mean off-diagonal cosine sim.
 
 Usage:
-    python test_monosemanticity.py --num_samples 10 --top_patches 5 --k 256
+    python test_llava_monosemanticity.py --num_samples 10 --top_patches 5 --k 256
+    python test_llava_monosemanticity.py --num_samples 10 --no_activation_weighted_score
 """
 
 from __future__ import annotations
@@ -59,6 +64,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", type=str, default="./results/monosemanticity")
     parser.add_argument("--dataset_name", type=str, default="Multimodal-Fatima/COCO_captions_test")
     parser.add_argument("--weighted", action="store_true", help="Weight histogram by activation frequency")
+    parser.add_argument("--activation_weighted_score", action=argparse.BooleanOptionalAction, default=True,
+                        help="Use paper's activation-weighted MS formula (Eq. 7-9)")
     return parser.parse_args()
 
 
@@ -159,18 +166,24 @@ def collect_top_patches(
     sae,
     args: argparse.Namespace,
     device: torch.device,
-) -> tuple[dict[int, list[tuple[float, int, int]]], dict[int, int], float, int]:
+    collect_all_activations: bool = False,
+) -> tuple[dict[int, list[tuple[float, int, int]]], dict[int, int], float, int,
+           Optional[dict[int, list[tuple[float, int, int]]]], Optional[set[int]]]:
     """Collect top activating patches per feature across the dataset.
 
     Returns:
-        top_buffer: feature_idx → list of (activation, dataset_idx, patch_pos),
+        top_buffer: feature_idx -> list of (activation, dataset_idx, patch_pos),
                     maintained as a max-heap of size `top_patches`.
-        feature_freq: feature_idx → total positive activation count.
+        feature_freq: feature_idx -> total positive activation count.
         mean_mse_image: average reconstruction MSE over all image passes.
         n_passes: number of successfully processed images.
+        act_per_feature: (if collect_all_activations) feature_idx -> ALL (act, ds_idx, patch_pos).
+        processed_images: (if collect_all_activations) set of all successfully processed dataset indices.
     """
     top_buffer: dict[int, list[tuple[float, int, int]]] = {}
     feature_freq: dict[int, int] = {}
+    act_per_feature: Optional[dict[int, list[tuple[float, int, int]]]] = {} if collect_all_activations else None
+    processed_images: Optional[set[int]] = set() if collect_all_activations else None
     top_patches = args.top_patches
     mse_sum = 0.0
     n_passes = 0
@@ -237,6 +250,8 @@ def collect_top_patches(
         recon = sae.decode(top_acts, top_indices)
         mse_sum += (img_hidden - recon).pow(2).mean().item()
         n_passes += 1
+        if processed_images is not None:
+            processed_images.add(dataset_idx)
 
         # Flatten to (n_img * k,) for processing
         acts_flat = top_acts[0].reshape(-1).cpu()       # (n_img * k,)
@@ -256,21 +271,27 @@ def collect_top_patches(
             feature_freq[feat_idx] = feature_freq.get(feat_idx, 0) + 1
             entry = (act_val, dataset_idx, patch_pos)
 
+            # Always maintain top-K buffer (used for fallback and visualization)
             if feat_idx not in top_buffer:
                 top_buffer[feat_idx] = []
-
             heap = top_buffer[feat_idx]
             if len(heap) < top_patches:
                 heapq.heappush(heap, entry)
             elif act_val > heap[0][0]:
                 heapq.heapreplace(heap, entry)
 
+            # Collect ALL activations for weighted scoring
+            if act_per_feature is not None:
+                if feat_idx not in act_per_feature:
+                    act_per_feature[feat_idx] = []
+                act_per_feature[feat_idx].append(entry)
+
     mean_mse_image = mse_sum / max(n_passes, 1)
     logger.info(
         "Collection done: %d samples processed, %d skipped, %d features found, mean_mse=%.6f",
         num_samples, skipped, len(top_buffer), mean_mse_image,
     )
-    return top_buffer, feature_freq, mean_mse_image, n_passes
+    return top_buffer, feature_freq, mean_mse_image, n_passes, act_per_feature, processed_images
 
 
 def _build_patch_embedding_cache(
@@ -371,6 +392,63 @@ def score_features(
         mask = ~torch.eye(n, dtype=torch.bool, device=device)
         score = sim_matrix[mask].mean().item()
         scores[feat_idx] = score
+
+    return scores
+
+
+def score_features_weighted(
+    act_per_feature: dict[int, list[tuple[float, int, int]]],
+    processed_images: set[int],
+    dataset,
+    dinov2,
+    dino_processor,
+    device: torch.device,
+) -> dict[int, float]:
+    """Score features using paper's activation-weighted MS formula (Eq. 7-9).
+
+    Uses efficient O(P*d) trick per feature:
+        MS^k = (||sum(a_tilde_n * e_n)||^2 - ||a_tilde||^2) / ((sum(a_tilde))^2 - ||a_tilde||^2)
+    avoiding the N*N similarity matrix.
+
+    Here each "n" is a patch (not an image), and e_n is the DINOv2 patch embedding.
+    """
+    eps = 1e-8
+    scores: dict[int, float] = {}
+
+    scorable = {k: v for k, v in act_per_feature.items() if len(v) >= 2}
+    logger.info(
+        "Weighted scoring: %d features (of %d total with >= 2 activations)",
+        len(scorable), len(act_per_feature),
+    )
+
+    # Build DINOv2 cache for ALL processed images
+    logger.info("Computing DINOv2 patch embeddings for %d images (all processed)", len(processed_images))
+    patch_cache = _build_patch_embedding_cache(
+        processed_images, dataset, dinov2, dino_processor, device,
+    )
+    logger.info("Cached %d image embeddings, scoring features with weighted formula", len(patch_cache))
+
+    for feat_idx, activations in tqdm(scorable.items(), desc="Scoring features (weighted)"):
+        acts = torch.tensor([a for a, _, _ in activations], device=device)
+        embeddings = torch.stack([
+            patch_cache[ds_idx][patch_pos]
+            for _, ds_idx, patch_pos in activations
+        ])  # (P, hidden_dim)
+        embeddings = F.normalize(embeddings, dim=-1)
+
+        # Eq. 7: min-max normalization
+        a_min, a_max = acts.min(), acts.max()
+        a_tilde = (acts - a_min) / (a_max - a_min + eps)
+
+        # Efficient Eq. 8+9: ã^T S ã = ||Σ ã_n e_n||²
+        weighted_emb = (a_tilde.unsqueeze(-1) * embeddings).sum(dim=0)  # (d,)
+        aTSa = weighted_emb @ weighted_emb  # scalar
+        aTa = (a_tilde ** 2).sum()
+        sum_a = a_tilde.sum()
+
+        numerator = aTSa - aTa
+        denominator = (sum_a ** 2 - aTa).clamp(min=eps)
+        scores[feat_idx] = (numerator / denominator).item()
 
     return scores
 
@@ -483,6 +561,7 @@ def save_results(
             "dataset": args.dataset_name,
             "mean_reconstruction_mse_image": mean_mse_image,
             "mean_reconstruction_mse": mean_mse_image,
+            "activation_weighted_score": args.activation_weighted_score,
         },
         "summary": {
             "num_scored_features": len(scores),
@@ -559,9 +638,13 @@ def main():
     model, processor, sae, dinov2, dino_processor, device = load_models(args)
     dataset = load_coco_dataset(args)
 
-    # Phase 2: Collect top-K patches per feature
-    logger.info("=== Phase 2: Collecting top-%d patches per feature ===", args.top_patches)
-    top_buffer, feature_freq, mean_mse_image, n_passes = collect_top_patches(dataset, model, processor, sae, args, device)
+    # Phase 2: Collect patches per feature
+    use_weighted = args.activation_weighted_score
+    logger.info("=== Phase 2: Collecting patches (weighted=%s) ===", use_weighted)
+    top_buffer, feature_freq, mean_mse_image, n_passes, act_per_feature, processed_images = collect_top_patches(
+        dataset, model, processor, sae, args, device,
+        collect_all_activations=use_weighted,
+    )
 
     # Free LLaVA memory before DINOv2 scoring
     del model
@@ -569,8 +652,11 @@ def main():
     logger.info("Released LLaVA model memory")
 
     # Phase 3: Score features with DINOv2
-    logger.info("=== Phase 3: Scoring features with DINOv2 ===")
-    scores = score_features(top_buffer, dataset, dinov2, dino_processor, device)
+    logger.info("=== Phase 3: Scoring features with DINOv2 (weighted=%s) ===", use_weighted)
+    if use_weighted:
+        scores = score_features_weighted(act_per_feature, processed_images, dataset, dinov2, dino_processor, device)
+    else:
+        scores = score_features(top_buffer, dataset, dinov2, dino_processor, device)
 
     # Phase 4: Save results
     logger.info("=== Phase 4: Saving results ===")

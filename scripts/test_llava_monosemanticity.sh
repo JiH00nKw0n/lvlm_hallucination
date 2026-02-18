@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Loss Recovery Score analysis for SAE reconstruction — multi-model loop
-# Usage: ./scripts/test_loss_recovery.sh [gpu_id]
-# Example: ./scripts/test_loss_recovery.sh 0
+# Patch-level monosemanticity analysis for SAE features — multi-model loop
+# Usage: ./scripts/test_monosemanticity.sh [gpu_id]
+# Example: ./scripts/test_monosemanticity.sh 0
 
 # Get script directory and project root
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
@@ -35,39 +35,49 @@ SAE_PATHS=(
 
 run_experiment() {
     local sae_path="$1"
+    local extra_args="$2"
     local sae_name="${sae_path##*/}"
+    local suffix=""
+    if [[ "$extra_args" == *"--weighted"* ]]; then
+        suffix="_weighted"
+    fi
     local TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-    local LOG_FILE="$PROJECT_DIR/.log/loss_recovery_${sae_name}_${TIMESTAMP}.log"
+    local LOG_FILE="$PROJECT_DIR/.log/monosemanticity_${sae_name}${suffix}_${TIMESTAMP}.log"
 
     echo "=========================================="
-    echo "SAE Loss Recovery Score Analysis"
+    echo "SAE Feature Monosemanticity Analysis"
     echo "SAE: $sae_path"
+    echo "Extra args: $extra_args"
     echo "GPU: $DEVICE"
     echo "Log: $LOG_FILE"
     echo "=========================================="
 
-    python "$PROJECT_DIR/test_loss_recovery.py" \
+    python "$PROJECT_DIR/test_llava_monosemanticity.py" \
         --model_name llava-hf/llama3-llava-next-8b-hf \
         --sae_path "$sae_path" \
+        --dinov2_name facebook/dinov2-large \
         --layer_index 24 \
-        --num_samples 90 \
+        --num_samples 5000 \
         --k 256 \
+        --top_patches 25 \
+        --bin_width 0.05 \
         --seed 42 \
         --dtype float16 \
-        --dataset_name lmms-lab/llava-bench-coco \
-        --output_dir "$PROJECT_DIR/results/loss_recovery" \
+        --output_dir "$PROJECT_DIR/results/monosemanticity" \
+        $extra_args \
         2>&1 | tee -a "$LOG_FILE"
 
     echo "=========================================="
-    echo "Done: $sae_name"
+    echo "Done: $sae_name $extra_args"
     echo "=========================================="
     echo ""
 }
 
 for sae_path in "${SAE_PATHS[@]}"; do
-    run_experiment "$sae_path"
+    run_experiment "$sae_path" ""           # unweighted
+    run_experiment "$sae_path" "--weighted"  # weighted
 done
 
 echo "=========================================="
-echo "All experiments done. Results in: $PROJECT_DIR/results/loss_recovery/"
+echo "All experiments done. Results in: $PROJECT_DIR/results/monosemanticity/"
 echo "=========================================="

@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Modality split analysis for SAE features — multi-model loop
-# Usage: ./scripts/test_modality_split.sh [gpu_id]
-# Example: ./scripts/test_modality_split.sh 0
+# CLIP image-level monosemanticity analysis for SAE features — multi-model loop
+# Usage: ./scripts/test_clip_monosemanticity.sh [gpu_id]
+# Example: ./scripts/test_clip_monosemanticity.sh 0
 
 # Get script directory and project root
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
@@ -22,15 +22,11 @@ mkdir -p "$PROJECT_DIR/.log"
 
 # SAE model paths to evaluate
 SAE_PATHS=(
-    "lmms-lab/llama3-llava-next-8b-hf-sae-131k"
-    "Mayfull/LLaVA_Next_VLTopKSAE"
-    "Mayfull/LLaVA_Next_VLTopKSAE_SL"
-    "Mayfull/LLaVA_Next_VLBatchTopKSAE"
-    "Mayfull/LLaVA_Next_VLBatchTopKSAE_SL"
-    "Mayfull/LLaVA_Next_VLMatryoshkaSAE"
-    "Mayfull/LLaVA_Next_VLMatryoshkaSAE_SL"
-    "Mayfull/LLaVA_Next_MatryoshkaSAE"
-    "Mayfull/LLaVA_Next_BatchTopKSAE"
+    "Mayfull/CLIP_TopKSAE"
+    "Mayfull/CLIP_TopKSAE_GS"
+    "Mayfull/CLIP_VLTopKSAE_6_4_6"
+    "Mayfull/CLIP_VLTopKSAE_4_8_4"
+    "Mayfull/CLIP_VLTopKSAE_2_12_2"
 )
 
 run_experiment() {
@@ -42,26 +38,27 @@ run_experiment() {
         suffix="_weighted"
     fi
     local TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-    local LOG_FILE="$PROJECT_DIR/.log/modality_split_${sae_name}${suffix}_${TIMESTAMP}.log"
+    local LOG_FILE="$PROJECT_DIR/.log/clip_monosemanticity_${sae_name}${suffix}_${TIMESTAMP}.log"
 
     echo "=========================================="
-    echo "SAE Feature Modality Split Analysis"
+    echo "CLIP SAE Feature Monosemanticity Analysis"
     echo "SAE: $sae_path"
     echo "Extra args: $extra_args"
     echo "GPU: $DEVICE"
     echo "Log: $LOG_FILE"
     echo "=========================================="
 
-    python "$PROJECT_DIR/test_modality_split.py" \
-        --model_name llava-hf/llama3-llava-next-8b-hf \
+    python "$PROJECT_DIR/test_clip_monosemanticity.py" \
+        --clip_model_name openai/clip-vit-large-patch14 \
         --sae_path "$sae_path" \
-        --layer_index 24 \
+        --dinov2_name facebook/dinov2-large \
+        --k 32 \
         --num_samples 5000 \
-        --k 256 \
+        --top_images 25 \
         --bin_width 0.05 \
         --seed 42 \
-        --dtype float16 \
-        --output_dir "$PROJECT_DIR/results/modality_split" \
+        --dtype float32 \
+        --output_dir "$PROJECT_DIR/results/clip_monosemanticity" \
         $extra_args \
         2>&1 | tee -a "$LOG_FILE"
 
@@ -72,10 +69,10 @@ run_experiment() {
 }
 
 for sae_path in "${SAE_PATHS[@]}"; do
-    run_experiment "$sae_path" ""           # unweighted
-    run_experiment "$sae_path" "--weighted"  # weighted
+    run_experiment "$sae_path" ""           # unweighted (activation_weighted_score=True by default)
+    run_experiment "$sae_path" "--weighted"  # weighted histogram
 done
 
 echo "=========================================="
-echo "All experiments done. Results in: $PROJECT_DIR/results/modality_split/"
+echo "All experiments done. Results in: $PROJECT_DIR/results/clip_monosemanticity/"
 echo "=========================================="

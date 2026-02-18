@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Patch-level monosemanticity analysis for SAE features — multi-model loop
-# Usage: ./scripts/test_monosemanticity.sh [gpu_id]
-# Example: ./scripts/test_monosemanticity.sh 0
+# Modality split analysis for SAE features — multi-model loop
+# Usage: ./scripts/test_modality_split.sh [gpu_id]
+# Example: ./scripts/test_modality_split.sh 0
 
 # Get script directory and project root
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
@@ -42,28 +42,26 @@ run_experiment() {
         suffix="_weighted"
     fi
     local TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-    local LOG_FILE="$PROJECT_DIR/.log/monosemanticity_${sae_name}${suffix}_${TIMESTAMP}.log"
+    local LOG_FILE="$PROJECT_DIR/.log/modality_split_${sae_name}${suffix}_${TIMESTAMP}.log"
 
     echo "=========================================="
-    echo "SAE Feature Monosemanticity Analysis"
+    echo "SAE Feature Modality Split Analysis"
     echo "SAE: $sae_path"
     echo "Extra args: $extra_args"
     echo "GPU: $DEVICE"
     echo "Log: $LOG_FILE"
     echo "=========================================="
 
-    python "$PROJECT_DIR/test_monosemanticity.py" \
+    python "$PROJECT_DIR/test_llava_modality_split.py" \
         --model_name llava-hf/llama3-llava-next-8b-hf \
         --sae_path "$sae_path" \
-        --dinov2_name facebook/dinov2-large \
         --layer_index 24 \
         --num_samples 5000 \
         --k 256 \
-        --top_patches 25 \
         --bin_width 0.05 \
         --seed 42 \
         --dtype float16 \
-        --output_dir "$PROJECT_DIR/results/monosemanticity" \
+        --output_dir "$PROJECT_DIR/results/modality_split" \
         $extra_args \
         2>&1 | tee -a "$LOG_FILE"
 
@@ -79,5 +77,5 @@ for sae_path in "${SAE_PATHS[@]}"; do
 done
 
 echo "=========================================="
-echo "All experiments done. Results in: $PROJECT_DIR/results/monosemanticity/"
+echo "All experiments done. Results in: $PROJECT_DIR/results/modality_split/"
 echo "=========================================="
