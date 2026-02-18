@@ -301,19 +301,23 @@ def _build_patch_embedding_cache(
     dino_processor,
     device: torch.device,
     batch_size: int = 32,
-) -> dict[int, Tensor]:
-    """Run DINOv2 on full images at LLaVA resolution and cache patch token embeddings.
+) -> tuple[Tensor, dict[int, int]]:
+    """Run DINOv2 on full images at LLaVA resolution and return flat CPU tensor.
 
     Uses 336×336 input (matching LLaVA's 24×24 grid with patch_size=14) so that
     DINOv2 patch positions map 1:1 to LLaVA patch positions.
 
     Returns:
-        cache: dataset_idx → (576, hidden_dim) patch embeddings
+        flat_embeddings: (N_images * 576, hidden_dim) L2-normalized CPU tensor
+        idx_to_offset:   dataset_idx → row offset in flat_embeddings
+                         (access patch p of image i via flat_embeddings[offset + p])
     """
     dino_img_size = BASE_GRID_SIZE * BASE_PATCH_PX  # 336 — match LLaVA base grid
 
-    cache: dict[int, Tensor] = {}
     image_list = sorted(needed_images)
+    chunks: list[Tensor] = []
+    idx_to_offset: dict[int, int] = {}
+    offset = 0
 
     for batch_start in tqdm(range(0, len(image_list), batch_size), desc="DINOv2 images"):
         batch_indices = image_list[batch_start : batch_start + batch_size]
@@ -332,12 +336,17 @@ def _build_patch_embedding_cache(
             dino_out = dinov2(**dino_inputs)
 
         # last_hidden_state: (batch, 1 + 576, hidden_dim) — skip CLS at idx 0
-        patch_tokens = dino_out.last_hidden_state[:, 1:, :]  # (batch, 576, hidden_dim)
+        patch_tokens = dino_out.last_hidden_state[:, 1:, :].cpu()  # (batch, 576, dim)
+        n_patches = patch_tokens.shape[1]
 
         for i, idx in enumerate(batch_indices):
-            cache[idx] = patch_tokens[i]  # (576, hidden_dim)
+            idx_to_offset[idx] = offset
+            offset += n_patches
 
-    return cache
+        chunks.append(patch_tokens.reshape(-1, patch_tokens.shape[-1]))
+
+    flat_embeddings = F.normalize(torch.cat(chunks, dim=0), dim=-1)  # (total, dim)
+    return flat_embeddings, idx_to_offset
 
 
 def score_features(
@@ -349,20 +358,14 @@ def score_features(
 ) -> dict[int, float]:
     """Score each feature by DINOv2 pairwise cosine similarity of its top patches.
 
-    Processes full images through DINOv2 to obtain context-aware patch token
-    embeddings (with self-attention across the entire image), then maps LLaVA
-    patch positions to the corresponding DINOv2 patch tokens.
-
     Returns:
         scores: feature_idx → mean off-diagonal cosine similarity
     """
     scores: dict[int, float] = {}
 
-    # Filter to features with at least 2 patches
     scorable = {k: v for k, v in top_buffer.items() if len(v) >= 2}
     logger.info("Scoring %d features (of %d total with >= 2 patches)", len(scorable), len(top_buffer))
 
-    # Collect unique images needed across all scorable features
     needed_images: set[int] = {
         dataset_idx
         for entries in scorable.values()
@@ -370,28 +373,19 @@ def score_features(
     }
     logger.info("Computing DINOv2 patch embeddings for %d unique images", len(needed_images))
 
-    patch_cache = _build_patch_embedding_cache(
+    flat_emb, idx_to_offset = _build_patch_embedding_cache(
         needed_images, dataset, dinov2, dino_processor, device,
     )
-    logger.info("Cached %d image embeddings (24x24 grid, 1:1 with LLaVA), scoring features", len(patch_cache))
+    logger.info("Cached %d image embeddings (flat CPU tensor), scoring features", len(idx_to_offset))
 
-    # Score each feature using cached patch-token embeddings
     for feat_idx, entries in tqdm(scorable.items(), desc="Scoring features"):
-        embeddings: list[Tensor] = []
-
-        for _act_val, dataset_idx, patch_pos in entries:
-            # 1:1 mapping — DINOv2 at 336×336 has same 24×24 grid as LLaVA
-            embeddings.append(patch_cache[dataset_idx][patch_pos])  # (hidden_dim,)
-
-        emb_matrix = torch.stack(embeddings, dim=0)  # (n, hidden_dim)
-        emb_matrix = F.normalize(emb_matrix, dim=-1)
+        indices = torch.tensor([idx_to_offset[ds_idx] + pp for _, ds_idx, pp in entries])
+        emb_matrix = flat_emb[indices]  # (n, dim) — already normalized
         sim_matrix = emb_matrix @ emb_matrix.T  # (n, n)
 
-        # Off-diagonal mean
         n = sim_matrix.shape[0]
-        mask = ~torch.eye(n, dtype=torch.bool, device=device)
-        score = sim_matrix[mask].mean().item()
-        scores[feat_idx] = score
+        mask = ~torch.eye(n, dtype=torch.bool)
+        scores[feat_idx] = sim_matrix[mask].mean().item()
 
     return scores
 
@@ -410,7 +404,8 @@ def score_features_weighted(
         MS^k = (||sum(a_tilde_n * e_n)||^2 - ||a_tilde||^2) / ((sum(a_tilde))^2 - ||a_tilde||^2)
     avoiding the N*N similarity matrix.
 
-    Here each "n" is a patch (not an image), and e_n is the DINOv2 patch embedding.
+    Embeddings are stored as a flat CPU tensor with vectorized indexing
+    for fast lookup (no per-feature Python loops over the cache).
     """
     eps = 1e-8
     scores: dict[int, float] = {}
@@ -421,20 +416,17 @@ def score_features_weighted(
         len(scorable), len(act_per_feature),
     )
 
-    # Build DINOv2 cache for ALL processed images
+    # Build flat CPU tensor of all patch embeddings (normalized once)
     logger.info("Computing DINOv2 patch embeddings for %d images (all processed)", len(processed_images))
-    patch_cache = _build_patch_embedding_cache(
+    flat_emb, idx_to_offset = _build_patch_embedding_cache(
         processed_images, dataset, dinov2, dino_processor, device,
     )
-    logger.info("Cached %d image embeddings, scoring features with weighted formula", len(patch_cache))
+    logger.info("Cached %d image embeddings (flat CPU tensor), scoring features", len(idx_to_offset))
 
     for feat_idx, activations in tqdm(scorable.items(), desc="Scoring features (weighted)"):
-        acts = torch.tensor([a for a, _, _ in activations], device=device)
-        embeddings = torch.stack([
-            patch_cache[ds_idx][patch_pos]
-            for _, ds_idx, patch_pos in activations
-        ])  # (P, hidden_dim)
-        embeddings = F.normalize(embeddings, dim=-1)
+        acts = torch.tensor([a for a, _, _ in activations])
+        indices = torch.tensor([idx_to_offset[ds_idx] + pp for _, ds_idx, pp in activations])
+        embeddings = flat_emb[indices]  # (P, dim) — already normalized
 
         # Eq. 7: min-max normalization
         a_min, a_max = acts.min(), acts.max()

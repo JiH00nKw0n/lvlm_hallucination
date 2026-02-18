@@ -446,7 +446,7 @@ def main():
 
     save_results(result, args.output_dir, args.sae_path, args.k, weighted=args.weighted)
 
-    ratio_tensor = torch.tensor(ratio_result["ratio"])
+    ratio_tensor = torch.tensor([float("nan") if x is None else x for x in ratio_result["ratio"]])
     alive_tensor = torch.tensor(ratio_result["alive_mask"], dtype=torch.bool)
     if args.weighted:
         density_img = img_counts.float() / max(total_img_tokens, 1)
