@@ -452,6 +452,7 @@ def plot_histogram(
     k: int,
     bin_width: float = 0.05,
     weights: Optional[dict[int, float]] = None,
+    activation_weighted: bool = True,
 ) -> str:
     """Plot monosemanticity score histogram. Returns the output file path."""
     import matplotlib
@@ -513,8 +514,9 @@ def plot_histogram(
 
     plt.tight_layout()
     os.makedirs(output_dir, exist_ok=True)
+    score_suffix = "_non_weighted" if not activation_weighted else ""
     suffix = "_weighted" if weighted else ""
-    filepath = os.path.join(output_dir, f"MONOSEMANTICITY_{sae_name}_k{k}{suffix}.png")
+    filepath = os.path.join(output_dir, f"MONOSEMANTICITY_{sae_name}_k{k}{score_suffix}{suffix}.png")
     fig.savefig(filepath, dpi=150)
     plt.close(fig)
     logger.info("Saved histogram to %s", filepath)
@@ -576,8 +578,9 @@ def save_results(
     }
 
     os.makedirs(args.output_dir, exist_ok=True)
+    score_suffix = "_non_weighted" if not args.activation_weighted_score else ""
     suffix = "_weighted" if args.weighted else ""
-    filename = f"MONOSEMANTICITY_{sae_name}_k{args.k}{suffix}.json"
+    filename = f"MONOSEMANTICITY_{sae_name}_k{args.k}{score_suffix}{suffix}.json"
     filepath = os.path.join(args.output_dir, filename)
     with open(filepath, "w") as f:
         json.dump(result, f, indent=2)
@@ -654,7 +657,8 @@ def main():
     logger.info("=== Phase 4: Saving results ===")
     save_results(scores, top_buffer, args, mean_mse_image=mean_mse_image)
     weights_dict = {fi: feature_freq.get(fi, 0) / max(n_passes, 1) for fi in scores} if args.weighted else None
-    plot_histogram(scores, args.output_dir, args.sae_path, args.k, args.bin_width, weights=weights_dict)
+    plot_histogram(scores, args.output_dir, args.sae_path, args.k, args.bin_width,
+                   weights=weights_dict, activation_weighted=args.activation_weighted_score)
 
     # Summary
     if scores:
