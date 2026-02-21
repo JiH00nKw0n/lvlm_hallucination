@@ -7,6 +7,7 @@ from src.datasets.pile_uncopyrighted import PileUncopyrightedDatasetBuilder
 from src.datasets.pope import POPEDatasetBuilder
 from src.datasets.rlhf_v import RLHFVDatasetBuilder
 from src.datasets.sae_sample_cache import SaeSampleCacheDatasetBuilder
+from src.datasets.synthetic_feature import SyntheticFeatureDatasetBuilder
 
 __all__ = [
     "BaseBuilder",
@@ -18,5 +19,6 @@ __all__ = [
     "POPEDatasetBuilder",
     "RLHFVDatasetBuilder",
     "SaeSampleCacheDatasetBuilder",
+    "SyntheticFeatureDatasetBuilder",
     "EVAL_TYPE_DICT",
 ]
