@@ -2,11 +2,11 @@
 VISTA: Visual Information Steering with Attention
 
 Applies Visual Steering Vectors (VSV) to MLP outputs to reduce hallucination.
+Computes VSV on-the-fly for each image (Reference: VISTA/pope_eval.py:136-170).
 
 Reference:
     - VISTA/llm_layers.py:7-34 (VSVLayer)
     - VISTA/llm_layers.py:132-150 (add_vsv_layers)
-    - VISTA/steering_vector.py (VSV computation)
 
 Supports: LLaVA, LLaVA-NeXT
 """
@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import BaseMitigator
-from .vista_utils.steering_vector import obtain_vsv
+from .vista_utils.steering_vector import obtain_vsv, _get_llm_model
 
 
 class VSVLayer(nn.Module):
@@ -97,16 +97,16 @@ def _get_layers(model: nn.Module) -> nn.ModuleList:
 class VISTAMitigator(BaseMitigator):
     """
     VISTA: Visual Information Steering with Attention.
+    Computes VSV on-the-fly for each image.
 
     Args:
         model: The VLM model
         model_type: llava, llava_next
-        vsv: Visual Steering Vector tensor (num_layers, n_dirs, hidden_dim)
-        lam: Steering strength list
+        lam: Steering strength (default: 0.01)
         simple_mode: If True, skip lambda_sim weighting
         logits_layers: "start,end" string for SLA
         logits_alpha: Blend ratio for SLA
-        tar_layers: "s,e" or "s_s,s_e,t_s,t_e" range string (reference)
+        tar_layers: "s,e" or "s_s,s_e,t_s,t_e" range string
     """
 
     name: str = "vista"
@@ -115,8 +115,7 @@ class VISTAMitigator(BaseMitigator):
             self,
             model: nn.Module,
             model_type: str = "llava",
-            vsv: Optional[torch.Tensor] = None,
-            lam: float = 0.1,
+            lam: float = 0.01,
             simple_mode: bool = False,
             logits_layers: Optional[str] = None,
             logits_alpha: float = 0.3,
@@ -127,7 +126,6 @@ class VISTAMitigator(BaseMitigator):
         super().__init__(model, model_type, **kwargs)
         if target_layers is not None:
             raise ValueError("target_layers is not supported by the reference VISTA implementation.")
-        self.vsv = vsv
         self.lam = lam
         self.simple_mode = simple_mode
         self.logits_layers = logits_layers
@@ -136,15 +134,63 @@ class VISTAMitigator(BaseMitigator):
         self._original_mlps: List[tuple] = []
 
     def setup(self) -> None:
-        layers = _get_layers(self.model.language_model if hasattr(self.model, "language_model") else self.model)
-        if self.vsv is None:
-            return
+        pass  # VSV is computed on-the-fly in generate()
+
+    def cleanup(self) -> None:
+        self._remove_vsv_layers()
+        for attr in ["logits_aug", "logits_layers", "logits_alpha"]:
+            if hasattr(self.model, attr):
+                delattr(self.model, attr)
+
+    def _get_image_token_id(self) -> int:
+        if hasattr(self.model.config, 'image_token_index'):
+            return self.model.config.image_token_index
+        if hasattr(self.model.config, 'image_token_id'):
+            return self.model.config.image_token_id
+        if hasattr(self.model.config, 'text_config'):
+            return getattr(self.model.config.text_config, 'vocab_size', 32000)
+        return getattr(self.model.config, 'vocab_size', 32000)
+
+    def _prepare_neg_kwargs(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor]) -> dict:
+        """Prepare text-only input (no image tokens) for VSV computation."""
+        image_token_id = self._get_image_token_id()
+        mask = input_ids != image_token_id
+
+        neg_input_ids_list = [input_ids[i][mask[i]] for i in range(input_ids.shape[0])]
+        max_len = max(len(ids) for ids in neg_input_ids_list)
+
+        neg_input_ids = torch.zeros(len(neg_input_ids_list), max_len, dtype=input_ids.dtype, device=input_ids.device)
+        neg_attention_mask = torch.zeros(len(neg_input_ids_list), max_len, dtype=torch.long, device=input_ids.device)
+
+        for i, ids in enumerate(neg_input_ids_list):
+            neg_input_ids[i, :len(ids)] = ids
+            if attention_mask is not None:
+                neg_attention_mask[i, :len(ids)] = attention_mask[i][mask[i]][:len(ids)]
+            else:
+                neg_attention_mask[i, :len(ids)] = 1
+
+        return {"input_ids": neg_input_ids, "attention_mask": neg_attention_mask}
+
+    def _prepare_pos_kwargs(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor], **kwargs) -> dict:
+        """Prepare input with image for VSV computation."""
+        pos_kwargs = {"input_ids": input_ids}
+        if attention_mask is not None:
+            pos_kwargs["attention_mask"] = attention_mask
+        for key in ["pixel_values", "image_sizes", "image_grid_thw"]:
+            if key in kwargs:
+                pos_kwargs[key] = kwargs[key]
+        return pos_kwargs
+
+    def _add_vsv_layers(self, vsv: torch.Tensor, lam: List[float]) -> None:
+        llm_model = _get_llm_model(self.model)
+        layers = _get_layers(llm_model)
+
+        if len(vsv) != len(layers):
+            raise AssertionError(f"len(vsv)={len(vsv)} must match len(layers)={len(layers)}")
 
         if self.tar_layers is None:
-            if len(self.vsv) != len(layers):
-                raise AssertionError("len(vsv) must match len(layers) in reference VISTA.")
             layer_indices = list(range(len(layers)))
-            vsv_indices = list(range(len(self.vsv)))
+            vsv_indices = list(range(len(vsv)))
         else:
             parts = self.tar_layers.split(",")
             if len(parts) == 2:
@@ -162,16 +208,13 @@ class VISTAMitigator(BaseMitigator):
         for layer_idx, vsv_idx in zip(layer_indices, vsv_indices):
             layer = layers[layer_idx]
             original_mlp = _find_module(layer, mlp_keywords)
-            layer.mlp = nn.Sequential(original_mlp, VSVLayer(self.vsv[vsv_idx], self.lam, self.simple_mode))
+            layer.mlp = nn.Sequential(original_mlp, VSVLayer(vsv[vsv_idx], lam, self.simple_mode))
             self._original_mlps.append((layer, original_mlp))
 
-    def cleanup(self) -> None:
+    def _remove_vsv_layers(self) -> None:
         for layer, original_mlp in self._original_mlps:
             layer.mlp = original_mlp
         self._original_mlps.clear()
-        for attr in ["logits_aug", "logits_layers", "logits_alpha"]:
-            if hasattr(self.model, attr):
-                delattr(self.model, attr)
 
     def generate(
             self,
@@ -188,6 +231,13 @@ class VISTAMitigator(BaseMitigator):
         }
         gen_kwargs.update(kwargs)
 
+        # On-the-fly VSV computation
+        neg_kwargs = self._prepare_neg_kwargs(input_ids, attention_mask)
+        pos_kwargs = self._prepare_pos_kwargs(input_ids, attention_mask, **kwargs)
+        visual_vector, _ = obtain_vsv(self.model, [[neg_kwargs, pos_kwargs]], rank=1)
+        vsv_tensor = torch.stack([visual_vector], dim=1).to(self.model.device)
+        self._add_vsv_layers(vsv_tensor, [self.lam])
+
         if self.logits_layers is not None:
             self.model.logits_aug = True
             self.model.logits_layers = self.logits_layers
@@ -195,27 +245,16 @@ class VISTAMitigator(BaseMitigator):
             gen_kwargs["output_hidden_states"] = True
 
         try:
-            return self.model.generate(
+            output = self.model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 **gen_kwargs,
             )
         finally:
+            self._remove_vsv_layers()
             if self.logits_layers is not None:
                 for attr in ["logits_aug", "logits_layers", "logits_alpha"]:
                     if hasattr(self.model, attr):
                         delattr(self.model, attr)
 
-    @classmethod
-    def compute_vsv(
-            cls,
-            model: nn.Module,
-            positive_inputs: List[dict],
-            negative_inputs: List[dict],
-            model_type: str = "llava",
-            rank: int = 1,
-    ) -> torch.Tensor:
-        kwargs_list = [(neg, pos) for pos, neg in zip(positive_inputs, negative_inputs)]
-        llm_model = model.language_model if hasattr(model, "language_model") else model
-        vsv, _ = obtain_vsv(llm_model, kwargs_list, rank=rank)
-        return vsv
+        return output

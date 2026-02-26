@@ -19,20 +19,41 @@ import torch.nn as nn
 from .pca import PCA
 
 
+def _get_llm_model(model: nn.Module) -> nn.Module:
+    """
+    Extract the language model component from a VLM.
+
+    Supports:
+        - LlavaNextForConditionalGeneration: model.language_model
+        - LlavaForConditionalGeneration: model.language_model
+        - Pure LLM: returns model as-is
+    """
+    if hasattr(model, 'language_model'):
+        return model.language_model
+    return model
+
+
 def _get_layers(model: nn.Module) -> nn.ModuleList:
     """
     Get transformer layers from model.
 
     Reference: VISTA/llm_layers.py:get_layers
 
-    Supports: LLaVA, Qwen2-VL
+    Supports: LLaVA, LLaVA-NeXT, Qwen2-VL
     """
-    # LLaVA / LLaVA-NeXT
+    # Try to get language_model first for VLMs
+    llm = _get_llm_model(model)
+
+    # LLaMA-based (LLaVA, LLaVA-NeXT language_model)
+    if hasattr(llm, 'model') and hasattr(llm.model, 'layers'):
+        return llm.model.layers
+    # Direct layers access
+    if hasattr(llm, 'layers'):
+        return llm.layers
+    # Qwen2-VL structure
     if hasattr(model, 'model') and hasattr(model.model, 'layers'):
         return model.model.layers
-    # Qwen2-VL
-    if hasattr(model, 'layers'):
-        return model.layers
+
     raise ValueError(f"Cannot find layers in model: {type(model)}")
 
 
@@ -67,6 +88,9 @@ class ForwardTracer:
 
     Reference: VISTA/steering_vector.py:22-88
 
+    This version supports both VLM and pure LLM models.
+    For VLMs, hooks are registered on the language_model's layers.
+
     Usage:
         forward_trace = ForwardTrace()
         with ForwardTracer(model, forward_trace):
@@ -79,7 +103,7 @@ class ForwardTracer:
         Initialize ForwardTracer.
 
         Args:
-            model: The LLM model (not VLM wrapper)
+            model: The model (VLM or LLM). For VLMs, hooks are placed on language_model layers.
             forward_trace: ForwardTrace object to store results
         """
         self._model = model
@@ -142,15 +166,21 @@ class ForwardTracer:
             self._hooks.append(hook)
 
 
-def get_hiddenstates(model: nn.Module, kwargs_list: List[List[dict]]) -> List[Tuple[torch.Tensor, torch.Tensor]]:
+def get_hiddenstates(
+    model: nn.Module,
+    kwargs_list: List[List[dict]],
+    use_vlm_forward: bool = True,
+) -> List[Tuple[torch.Tensor, torch.Tensor]]:
     """
     Extract hidden states from model for each (neg, pos) pair.
 
     Reference: VISTA/steering_vector.py:91-110
 
     Args:
-        model: The LLM model
+        model: The VLM or LLM model
         kwargs_list: List of [(neg_kwargs, pos_kwargs), ...] pairs
+        use_vlm_forward: If True, use VLM forward (handles pixel_values).
+                         If False, use LLM forward only.
 
     Returns:
         List of (neg_hidden, pos_hidden) tuples
@@ -158,14 +188,18 @@ def get_hiddenstates(model: nn.Module, kwargs_list: List[List[dict]]) -> List[Tu
     """
     h_all = []
 
+    # Determine which model to use for forward pass
+    forward_model = model if use_vlm_forward else _get_llm_model(model)
+
     for example_id in range(len(kwargs_list)):
         embeddings_for_all_styles = []
 
         for style_id in range(len(kwargs_list[example_id])):
             forward_trace = ForwardTrace()
 
+            # ForwardTracer hooks into language_model layers regardless of forward_model
             with ForwardTracer(model, forward_trace):
-                _ = model(
+                _ = forward_model(
                     use_cache=True,
                     **kwargs_list[example_id][style_id],
                 )
@@ -197,7 +231,7 @@ def obtain_vsv(
     VISTA Direction: pos - neg = (with_image) - (without_image)
 
     Args:
-        model: The LLM model
+        model: The VLM model (will use VLM forward for pos_kwargs with pixel_values)
         kwargs_list: List of [(neg_kwargs, pos_kwargs)] pairs
         rank: PCA rank (default: 1)
 
@@ -206,7 +240,7 @@ def obtain_vsv(
         - direction: [num_layers, hidden_dim] - VSV direction
         - neg_embedding: [num_layers, hidden_dim] - mean negative embedding
     """
-    hidden_states = get_hiddenstates(model, kwargs_list)
+    hidden_states = get_hiddenstates(model, kwargs_list, use_vlm_forward=True)
     num_demonstration = len(hidden_states)
 
     neg_all = []
