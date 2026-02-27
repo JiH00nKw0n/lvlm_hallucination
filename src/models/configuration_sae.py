@@ -22,6 +22,7 @@ class TopKSAEConfig(PretrainedConfig):
         normalize_decoder: bool = True,
         k: int = 256,
         multi_topk: bool = False,
+        weight_tie: bool = False,
         **kwargs,
     ):
         """
@@ -32,6 +33,7 @@ class TopKSAEConfig(PretrainedConfig):
             normalize_decoder: Whether to normalize decoder rows to unit norm.
             k: Number of non-zero latent activations (top-k) to keep per sample.
             multi_topk: Whether to compute Multi-TopK FVU in the forward pass.
+            weight_tie: Whether to tie encoder and decoder weights (W_dec = W_enc).
             **kwargs: Additional config args passed to PretrainedConfig.
         """
         super().__init__(**kwargs)
@@ -41,6 +43,7 @@ class TopKSAEConfig(PretrainedConfig):
         self.latent_size = latent_size
         self.k = k
         self.multi_topk = multi_topk
+        self.weight_tie = weight_tie
 
 
 class BatchTopKSAEConfig(TopKSAEConfig):

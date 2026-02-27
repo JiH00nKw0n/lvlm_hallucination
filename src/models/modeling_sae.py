@@ -301,9 +301,13 @@ class TopKSAE(PreTrainedModel):
         self.encoder = nn.Linear(self.hidden_size, self.latent_size)
         self.encoder.bias.data.zero_()
 
-        # Initialize decoder as a copy of encoder weights (as in multimodal-sae).
+        # Initialize decoder weights.
         # decoder weight shape: (latent_size, hidden_size)
-        self.W_dec = nn.Parameter(self.encoder.weight.data.clone())
+        if self.cfg.weight_tie:
+            # Tie decoder to encoder: W_dec shares the same parameter as encoder.weight
+            self.W_dec = self.encoder.weight
+        else:
+            self.W_dec = nn.Parameter(self.encoder.weight.data.clone())
         if self.cfg.normalize_decoder:
             self.set_decoder_norm_to_unit_norm()
 
@@ -522,9 +526,12 @@ class BatchTopKSAE(PreTrainedModel):
         self.encoder = nn.Linear(self.hidden_size, self.latent_size)
         self.encoder.bias.data.zero_()
 
-        # Initialize decoder as a copy of encoder weights (as in multimodal-sae).
+        # Initialize decoder weights.
         # decoder weight shape: (latent_size, hidden_size)
-        self.W_dec = nn.Parameter(self.encoder.weight.data.clone())
+        if self.cfg.weight_tie:
+            self.W_dec = self.encoder.weight
+        else:
+            self.W_dec = nn.Parameter(self.encoder.weight.data.clone())
         if self.cfg.normalize_decoder:
             self.set_decoder_norm_to_unit_norm()
 
