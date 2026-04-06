@@ -8,6 +8,7 @@ from src.datasets.pope import POPEDatasetBuilder
 from src.datasets.rlhf_v import RLHFVDatasetBuilder
 from src.datasets.sae_sample_cache import SaeSampleCacheDatasetBuilder
 from src.datasets.synthetic_feature import SyntheticFeatureDatasetBuilder
+from src.datasets.synthetic_multimodal_feature import SyntheticMultimodalFeatureDatasetBuilder
 
 __all__ = [
     "BaseBuilder",
@@ -20,5 +21,6 @@ __all__ = [
     "RLHFVDatasetBuilder",
     "SaeSampleCacheDatasetBuilder",
     "SyntheticFeatureDatasetBuilder",
+    "SyntheticMultimodalFeatureDatasetBuilder",
     "EVAL_TYPE_DICT",
 ]
