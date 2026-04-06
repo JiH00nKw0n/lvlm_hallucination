@@ -437,6 +437,7 @@ def train_sae(
     use_bias: bool = True,
     aux_loss_type: str = "none",
     aux_lambda: float = 0.0,
+    normalize_decoder: bool = False,
     num_epochs: int = 20,
     lr: float = 1e-3,
     batch_size: int = 64,
@@ -525,8 +526,12 @@ def train_sae(
 
             optimizer.zero_grad(set_to_none=True)
             total_loss.backward()
+            if normalize_decoder:
+                model.remove_gradient_parallel_to_decoder()
             optimizer.step()
             scheduler.step()
+            if normalize_decoder:
+                model.normalize_decoder()
 
             global_step += 1
             last_loss = float(total_loss.item())
@@ -603,6 +608,7 @@ def run_experiment_A(args: argparse.Namespace) -> list[RunMetrics]:
                     use_bias=bias,
                     aux_loss_type="none",
                     aux_lambda=0.0,
+                    normalize_decoder=args.normalize_decoder,
                     num_epochs=args.num_epochs,
                     lr=args.lr,
                     batch_size=args.batch_size,
@@ -645,6 +651,7 @@ def run_experiment_B(args: argparse.Namespace, loss_type: str) -> list[RunMetric
                     use_bias=bias,
                     aux_loss_type=loss_type,
                     aux_lambda=lam,
+                    normalize_decoder=args.normalize_decoder,
                     num_epochs=args.num_epochs,
                     lr=args.lr,
                     batch_size=args.batch_size,
@@ -830,6 +837,8 @@ def parse_args() -> argparse.Namespace:
     # SAE config
     p.add_argument("--k", type=int, default=1)
     p.add_argument("--no-bias", action="store_true", help="Disable learnable bias")
+    p.add_argument("--normalize-decoder", action="store_true",
+                   help="Enable decoder unit-norm constraint + gradient projection")
     p.add_argument("--single-bias", action="store_true",
                    help="Run only one bias variant (controlled by --no-bias)")
 
