@@ -159,6 +159,7 @@ class VLTopKSAEConfig(TopKSAEConfig):
         k: int = 256,
         multi_topk: bool = False,
         vl_split_ratio: list[int] | None = None,
+        block_top_k: list[int] | None = None,
         **kwargs,
     ):
         """
@@ -170,6 +171,8 @@ class VLTopKSAEConfig(TopKSAEConfig):
             k: Number of non-zero latent activations (top-k) to keep per sample.
             multi_topk: Whether to compute Multi-TopK FVU in the forward pass.
             vl_split_ratio: [visual, shared, text] proportions (default [1, 2, 1]).
+            block_top_k: [modality_specific, shared] ratio used to split k across
+                blocks when selecting top-k latents in VLTopKSAE.
             **kwargs: Additional config args passed to PretrainedConfig.
         """
         super().__init__(
@@ -182,6 +185,7 @@ class VLTopKSAEConfig(TopKSAEConfig):
             **kwargs,
         )
         self.vl_split_ratio = vl_split_ratio or [1, 2, 1]
+        self.block_top_k = block_top_k
 
 
 class VLBatchTopKSAEConfig(BatchTopKSAEConfig):

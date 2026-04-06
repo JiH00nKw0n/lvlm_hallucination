@@ -1034,6 +1034,23 @@ class VLTopKSAE(PreTrainedModel):
         super().__init__(config)
         self.cfg = config
         self.vl_ratio = tuple(config.vl_split_ratio)
+        raw_block_top_k = getattr(config, "block_top_k", None)
+        if raw_block_top_k is None:
+            self.block_top_k: Optional[tuple[int, int]] = None
+            self.block_k_specific = self.cfg.k
+            self.block_k_shared = 0
+        else:
+            if len(raw_block_top_k) != 2:
+                raise ValueError(
+                    f"block_top_k must have 2 entries [modality_specific, shared], got: {raw_block_top_k}"
+                )
+            if any(int(x) <= 0 for x in raw_block_top_k):
+                raise ValueError(f"block_top_k entries must be positive, got: {raw_block_top_k}")
+            self.block_top_k = (int(raw_block_top_k[0]), int(raw_block_top_k[1]))
+            self.block_k_specific, self.block_k_shared = self._allocate_block_k(
+                total_k=self.cfg.k,
+                ratio=self.block_top_k,
+            )
         # hidden_size: width of input activations (feature dimension)
         self.hidden_size = config.hidden_size
         # latent_size: size of latent dictionary
@@ -1068,6 +1085,89 @@ class VLTopKSAE(PreTrainedModel):
     def dtype(self):
         """Convenience accessor for the module's dtype."""
         return self.encoder.weight.dtype
+
+    @staticmethod
+    def _allocate_block_k(total_k: int, ratio: tuple[int, int]) -> tuple[int, int]:
+        """Split total_k into [modality_specific, shared] counts from a ratio."""
+        if total_k <= 0:
+            raise ValueError(f"total_k must be positive, got {total_k}")
+        r_specific, r_shared = ratio
+        denom = r_specific + r_shared
+        raw_specific = total_k * r_specific / denom
+        raw_shared = total_k * r_shared / denom
+        k_specific = int(raw_specific)
+        k_shared = int(raw_shared)
+        remainder = total_k - k_specific - k_shared
+        fractions = [
+            (raw_specific - k_specific, r_specific, 0),
+            (raw_shared - k_shared, r_shared, 1),
+        ]
+        fractions.sort(reverse=True)
+        for i in range(remainder):
+            _, _, block_idx = fractions[i % 2]
+            if block_idx == 0:
+                k_specific += 1
+            else:
+                k_shared += 1
+        return k_specific, k_shared
+
+    def _select_block_topk(
+        self,
+        pre_acts: Tensor,
+        visual_mask: Tensor,
+        attention_mask: Optional[Tensor],
+    ) -> tuple[Tensor, Tensor]:
+        """
+        Select top-k latents with fixed per-block budget:
+            - modality_specific block gets block_k_specific
+            - shared block gets block_k_shared
+        """
+        v_size, s_size, t_size = _vl_split_indices(self.latent_size, self.vl_ratio)
+        token_mask = attention_mask.bool() if attention_mask is not None else torch.ones_like(visual_mask, dtype=torch.bool)
+        visual_tokens = visual_mask.bool() & token_mask
+        text_tokens = (~visual_mask.bool()) & token_mask
+
+        specific_pre = torch.full_like(pre_acts, -torch.inf)
+        if v_size > 0:
+            specific_pre[..., :v_size] = torch.where(
+                visual_tokens.unsqueeze(-1),
+                pre_acts[..., :v_size],
+                torch.full_like(pre_acts[..., :v_size], -torch.inf),
+            )
+        if t_size > 0:
+            specific_pre[..., v_size + s_size:] = torch.where(
+                text_tokens.unsqueeze(-1),
+                pre_acts[..., v_size + s_size:],
+                torch.full_like(pre_acts[..., v_size + s_size:], -torch.inf),
+            )
+
+        shared_pre = torch.full_like(pre_acts, -torch.inf)
+        shared_start = v_size
+        shared_end = v_size + s_size
+        shared_pre[..., shared_start:shared_end] = torch.where(
+            token_mask.unsqueeze(-1),
+            pre_acts[..., shared_start:shared_end],
+            torch.full_like(pre_acts[..., shared_start:shared_end], -torch.inf),
+        )
+
+        batch_shape = pre_acts.shape[:-1]
+        if self.block_k_specific > 0:
+            specific_top_acts, specific_top_indices = specific_pre.topk(self.block_k_specific, sorted=False)
+            specific_top_acts = _sanitize_topk_acts(specific_top_acts)
+        else:
+            specific_top_acts = pre_acts.new_zeros(batch_shape + (0,))
+            specific_top_indices = torch.zeros(batch_shape + (0,), dtype=torch.long, device=pre_acts.device)
+
+        if self.block_k_shared > 0:
+            shared_top_acts, shared_top_indices = shared_pre.topk(self.block_k_shared, sorted=False)
+            shared_top_acts = _sanitize_topk_acts(shared_top_acts)
+        else:
+            shared_top_acts = pre_acts.new_zeros(batch_shape + (0,))
+            shared_top_indices = torch.zeros(batch_shape + (0,), dtype=torch.long, device=pre_acts.device)
+
+        top_acts = torch.cat([specific_top_acts, shared_top_acts], dim=-1)
+        top_indices = torch.cat([specific_top_indices, shared_top_indices], dim=-1)
+        return top_acts, top_indices
 
     def _modality_mask(self, visual_mask: Tensor) -> tuple[Tensor, Tensor]:
         """
@@ -1187,12 +1287,21 @@ class VLTopKSAE(PreTrainedModel):
             logger.debug("VLSAE mask: blocked=%d", num_blocked)
 
         # 3) TopK within active subspace.
-        # masked_pre_acts: (batch, seq_len, latent_size) -> top_acts/top_indices: (batch, seq_len, k)
-        top_acts, top_indices = masked_pre_acts.topk(self.cfg.k, sorted=False)
-        valid = active_mask.gather(dim=-1, index=top_indices)
-        top_acts = torch.where(valid, top_acts, torch.zeros_like(top_acts))
-        if attention_mask is not None:
-            top_acts = torch.where(attention_mask.bool().unsqueeze(-1), top_acts, torch.zeros_like(top_acts))
+        # - default: global top-k over active subspace
+        # - block_top_k: fixed [modality_specific, shared] allocation for top-k
+        if self.block_top_k is None:
+            # masked_pre_acts: (batch, seq_len, latent_size) -> top_acts/top_indices: (batch, seq_len, k)
+            top_acts, top_indices = masked_pre_acts.topk(self.cfg.k, sorted=False)
+            valid = active_mask.gather(dim=-1, index=top_indices)
+            top_acts = torch.where(valid, top_acts, torch.zeros_like(top_acts))
+            if attention_mask is not None:
+                top_acts = torch.where(attention_mask.bool().unsqueeze(-1), top_acts, torch.zeros_like(top_acts))
+        else:
+            top_acts, top_indices = self._select_block_topk(
+                pre_acts=pre_acts,
+                visual_mask=visual_mask,
+                attention_mask=attention_mask,
+            )
 
         # 4) Decode sparse latents back to input space.
         # top_acts/top_indices: (batch, seq_len, k) -> sae_out: (batch, seq_len, hidden_size)
