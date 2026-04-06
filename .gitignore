@@ -30,3 +30,7 @@ pdfs/*
 .codex/*
 BatchTopK/*
 matryoshka_sae/*
+outputs/*
+multimodal-sae/*
+sae-for-vlm/*
+sparse_autoencoder/*
