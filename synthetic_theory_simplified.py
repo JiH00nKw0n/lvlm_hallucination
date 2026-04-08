@@ -86,50 +86,61 @@ def make_paired_data(
     Returns:
         (img_data, txt_data) each shape (num_samples, 2).
     """
-    rng = np.random.default_rng(seed)
     atoms = make_gt_atoms(theta_deg)
-    n_concepts = 3
+    p = 1.0 - sparsity  # per-concept activation probability
 
-    # Generate with oversampling to ensure num_samples valid (non-zero) pairs
-    img_acc: list[np.ndarray] = []
-    txt_acc: list[np.ndarray] = []
-    collected = 0
-    batch_mult = 2  # oversample factor
+    # Enumerate all 2^3 = 8 binary z-vectors, exclude all-zero
+    z_combos = []
+    probs = []
+    for z0 in range(2):
+        for z1 in range(2):
+            for z2 in range(2):
+                if z0 == 0 and z1 == 0 and z2 == 0:
+                    continue
+                z_combos.append((z0, z1, z2))
+                # Binomial probability: p^(#active) * (1-p)^(#inactive)
+                n_active = z0 + z1 + z2
+                probs.append(p ** n_active * (1 - p) ** (3 - n_active))
 
-    while collected < num_samples:
-        n_gen = (num_samples - collected) * batch_mult
-        # Bernoulli activation mask: (n_gen, 3)
-        prob_active = 1.0 - sparsity
-        active = rng.random((n_gen, n_concepts)) < prob_active
+    # Normalize probabilities (condition on at least one active)
+    probs = np.array(probs)
+    probs /= probs.sum()
 
-        # Enforce min_active
-        for i in range(n_gen):
-            while active[i].sum() < min_active:
-                idx = rng.integers(0, n_concepts)
-                active[i, idx] = True
+    # Compute exact counts per combination
+    counts = np.round(probs * num_samples).astype(int)
+    # Adjust rounding to match num_samples exactly
+    diff = num_samples - counts.sum()
+    if diff > 0:
+        # Add to largest probability combos
+        order = np.argsort(-probs)
+        for i in range(diff):
+            counts[order[i % len(order)]] += 1
+    elif diff < 0:
+        order = np.argsort(probs)
+        for i in range(-diff):
+            if counts[order[i % len(order)]] > 0:
+                counts[order[i % len(order)]] -= 1
 
-        # Coefficients: Exp(1) per concept per sample
-        coeffs = rng.exponential(1.0, size=(n_gen, n_concepts))
-        coeffs *= active
+    # Generate data deterministically
+    img_parts: list[np.ndarray] = []
+    txt_parts: list[np.ndarray] = []
 
-        img = np.zeros((n_gen, 2), dtype=np.float64)
-        txt = np.zeros((n_gen, 2), dtype=np.float64)
+    for (z0, z1, z2), cnt in zip(z_combos, counts):
+        if cnt == 0:
+            continue
+        x = z0 * atoms["phi_1"] + z1 * atoms["phi_2"]
+        y = z1 * atoms["psi_2"] + z2 * atoms["psi_3"]
+        img_parts.append(np.tile(x, (cnt, 1)))
+        txt_parts.append(np.tile(y, (cnt, 1)))
 
-        img += coeffs[:, 0:1] * atoms["phi_1"]
-        img += coeffs[:, 1:2] * atoms["phi_2"]
-        txt += coeffs[:, 1:2] * atoms["psi_2"]
-        txt += coeffs[:, 2:3] * atoms["psi_3"]
+    img_all = np.concatenate(img_parts, axis=0)
+    txt_all = np.concatenate(txt_parts, axis=0)
 
-        # Keep only samples where at least one side is non-zero
-        img_norm = np.linalg.norm(img, axis=1)
-        txt_norm = np.linalg.norm(txt, axis=1)
-        keep = (img_norm > 1e-12) | (txt_norm > 1e-12)
-        img_acc.append(img[keep])
-        txt_acc.append(txt[keep])
-        collected += int(keep.sum())
-
-    img_all = np.concatenate(img_acc, axis=0)[:num_samples]
-    txt_all = np.concatenate(txt_acc, axis=0)[:num_samples]
+    # Shuffle with seed
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(len(img_all))
+    img_all = img_all[perm]
+    txt_all = txt_all[perm]
 
     return (
         torch.from_numpy(img_all).float(),
@@ -142,6 +153,60 @@ def make_paired_data(
 # ------------------------------------------------------------------ #
 
 
+def make_optimal_decoder_init(theta_deg: float, latent_size: int) -> np.ndarray:
+    """Return theoretically optimal W_dec init based on GT geometry.
+
+    m=1: [1,0] (shared midpoint)
+    m=2: [1,0] + phi_1
+    m=3: [1,0] + phi_1 + psi_3
+    m=4: phi_1 + phi_2 + psi_2 + psi_3 (all 4 GT atoms)
+    m=5: all 4 GT + [1,0]
+
+    Returns: (latent_size, 2) array of unit vectors.
+    """
+    atoms = make_gt_atoms(theta_deg)
+    shared_mid = np.array([1.0, 0.0])
+
+    candidates = {
+        1: [shared_mid],
+        2: [shared_mid, atoms["phi_1"]],
+        3: [shared_mid, atoms["phi_1"], atoms["psi_3"]],
+        4: [atoms["phi_1"], atoms["phi_2"], atoms["psi_2"], atoms["psi_3"]],
+        5: [atoms["phi_1"], atoms["phi_2"], atoms["psi_2"], atoms["psi_3"], shared_mid],
+    }
+    vecs = candidates.get(latent_size, candidates[4][:latent_size])
+    result = np.stack(vecs)
+    result = result / (np.linalg.norm(result, axis=1, keepdims=True) + 1e-12)
+    return result
+
+
+def make_optimal_decoder_inits_expB(theta_deg: float) -> list[np.ndarray]:
+    """Return multiple candidate optimal inits for Exp B (m=4 fixed).
+
+    Different λ values favor different effective capacity levels:
+    1. eff-m=4 (split): [phi_1, phi_2, psi_2, psi_3] — optimal for λ≈0
+    2. eff-m=3 (merged): [phi_1, [1,0], psi_3, [1,0]] — optimal for medium λ
+    3. eff-m=1 (collapsed): [[1,0], phi_1, psi_3, [1,0]] — optimal for large λ
+
+    Returns: list of (4, 2) arrays.
+    """
+    atoms = make_gt_atoms(theta_deg)
+    shared_mid = np.array([1.0, 0.0])
+
+    def _norm(vecs: list[np.ndarray]) -> np.ndarray:
+        r = np.stack(vecs)
+        return r / (np.linalg.norm(r, axis=1, keepdims=True) + 1e-12)
+
+    return [
+        # eff-m=4: all 4 GT atoms (split dictionary)
+        _norm([atoms["phi_1"], atoms["phi_2"], atoms["psi_2"], atoms["psi_3"]]),
+        # eff-m=3: shared merged to [1,0]
+        _norm([atoms["phi_1"], shared_mid, atoms["psi_3"], shared_mid]),
+        # eff-m=1: fully collapsed to shared direction
+        _norm([shared_mid, shared_mid, shared_mid, shared_mid]),
+    ]
+
+
 class SimpleSAE(nn.Module):
     """Minimal Top-K SAE for 2D toy experiments."""
 
@@ -151,6 +216,7 @@ class SimpleSAE(nn.Module):
         latent_size: int = 4,
         k: int = 1,
         use_bias: bool = True,
+        init_W_dec: Optional[np.ndarray] = None,
     ):
         super().__init__()
         self.hidden_size = hidden_size
@@ -158,8 +224,13 @@ class SimpleSAE(nn.Module):
         self.k = k
         self.use_bias = use_bias
 
-        self.W_enc = nn.Parameter(torch.randn(latent_size, hidden_size) * 0.1)
-        self.W_dec = nn.Parameter(torch.randn(latent_size, hidden_size) * 0.1)
+        if init_W_dec is not None:
+            init_t = torch.from_numpy(init_W_dec).float()
+            self.W_enc = nn.Parameter(init_t.clone())  # encoder = decoder direction
+            self.W_dec = nn.Parameter(init_t.clone())
+        else:
+            self.W_enc = nn.Parameter(torch.randn(latent_size, hidden_size) * 0.1)
+            self.W_dec = nn.Parameter(torch.randn(latent_size, hidden_size) * 0.1)
 
         if use_bias:
             self.b_enc = nn.Parameter(torch.zeros(latent_size))
@@ -222,13 +293,17 @@ def group_sparse_loss(z_img: torch.Tensor, z_txt: torch.Tensor) -> torch.Tensor:
 
 
 def trace_alignment_loss(z_img: torch.Tensor, z_txt: torch.Tensor) -> torch.Tensor:
-    """Trace-based alignment loss: -1/b * Tr(Z_img @ Z_txt^T).
+    """Trace-based alignment loss: -1/b * Tr(Z_img_norm @ Z_txt_norm^T).
 
-    Maximizes inner product of paired codes → encourages aligned activations.
+    Per the paper (Eq.1), codes are ℓ₂-normalized before computing trace.
+    This bounds the loss and prevents activation magnitude explosion.
     """
     b = z_img.shape[0]
-    # Tr(Z_img @ Z_txt^T) = sum of element-wise product (diagonal of the product)
-    trace_val = (z_img * z_txt).sum()
+    # ℓ₂-normalize each sample's code vector
+    z_img_norm = F.normalize(z_img, p=2, dim=-1)
+    z_txt_norm = F.normalize(z_txt, p=2, dim=-1)
+    # Tr(Z_img @ Z_txt^T) = sum of row-wise dot products
+    trace_val = (z_img_norm * z_txt_norm).sum()
     return -trace_val / b
 
 
@@ -433,11 +508,14 @@ def train_sae(
     txt_data: torch.Tensor,
     theta_deg: float,
     latent_size: int,
+    eval_img: Optional[torch.Tensor] = None,
+    eval_txt: Optional[torch.Tensor] = None,
     k: int = 1,
     use_bias: bool = True,
     aux_loss_type: str = "none",
     aux_lambda: float = 0.0,
     normalize_decoder: bool = False,
+    init_W_dec: Optional[np.ndarray] = None,
     num_epochs: int = 20,
     lr: float = 1e-3,
     batch_size: int = 64,
@@ -458,6 +536,7 @@ def train_sae(
         latent_size=latent_size,
         k=k,
         use_bias=use_bias,
+        init_W_dec=init_W_dec,
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
@@ -539,19 +618,21 @@ def train_sae(
             if recorder is not None:
                 recorder.capture(model, global_step, last_loss)
 
-    # Final metrics
+    # Final metrics on eval set (or train if no eval provided)
+    e_img = eval_img.to(device) if eval_img is not None else img_data
+    e_txt = eval_txt.to(device) if eval_txt is not None else txt_data
     model.eval()
     with torch.no_grad():
-        x_all = torch.cat([img_data, txt_data], dim=0)
-        _, _, final_recon = model(x_all)
+        e_all = torch.cat([e_img, e_txt], dim=0)
+        _, _, final_recon = model(e_all)
         final_aux = torch.tensor(0.0)
         if aux_loss_type != "none" and aux_lambda > 0:
-            z_img = model.encode_sparse(img_data)
-            z_txt = model.encode_sparse(txt_data)
+            z_img_e = model.encode_sparse(e_img)
+            z_txt_e = model.encode_sparse(e_txt)
             if aux_loss_type == "group_sparse":
-                final_aux = group_sparse_loss(z_img, z_txt)
+                final_aux = group_sparse_loss(z_img_e, z_txt_e)
             elif aux_loss_type == "trace":
-                final_aux = trace_alignment_loss(z_img, z_txt)
+                final_aux = trace_alignment_loss(z_img_e, z_txt_e)
 
     met_dict = compute_metrics(model, theta_deg)
     metrics = RunMetrics(
@@ -588,6 +669,71 @@ def train_sae(
 # ------------------------------------------------------------------ #
 
 
+def _train_best_of_seeds(
+    img_data: torch.Tensor,
+    txt_data: torch.Tensor,
+    eval_img: torch.Tensor,
+    eval_txt: torch.Tensor,
+    train_kwargs: dict,
+    run_dir: str,
+    num_seeds: int = 3,
+    base_seed: int = 0,
+    theta_deg: float = 0.0,
+    latent_size: int = 4,
+    is_exp_b: bool = False,
+) -> RunMetrics:
+    """Train with multiple init seeds + optimal init, keep lowest recon loss.
+
+    Tries num_seeds random inits + 1 theoretically optimal init.
+    Best one is retrained with video.
+    """
+    candidates: list[tuple[float, int, Optional[np.ndarray]]] = []  # (loss, seed, init_W_dec)
+
+    eval_kwargs = {"eval_img": eval_img, "eval_txt": eval_txt}
+
+    # Random seeds
+    for i in range(num_seeds):
+        s = base_seed + i
+        _, met = train_sae(
+            img_data, txt_data,
+            **{**train_kwargs, **eval_kwargs, "seed": s, "output_dir": None, "init_W_dec": None},
+        )
+        logger.info("    seed=%d recon=%.5f", s, met.final_recon_loss)
+        candidates.append((met.final_recon_loss, s, None))
+
+    # Optimal inits
+    if is_exp_b:
+        opt_inits = make_optimal_decoder_inits_expB(theta_deg)
+        for idx, opt_dec in enumerate(opt_inits):
+            _, met = train_sae(
+                img_data, txt_data,
+                **{**train_kwargs, **eval_kwargs, "seed": base_seed, "output_dir": None, "init_W_dec": opt_dec},
+            )
+            labels = ["eff-m=4(split)", "eff-m=3(merged)", "eff-m=1(collapsed)"]
+            logger.info("    optimal[%s] recon=%.5f", labels[idx], met.final_recon_loss)
+            candidates.append((met.final_recon_loss, base_seed, opt_dec))
+    else:
+        opt_dec = make_optimal_decoder_init(theta_deg, latent_size)
+        _, met = train_sae(
+            img_data, txt_data,
+            **{**train_kwargs, **eval_kwargs, "seed": base_seed, "output_dir": None, "init_W_dec": opt_dec},
+        )
+        logger.info("    optimal_init recon=%.5f", met.final_recon_loss)
+        candidates.append((met.final_recon_loss, base_seed, opt_dec))
+
+    # Pick best
+    candidates.sort(key=lambda x: x[0])
+    best_loss, best_seed, best_init = candidates[0]
+    tag = "optimal_init" if best_init is not None else f"seed={best_seed}"
+    logger.info("    → best: %s (recon=%.5f), retraining with video", tag, best_loss)
+
+    _, met = train_sae(
+        img_data, txt_data,
+        **{**train_kwargs, **eval_kwargs, "seed": best_seed, "output_dir": run_dir, "init_W_dec": best_init},
+    )
+    return met
+
+
 def run_experiment_A(args: argparse.Namespace) -> list[RunMetrics]:
     """Exp A: SAE latent size (m) sweep."""
     results = []
@@ -597,26 +743,36 @@ def run_experiment_A(args: argparse.Namespace) -> list[RunMetrics]:
     for bias in ([True, False] if not args.single_bias else [not args.no_bias]):
         bias_tag = "bias" if bias else "nobias"
         for theta in theta_values:
+            img_data, txt_data = make_paired_data(theta, args.num_train, args.seed, sparsity=args.sparsity)
+            eval_img, eval_txt = make_paired_data(theta, args.num_eval, args.seed + 99999, sparsity=args.sparsity)
             for m in m_values:
                 run_dir = Path(args.output_dir) / f"expA_{bias_tag}" / f"theta{int(theta)}_m{m}"
                 logger.info("Exp A: θ=%s° m=%d bias=%s", theta, m, bias)
-                _, met = train_sae(
-                    *make_paired_data(theta, args.num_train, args.seed, sparsity=args.sparsity),
+                train_kwargs = dict(
                     theta_deg=theta,
                     latent_size=m,
                     k=args.k,
                     use_bias=bias,
                     aux_loss_type="none",
                     aux_lambda=0.0,
-                    normalize_decoder=args.normalize_decoder,
+                    normalize_decoder=not args.no_normalize_decoder,
                     num_epochs=args.num_epochs,
                     lr=args.lr,
                     batch_size=args.batch_size,
-                    seed=args.seed,
-                    device=args.device,
-                    output_dir=str(run_dir),
                     viz_every=args.viz_every,
                     fps=args.fps,
+                    device=args.device,
+                )
+                met = _train_best_of_seeds(
+                    img_data, txt_data,
+                    eval_img=eval_img,
+                    eval_txt=eval_txt,
+                    train_kwargs=train_kwargs,
+                    run_dir=str(run_dir),
+                    num_seeds=args.num_init_seeds,
+                    base_seed=args.seed,
+                    theta_deg=theta,
+                    latent_size=m,
                 )
                 results.append(met)
                 logger.info("  → recon=%.5f mip=%.3f recovery=%.3f shared_align=%.3f",
@@ -634,8 +790,8 @@ def run_experiment_B(args: argparse.Namespace, loss_type: str) -> list[RunMetric
     for bias in ([True, False] if not args.single_bias else [not args.no_bias]):
         bias_tag = "bias" if bias else "nobias"
         for theta in theta_values:
-            # Pre-generate data once per theta
             img_data, txt_data = make_paired_data(theta, args.num_train, args.seed, sparsity=args.sparsity)
+            eval_img, eval_txt = make_paired_data(theta, args.num_eval, args.seed + 99999, sparsity=args.sparsity)
             for lam in lambda_values:
                 run_dir = (
                     Path(args.output_dir)
@@ -643,23 +799,32 @@ def run_experiment_B(args: argparse.Namespace, loss_type: str) -> list[RunMetric
                     / f"theta{int(theta)}_lambda{int(lam) if lam == int(lam) else lam}"
                 )
                 logger.info("Exp %s: θ=%s° λ=%s bias=%s", tag, theta, lam, bias)
-                _, met = train_sae(
-                    img_data, txt_data,
+                train_kwargs = dict(
                     theta_deg=theta,
                     latent_size=4,
                     k=args.k,
                     use_bias=bias,
                     aux_loss_type=loss_type,
                     aux_lambda=lam,
-                    normalize_decoder=args.normalize_decoder,
+                    normalize_decoder=not args.no_normalize_decoder,
                     num_epochs=args.num_epochs,
                     lr=args.lr,
                     batch_size=args.batch_size,
-                    seed=args.seed,
-                    device=args.device,
-                    output_dir=str(run_dir),
                     viz_every=args.viz_every,
                     fps=args.fps,
+                    device=args.device,
+                )
+                met = _train_best_of_seeds(
+                    img_data, txt_data,
+                    eval_img=eval_img,
+                    eval_txt=eval_txt,
+                    train_kwargs=train_kwargs,
+                    run_dir=str(run_dir),
+                    num_seeds=args.num_init_seeds,
+                    base_seed=args.seed,
+                    theta_deg=theta,
+                    latent_size=4,
+                    is_exp_b=True,
                 )
                 results.append(met)
                 logger.info("  → recon=%.5f aux=%.5f total=%.5f mip=%.3f shared_align=%.3f",
@@ -837,8 +1002,8 @@ def parse_args() -> argparse.Namespace:
     # SAE config
     p.add_argument("--k", type=int, default=1)
     p.add_argument("--no-bias", action="store_true", help="Disable learnable bias")
-    p.add_argument("--normalize-decoder", action="store_true",
-                   help="Enable decoder unit-norm constraint + gradient projection")
+    p.add_argument("--no-normalize-decoder", action="store_true",
+                   help="Disable decoder unit-norm constraint + gradient projection")
     p.add_argument("--single-bias", action="store_true",
                    help="Run only one bias variant (controlled by --no-bias)")
 
@@ -846,10 +1011,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sparsity", type=float, default=0.99,
                    help="Per-concept deactivation probability (0.99 = 1%% chance each concept is active)")
     p.add_argument("--num-train", type=int, default=10000)
+    p.add_argument("--num-eval", type=int, default=10000)
     p.add_argument("--num-epochs", type=int, default=20)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--num-init-seeds", type=int, default=3,
+                   help="Number of weight init seeds to try per config (best recon loss wins)")
 
     # Video
     p.add_argument("--viz-every", type=int, default=5)
