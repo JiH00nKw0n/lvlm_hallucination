@@ -34,3 +34,6 @@ outputs/*
 multimodal-sae/*
 sae-for-vlm/*
 sparse_autoencoder/*
+*.pdf
+papers/
+.claude/*
