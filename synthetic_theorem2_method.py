@@ -439,14 +439,24 @@ def _apply_latent_permutation(
 
 
 def _auxiliary_alignment_loss(
-    z_i: torch.Tensor, z_t: torch.Tensor, m_S: int,
+    z_i: torch.Tensor, z_t: torch.Tensor, m_S: int, norm: str = "group",
 ) -> torch.Tensor:
-    """Paper-exact diag-only auxiliary alignment loss (v6: mean-normalized).
+    """Paper-exact diag-only auxiliary alignment loss.
 
     For the first `m_S` latent dims, push batch-level diagonal correlation to 1;
-    for the remaining dims, push it to 0. v6 normalizes both terms via `.mean()`
-    so the total loss is bounded in `[0, 5]` regardless of latent size `n`,
-    making the λ hyperparameter L-independent.
+    for the remaining dims, push it to 0.
+
+    v6 supports two normalization variants (see plan `v6 — iso_align baseline +
+    L_aux normalization`):
+
+    - `norm="group"` (Option A, default): each term is averaged over its own
+      group size, so the loss balances `shared vs private` 1:1 independent of
+      `m_S`:
+      `(1/m_S) Σ_{i≤m_S} (C_ii − 1)² + (1/(n−m_S)) Σ_{i>m_S} C_ii²`.
+    - `norm="global"` (Option B): both numerators are divided by the total
+      latent count `n`, giving a cleaner "sample mean over a uniformly chosen
+      dim" estimator. The loss magnitude scales with `m_S / n`:
+      `(1/n) [Σ_{i≤m_S} (C_ii − 1)² + Σ_{i>m_S} C_ii²]`.
     """
     zi = z_i - z_i.mean(dim=0, keepdim=True)
     zt = z_t - z_t.mean(dim=0, keepdim=True)
@@ -455,8 +465,20 @@ def _auxiliary_alignment_loss(
     diag = (zi * zt).mean(dim=0) / (si * st)
 
     zero = diag.new_tensor(0.0)
-    shared_term = ((diag[:m_S] - 1.0) ** 2).mean() if m_S > 0 else zero
-    private_term = (diag[m_S:] ** 2).mean() if m_S < diag.shape[0] else zero
+    n = diag.shape[0]
+
+    if norm == "group":
+        shared_term = ((diag[:m_S] - 1.0) ** 2).mean() if m_S > 0 else zero
+        private_term = (diag[m_S:] ** 2).mean() if m_S < n else zero
+    elif norm == "global":
+        shared_sum = ((diag[:m_S] - 1.0) ** 2).sum() if m_S > 0 else zero
+        private_sum = (diag[m_S:] ** 2).sum() if m_S < n else zero
+        shared_term = shared_sum / max(n, 1)
+        private_term = private_sum / max(n, 1)
+    else:
+        raise ValueError(
+            f"Unknown aux norm '{norm}'; expected 'group' or 'global'."
+        )
     return shared_term + private_term
 
 
@@ -470,6 +492,7 @@ def _train_ours(
     k_align: int,
     lambda_aux: float,
     m_S_supplied: int,
+    aux_norm: str = "group",
 ) -> tuple[TopKSAE, TopKSAE, dict[str, Any]]:
     """Algorithm 1 (v3): Stage 1 (recon-only) for `k_align` epochs, then greedy
     latent permutation, then Stage 2 (recon + `lambda_aux * L_aux`) for
@@ -542,6 +565,7 @@ def _train_ours(
         "k_align": int(stage1_epochs),
         "stage2_epochs": int(stage2_epochs),
         "lambda_aux": float(lambda_aux),
+        "aux_norm": str(aux_norm),
     }
 
     if stage2_epochs <= 0:
@@ -550,7 +574,7 @@ def _train_ours(
     # -- Stage 2: joint training, recon + lambda_aux * L_aux --
     pbar2 = tqdm(
         range(stage2_epochs),
-        desc=f"ours_stage2(mS={m_S_supplied},lam={lambda_aux})",
+        desc=f"ours_stage2(mS={m_S_supplied},lam={lambda_aux},norm={aux_norm})",
         leave=False,
     )
     for _ in pbar2:
@@ -562,7 +586,7 @@ def _train_ours(
             out_t = sae_t(hidden_states=hs_t, return_dense_latents=True)
             z_i = _dense_latents(out_i)
             z_t = _dense_latents(out_t)
-            aux = _auxiliary_alignment_loss(z_i, z_t, m_S_supplied)
+            aux = _auxiliary_alignment_loss(z_i, z_t, m_S_supplied, norm=aux_norm)
             loss = out_i.recon_loss + out_t.recon_loss + lambda_aux * aux
             _joint_step([sae_i, sae_t], optimizer, loss, args.max_grad_norm)
             last_rec = float((out_i.recon_loss + out_t.recon_loss).detach().item())
@@ -602,6 +626,50 @@ def _compute_recovery_metrics_multi_tau(
     for tau in taus:
         out[f"mgt_tau{tau}"] = float((best > tau).mean())
     return out
+
+
+def _eval_pair_latent_cosine(
+    sae_i: TopKSAE,
+    sae_t: TopKSAE,
+    eval_img: torch.Tensor,
+    eval_txt: torch.Tensor,
+    batch_size: int,
+    device: torch.device,
+) -> float:
+    """Per-paired-sample latent cosine similarity on the eval set.
+
+    For each eval pair (x_img[i], x_txt[i]), forwards through the respective
+    SAE (same model for single-SAE methods), obtains the dense top-k latents
+    `z_i`, `z_t`, and computes `cos(z_i[i], z_t[i])`. Returns the mean over
+    all eval pairs.
+
+    This is complementary to `cross_cos_top_mS_mean` which is a per-latent-
+    dimension diagonal correlation across samples. The new metric measures
+    per-sample alignment — "for a given paired sample, how close are its two
+    modality codes?".
+    """
+    sae_i.eval()
+    sae_t.eval()
+    loader = _paired_loader(
+        eval_img, eval_txt, batch_size, device,
+        shuffle=False, drop_last=False,
+    )
+    total = 0
+    sum_cos = 0.0
+    with torch.no_grad():
+        for img_b, txt_b in loader:
+            hs_i = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
+            hs_t = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
+            out_i = sae_i(hidden_states=hs_i, return_dense_latents=True)
+            out_t = sae_t(hidden_states=hs_t, return_dense_latents=True)
+            zi = _dense_latents(out_i)  # (B, latent)
+            zt = _dense_latents(out_t)
+            # Per-sample cosine, bounded in [-1, 1]. eps handles all-zero
+            # code vectors (shouldn't happen with top-k > 0 but defensive).
+            cos = F.cosine_similarity(zi, zt, dim=1, eps=1e-12)
+            sum_cos += float(cos.sum().item())
+            total += cos.shape[0]
+    return sum_cos / max(total, 1)
 
 
 def _cross_corr_mean_parts(
@@ -654,14 +722,14 @@ def _evaluate_method(
     w_dec_img = sae_i.W_dec.detach().cpu().numpy()
     w_dec_txt = sae_t.W_dec.detach().cpu().numpy()
 
-    # Multi-threshold MGT: always measure at three τ's so the report can
-    # contrast loose (0.80 ≈ 36.9°), strict (0.95 ≈ 18.2°), and very
-    # strict (0.99 ≈ 8.1°) angular recovery.
+    # v6 multi-threshold MGT: τ ∈ {0.9, 0.95, 0.99}. τ=0.8 was dropped
+    # because Theorem 1 already covers loose angular thresholds; we focus
+    # on strict thresholds here.
     img_mgt_multi = _compute_recovery_metrics_multi_tau(
-        w_dec_img, phi_S, (0.8, 0.95, 0.99),
+        w_dec_img, phi_S, (0.9, 0.95, 0.99),
     )
     txt_mgt_multi = _compute_recovery_metrics_multi_tau(
-        w_dec_txt, psi_S, (0.8, 0.95, 0.99),
+        w_dec_txt, psi_S, (0.9, 0.95, 0.99),
     )
 
     cross = _gt_based_shared_alignment_mismatched(
@@ -676,22 +744,25 @@ def _evaluate_method(
         args.batch_size, device, m_S_for_diag,
     )
 
+    # Per-pair eval latent cosine similarity (v6 new metric).
+    pair_cos = _eval_pair_latent_cosine(
+        sae_i, sae_t, eval_img, eval_txt, args.batch_size, device,
+    )
+
     return {
         "img_eval_loss": img_eval,
         "txt_eval_loss": txt_eval,
         "avg_eval_loss": avg_eval,
-        # Backward-compat: `img_mgt_shared` / `txt_mgt_shared` == τ=0.8 figure.
-        "img_mgt_shared": img_mgt_multi["mgt_tau0.8"],
-        "txt_mgt_shared": txt_mgt_multi["mgt_tau0.8"],
         "img_mip_shared": img_mgt_multi["mip"],
         "txt_mip_shared": txt_mgt_multi["mip"],
-        # Multi-tau MGT (new).
-        "img_mgt_shared_tau0.8": img_mgt_multi["mgt_tau0.8"],
+        # Multi-tau MGT (v6: drop 0.8, add 0.9).
+        "img_mgt_shared_tau0.9": img_mgt_multi["mgt_tau0.9"],
         "img_mgt_shared_tau0.95": img_mgt_multi["mgt_tau0.95"],
         "img_mgt_shared_tau0.99": img_mgt_multi["mgt_tau0.99"],
-        "txt_mgt_shared_tau0.8": txt_mgt_multi["mgt_tau0.8"],
+        "txt_mgt_shared_tau0.9": txt_mgt_multi["mgt_tau0.9"],
         "txt_mgt_shared_tau0.95": txt_mgt_multi["mgt_tau0.95"],
         "txt_mgt_shared_tau0.99": txt_mgt_multi["mgt_tau0.99"],
+        "pair_cos_mean": pair_cos,
         "cross_cos_top_mS_mean": top_diag,
         "cross_cos_rest_mean": rest_diag,
         "cross_cos_gt_mean": cross["cross_cos_mean"],
@@ -710,10 +781,14 @@ class OursConfig:
     lambda_aux: float
     m_S: int
     k_align: int
+    aux_norm: str = "group"  # "group" (Option A) or "global" (Option B)
 
     @property
     def tag(self) -> str:
-        return f"lam{self.lambda_aux}_mS{self.m_S}_k{self.k_align}"
+        return (
+            f"lam{self.lambda_aux}_mS{self.m_S}_k{self.k_align}"
+            f"_norm{self.aux_norm}"
+        )
 
 
 def _build_dataset(
@@ -843,6 +918,7 @@ def _run_single(
                 k_align=cfg.k_align,
                 lambda_aux=cfg.lambda_aux,
                 m_S_supplied=cfg.m_S,
+                aux_norm=cfg.aux_norm,
             )
             _finish(f"ours::{cfg.tag}", sae_i, sae_t, extras=diag)
         args._current_m_S = args.n_shared
@@ -859,16 +935,17 @@ METRIC_SUFFIXES = [
     "img_eval_loss",
     "txt_eval_loss",
     "avg_eval_loss",
-    "img_mgt_shared",
     "img_mip_shared",
-    "txt_mgt_shared",
     "txt_mip_shared",
-    "img_mgt_shared_tau0.8",
+    # v6: multi-tau MGT, dropped 0.8, added 0.9
+    "img_mgt_shared_tau0.9",
     "img_mgt_shared_tau0.95",
     "img_mgt_shared_tau0.99",
-    "txt_mgt_shared_tau0.8",
+    "txt_mgt_shared_tau0.9",
     "txt_mgt_shared_tau0.95",
     "txt_mgt_shared_tau0.99",
+    # v6: new per-pair eval latent cosine similarity metric
+    "pair_cos_mean",
     "cross_cos_top_mS_mean",
     "cross_cos_rest_mean",
     "cross_cos_gt_mean",
@@ -932,9 +1009,16 @@ def _build_ours_configs(args: argparse.Namespace) -> list[OursConfig]:
     lambdas = _parse_csv_floats(args.lambda_aux_sweep)
     m_ss = _parse_csv_ints(args.m_s_sweep)
     k_aligns = _parse_csv_ints(args.k_align_sweep)
+    aux_norms = [s.strip() for s in args.aux_norm_sweep.split(",") if s.strip()]
+    for nm in aux_norms:
+        if nm not in ("group", "global"):
+            raise ValueError(
+                f"Invalid --aux-norm-sweep value '{nm}'; "
+                f"expected 'group' or 'global'."
+            )
     return [
-        OursConfig(lambda_aux=l, m_S=m, k_align=k)
-        for l, m, k in itertools.product(lambdas, m_ss, k_aligns)
+        OursConfig(lambda_aux=l, m_S=m, k_align=k, aux_norm=nm)
+        for l, m, k, nm in itertools.product(lambdas, m_ss, k_aligns, aux_norms)
     ]
 
 
@@ -1078,7 +1162,14 @@ def parse_args() -> argparse.Namespace:
     # Ours (Algorithm 1)
     parser.add_argument("--lambda-aux-sweep", type=str, default="1.0")
     parser.add_argument("--m-s-sweep", type=str, default="512")
-    parser.add_argument("--k-align-sweep", type=str, default="4")
+    parser.add_argument("--k-align-sweep", type=str, default="6")
+    parser.add_argument(
+        "--aux-norm-sweep", type=str, default="group,global",
+        help="Comma-separated list of L_aux normalization variants for ours. "
+             "'group' (Option A) averages each term over its own group size; "
+             "'global' (Option B) divides both sums by the total latent count "
+             "n. Default sweeps both so a single run compares the variants.",
+    )
     parser.add_argument("--rho", type=float, default=0.3)
 
     # Self-test
