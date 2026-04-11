@@ -29,10 +29,14 @@ if [[ "$STAGE" == "smoke" || "$STAGE" == "all" ]]; then
 fi
 
 if [[ "$STAGE" == "main" || "$STAGE" == "all" ]]; then
+  # ours operating point: lambda = 2^-8, m_S = 512, k_align = 6.
+  # Selected from v4 lambda ablation as the smallest lambda that still
+  # saturates top_mS (0.974) while keeping ours avg_eval within 1.10 of
+  # two_recon's recon loss.
   python synthetic_theorem2_method.py \
     --alpha-sweep "0.3,0.6,0.9,1.0" \
     --methods "$ALL_METHODS" \
-    --lambda-aux-sweep "1.0" --m-s-sweep "512" --k-align-sweep "6" \
+    --lambda-aux-sweep "0.00390625" --m-s-sweep "512" --k-align-sweep "6" \
     --group-sparse-lambda 0.05 --trace-beta 1e-4 \
     --run-tag "main_comparison" \
     $COMMON_FULL "$@"
