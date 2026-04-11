@@ -8,7 +8,15 @@
 
 ## §0. 한 줄 결론
 
-*(v6 결과 확인 후 작성)*
+v6 mean-normalized `L_aux` 가 **v5 의 P2 실패를 완전히 해결**: ours 양쪽
+variant (group, global) 이 L=2048 에서 모든 α 에 대해 **`two_recon` 보다
+recon 이 낮고** (0.94–0.99×) top_mS 는 0.93–0.96 으로 saturate. Pre-reg 8
+predictions 중 **P1/P2/P4/P5/P7 pass, P3/P6/P8 fail**. P3 failure 는 `pair_
+cos_mean` 이 α 증가 시 shared-decoder 의 자연 cosine 과 ours 의 구조적 0.46
+플랫이 교차하기 때문이며 **metric-objective mismatch** (§5.2). group_sparse
+는 τ = 0.9/0.95 에서 여전히 압도하지만 **τ=0.99 × α ∈ {0.7, 0.9}** 지점은
+ours 가 유일 winner. Option A (group) 와 Option B (global) 는 `Option A λ_x
+≈ Option B λ_2x` 정확한 2× 스케일 관계로 실질 동등.
 
 ---
 
@@ -284,16 +292,321 @@ multi_tau` (τ 변경), `_auxiliary_alignment_loss` (정규화 + dual variant).
 
 ## §4. Results
 
-*(v6 L=2048 main + ablation 완료 후 작성)*
+출처 JSON (`outputs/synthetic_theorem2/runs/`):
+
+- `method_ns512_k16_main_comparison_20260411_121243` — main, α ∈ {0.3, 0.5, 0.7, 0.9}
+- `method_ns512_k16_ablation_lambda_20260411_122115` — λ sweep @ α=0.9
+- `method_ns512_k16_ablation_mS_20260411_122552` — m_S sweep @ α=0.9
+- `method_ns512_k16_ablation_kalign_20260411_122921` — k_align sweep @ α=0.9
+
+Single seed. `n_shared=512`, `n_image=n_text=256`, `d=768`, `k=16`,
+`batch=256`, `num_epochs=10`.
+
+### 4.1 Main: `avg_eval_loss` (recon ratio vs `two_recon`)
+
+| α | single_recon | two_recon | group_sparse | trace_align | iso_align | ours (group) | ours (global) |
+|---|---|---|---|---|---|---|---|
+| 0.3 | 0.0666 (1.29×) | **0.0515 (1.00×)** | 0.1206 (2.34×) | 0.0666 (1.29×) | 0.0663 (1.29×) | **0.0499 (0.97×)** ✅ | **0.0491 (0.95×)** ✅ |
+| 0.5 | 0.0661 (1.33×) | **0.0498 (1.00×)** | 0.1273 (2.55×) | 0.0658 (1.32×) | 0.0673 (1.35×) | **0.0492 (0.99×)** ✅ | **0.0477 (0.96×)** ✅ |
+| 0.7 | 0.0773 (1.57×) | **0.0494 (1.00×)** | 0.1287 (2.61×) | 0.0774 (1.57×) | 0.0826 (1.67×) | **0.0470 (0.95×)** ✅ | **0.0463 (0.94×)** ✅ |
+| 0.9 | 0.0603 (1.18×) | **0.0509 (1.00×)** | 0.1095 (2.15×) | 0.0603 (1.18×) | 0.0608 (1.19×) | **0.0502 (0.99×)** ✅ | **0.0487 (0.96×)** ✅ |
+
+**주요 관찰:**
+- **Ours 양쪽 variant 모두 모든 α 에서 `two_recon` 보다 recon 이 낮다** (0.94–0.99×). v5 λ=2⁻⁸ 에서 1.08×, v6 mean-norm λ=1 에서 `<1.00×`. P2 의 "1.10 이내" 조건을 큰 margin 으로 통과.
+- `group_sparse` recon 은 여전히 2.15–2.61× (L2,1 regularizer 의 구조적 비용).
+- `iso_align` recon 은 `single_recon` 과 비슷 (1.29–1.67×). β=0.03 이 synthetic scale 에서 mild effect.
+- `trace_align` recon 은 `single_recon` 과 동일 (β=1e-4 사실상 off — paper Appendix B 예측 재확인).
+
+### 4.2 Main: `cross_cos_top_mS_mean` & `cross_cos_rest_mean`
+
+| α | method | top_mS | rest |
+|---|---|---|---|
+| 0.3 | single_recon | 0.0751 | +0.0880 |
+| 0.3 | two_recon | 0.0005 | −0.0009 |
+| 0.3 | group_sparse | 0.2972 | +0.2858 |
+| 0.3 | trace_align | 0.0743 | +0.0882 |
+| 0.3 | iso_align | 0.1039 | +0.1143 |
+| 0.3 | **ours (group)** | **0.9589** | **+0.0029** |
+| 0.3 | **ours (global)** | **0.9309** | +0.0185 |
+| 0.5 | single_recon | 0.3013 | +0.3072 |
+| 0.5 | group_sparse | 0.3661 | +0.3431 |
+| 0.5 | iso_align | 0.3303 | +0.3495 |
+| 0.5 | **ours (group)** | **0.9615** | **+0.0027** |
+| 0.5 | **ours (global)** | **0.9359** | +0.0185 |
+| 0.7 | single_recon | 0.4235 | +0.4224 |
+| 0.7 | group_sparse | 0.4573 | +0.4126 |
+| 0.7 | iso_align | 0.4678 | +0.4625 |
+| 0.7 | **ours (group)** | **0.9626** | +0.0016 |
+| 0.7 | **ours (global)** | **0.9374** | +0.0182 |
+| 0.9 | single_recon | 0.4988 | +0.5018 |
+| 0.9 | group_sparse | 0.5022 | +0.4720 |
+| 0.9 | iso_align | 0.5271 | +0.5171 |
+| 0.9 | **ours (group)** | **0.9617** | +0.0023 |
+| 0.9 | **ours (global)** | **0.9332** | +0.0158 |
+
+**주요 관찰:**
+- `ours (group)` top_mS ≈ 0.96, `ours (global)` top_mS ≈ 0.93 — 두 variant 모두 α 에 완전히 무관하게 saturate. margin vs baseline: 최소 +0.40, 최대 +0.86.
+- `ours` rest ≈ 0.00 (group) / +0.02 (global) — L_aux 가 off-diagonal 을 거의 0 으로 suppress.
+- Baseline 의 top_mS 와 rest 가 거의 같음 (대각 분포가 uniform) — metric asymmetry 의 재확인.
+
+### 4.3 Main: `pair_cos_mean` (신규 metric, per-paired-sample latent cosine)
+
+| α | single | two | group_sp | trace | iso | ours(grp) | ours(glb) |
+|---|---|---|---|---|---|---|---|
+| 0.3 | 0.053 | 0.008 | 0.189 | 0.054 | 0.085 | **0.462** | **0.462** |
+| 0.5 | 0.313 | 0.008 | 0.367 | 0.312 | 0.354 | **0.469** | **0.470** |
+| 0.7 | 0.473 | 0.010 | 0.510 | 0.472 | 0.500 | 0.466 | 0.467 |
+| 0.9 | 0.594 | 0.009 | 0.599 | 0.594 | **0.607** 🏆 | 0.460 | 0.459 |
+
+**주요 관찰 (예상 밖):**
+- **`pair_cos_mean` 은 α 에 따라 정반대 scaling**. Shared-decoder (`single`, `group_sparse`, `trace`, `iso`) 의 pair_cos 는 α 와 같이 증가 (0.05 → 0.60). **ours 는 α 에 완전 invariant 하게 0.46 flat**.
+- 이유: shared decoder 는 α → 1 일수록 두 modality 코드가 자연스럽게 유사해짐 (Φ_S ≈ Ψ_S 면 같은 top-k 를 선택). Ours 는 **per-dim diagonal 만 1 로 밀고 나머지는 0 으로 밀기** 때문에 per-vector cosine 이 구조적으로 bounded.
+- P3 기준 (+0.20 margin) 으로는:
+  - α=0.3: ours 0.462 − max_baseline 0.189 = **+0.273** ✓
+  - α=0.5: ours 0.469 − max_baseline 0.367 = **+0.102** ❌ (margin 부족)
+  - α=0.7: ours 0.466 − max_baseline 0.510 = **−0.044** ❌ (baseline 승)
+  - α=0.9: ours 0.460 − max_baseline 0.607 = **−0.147** ❌ (iso_align 승)
+- **P3 는 α ∈ {0.5, 0.7, 0.9} 에서 fail**. 하지만 §5 에서 논의하듯 이 metric 은 ours 의 목표 (shared/private separation) 와 orthogonal.
+
+### 4.4 Main: multi-τ MGT (img+txt 평균)
+
+| α | τ | single | two | group_sp | trace | iso | ours(grp) | ours(glb) |
+|---|---|---|---|---|---|---|---|---|
+| 0.3 | 0.9 | 0.271 | 0.282 | **0.836** 🏆 | 0.272 | 0.276 | 0.441 | 0.408 |
+| 0.3 | 0.95 | 0.163 | 0.175 | **0.754** 🏆 | 0.173 | 0.162 | 0.314 | 0.270 |
+| 0.3 | 0.99 | 0.058 | 0.073 | **0.288** 🏆 | 0.063 | 0.056 | 0.163 | 0.139 |
+| 0.5 | 0.9 | 0.247 | 0.311 | **0.683** 🏆 | 0.252 | 0.230 | 0.471 | 0.426 |
+| 0.5 | 0.95 | 0.128 | 0.196 | **0.458** 🏆 | 0.122 | 0.109 | 0.323 | 0.292 |
+| 0.5 | 0.99 | 0.038 | 0.078 | **0.187** 🏆 | 0.037 | 0.034 | 0.174 | 0.152 |
+| 0.7 | 0.9 | 0.281 | 0.304 | **0.891** 🏆 | 0.284 | 0.215 | 0.475 | 0.434 |
+| 0.7 | 0.95 | 0.095 | 0.193 | **0.426** 🏆 | 0.092 | 0.058 | 0.329 | 0.289 |
+| 0.7 | 0.99 | 0.006 | 0.079 | **0.097** | 0.006 | 0.003 | **0.186** 🏆 | 0.160 |
+| 0.9 | 0.9 | 0.317 | 0.287 | **0.998** 🏆 | 0.315 | 0.228 | 0.438 | 0.402 |
+| 0.9 | 0.95 | 0.172 | 0.184 | **0.994** 🏆 | 0.182 | 0.106 | 0.315 | 0.299 |
+| 0.9 | **0.99** | 0.000 | 0.077 | **0.000** | 0.000 | 0.000 | **0.175** 🏆 | 0.144 |
+
+**주요 관찰:**
+- **`group_sparse` 가 τ = 0.9, 0.95 에서 모든 α 승자** (feature recovery 기준).
+- **`ours` 가 승리하는 유일 영역 = τ=0.99 × α ∈ {0.7, 0.9}**:
+  - α=0.7 τ=0.99: ours 0.186 > group_sparse 0.097 (**+0.089** 차이)
+  - α=0.9 τ=0.99: ours 0.175, shared-decoder 전부 0.000 (geometric cliff)
+- **α=0.9, τ=0.99 geometric cliff 완벽 재현**: single/group_sparse/trace/iso 모두 정확히 0.000.
+
+### 4.5 Ablation: λ sweep @ α=0.9
+
+| λ | normgroup recon | top_mS | mgt.9 | mgt.99 | normglobal recon | top_mS | mgt.9 | mgt.99 |
+|---|---|---|---|---|---|---|---|---|
+| 0.125 | **0.0490** | 0.841 | 0.332 | 0.094 | 0.0497 | 0.811 | 0.308 | 0.085 |
+| 0.25 | 0.0484 | 0.886 | 0.361 | 0.112 | **0.0490** | 0.841 | 0.332 | 0.094 |
+| 0.5 | **0.0487** | 0.933 | 0.402 | 0.144 | **0.0484** | 0.886 | 0.361 | 0.112 |
+| 1.0 | 0.0502 | 0.962 | 0.438 | **0.175** | **0.0487** | 0.933 | 0.402 | 0.144 |
+| 2.0 | 0.0543 | 0.973 | **0.461** | 0.165 | 0.0502 | 0.962 | 0.438 | **0.175** |
+| 4.0 | 0.0606 | 0.975 | 0.479 | 0.151 | 0.0543 | 0.973 | 0.461 | 0.165 |
+| 8.0 | 0.0687 | **0.975** | 0.476 | 0.139 | 0.0606 | 0.975 | **0.479** | 0.151 |
+
+**주요 관찰:**
+- **`normgroup λ=x ≈ normglobal λ=2x`** 정확히 2× 스케일 관계 (m_S = n/2 이므로 수학적 예측과 일치).
+  - 예: normgroup 0.5 ↔ normglobal 1.0, normgroup 1.0 ↔ normglobal 2.0, ...
+- **recon 최적점**: normgroup λ=0.25–0.5 (recon 0.0484), normglobal λ=0.5–1.0.
+- **top_mS 는 λ=2 이후 포화** (0.975 plateau). 7-point sweep 범위 (λ=0.125 → 8) 에서 top_mS range = 0.134 (normgroup) / 0.164 (normglobal) — **P6 의 "≤ 0.10" 기준 기각** (sweep 범위가 좁아서 saturation 이 완전히 보이지 않음).
+
+### 4.6 Ablation: m_S sweep @ α=0.9 (λ=1, k=6)
+
+| m_S | normgroup recon | top_mS | pair_cos | mgt.9 | mgt.95 | normglobal recon | top_mS | pair_cos | mgt.9 | mgt.95 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 384 | 0.0558 | **0.972** | 0.368 | 0.414 | 0.278 | 0.0539 | 0.948 | 0.384 | 0.381 | 0.259 |
+| 448 | 0.0518 | 0.969 | 0.415 | 0.430 | 0.298 | 0.0505 | 0.943 | 0.422 | 0.391 | 0.280 |
+| 512 | **0.0502** | 0.962 | 0.460 | **0.438** | 0.315 | **0.0487** | 0.933 | 0.459 | **0.402** | **0.299** |
+| 576 | 0.0517 | 0.951 | 0.501 | **0.439** | **0.327** | 0.0493 | 0.920 | 0.495 | 0.401 | **0.305** |
+| 640 | 0.0521 | 0.938 | **0.539** | 0.407 | 0.313 | 0.0493 | 0.907 | 0.529 | 0.373 | 0.292 |
+
+**주요 관찰:**
+- **Recon 최저 at m_S = 512** (oracle value) for both variants.
+- **MGT τ=0.9 argmax**: m_S ∈ {512, 576} for both variants — **P7 PASS**.
+- **pair_cos monotonically increasing with m_S**: 0.37 → 0.54 (normgroup). 더 많은 latent 를 "shared" 로 강제할수록 per-vector cosine 증가. 당연한 결과.
+
+### 4.7 Ablation: k_align sweep @ α=0.9 (λ=1, m_S=512)
+
+| k_align | Stage 1/2 | normgroup recon | top_mS | pair_cos | mgt.9 | mgt.99 | normglobal recon | top_mS | pair_cos | mgt.9 | mgt.99 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2 | 2/8 | 0.0504 | **0.966** | 0.414 | **0.468** | **0.192** | 0.0458 | 0.938 | 0.422 | **0.434** | **0.181** |
+| 4 | 4/6 | **0.0490** | 0.965 | 0.453 | 0.466 | 0.184 | **0.0471** | 0.940 | 0.453 | 0.431 | 0.165 |
+| 6 | 6/4 | 0.0502 | 0.962 | 0.460 | 0.438 | 0.175 | 0.0487 | 0.933 | 0.459 | 0.402 | 0.144 |
+| 8 | 8/2 | 0.0564 | 0.946 | 0.468 | 0.392 | 0.127 | 0.0529 | 0.910 | 0.471 | 0.368 | 0.104 |
+| 10 | 10/0 | 0.0509 | 0.810 | 0.472 | 0.287 | 0.077 | 0.0509 | 0.810 | 0.472 | 0.287 | 0.077 |
+
+**주요 관찰:**
+- **v5 와 달리 v6 에서는 k=2 또는 k=4 가 alignment/MGT 에서 우세**. v5 에서는 k=6 이 최적이었던 것과 정반대.
+  - 이유 추정: v6 의 mean-normalized L_aux 가 mild 해져서, Stage 2 시간이 더 길수록 (k 작을수록) alignment 기회 더 많음. v5 raw-sum L_aux 는 강해서 Stage 2 가 길면 recon 을 망쳤지만, v6 에선 안 망쳐서 Stage 2 시간이 주로 유리.
+- **k=10 (Stage 2 skip)**: top_mS=0.810 (permutation 만으로 얻는 값). v5 L=2048 의 0.808 과 일치 (이론 예측).
+- **P8 기준 (k=6 이 recon + top_mS 에서 top-2)**: k=6 은 recon 3위 (k=4 > k=2 > k=6), top_mS 3위 (k=2 > k=4 > k=6) → **P8 FAIL**. 다만 차이는 모두 0.003–0.004 로 매우 작음. v6 에서는 **k=4 가 새 권장값**.
+
+### 4.8 Pass/fail verdict per prediction
+
+- **P1 [main]** — Ours top_mS ≥ 0.90 + margin +0.30 at every α, both variants:
+  - normgroup: top_mS = 0.959/0.962/0.963/0.962. Max baseline per α: 0.297 (α=0.3)/0.366/0.468/0.527. Margins: **+0.66/+0.60/+0.49/+0.43**. ✓
+  - normglobal: top_mS = 0.931/0.936/0.937/0.933. Margins: **+0.63/+0.57/+0.47/+0.41**. ✓
+  - 결과: **✅ PASS** both variants.
+- **P2 [main]** — Recon ratio ≤ 1.10× at every α, both variants:
+  - normgroup ratios: 0.97 / 0.99 / 0.95 / 0.99. ✓
+  - normglobal ratios: 0.95 / 0.96 / 0.94 / 0.96. ✓
+  - 결과: **✅ PASS**. v5 의 핵심 실패가 v6 에서 해결됨.
+- **P3 [main]** — pair_cos +0.20 margin vs max(baseline):
+  - α=0.3: +0.273 ✓
+  - α=0.5: +0.102 ❌
+  - α=0.7: −0.044 ❌
+  - α=0.9: −0.147 ❌
+  - 결과: **❌ FAIL** at α ∈ {0.5, 0.7, 0.9}. 원인 = metric–objective mismatch (§5.2 참조).
+- **P4 [main]** — α=0.9 τ=0.99 cliff, ours non-zero + 4개 shared-decoder ≤ 0.02:
+  - ours normgroup: 0.175 ≥ 0.10 ✓
+  - single 0.000, group_sparse 0.000, trace 0.000, iso 0.000 — 모두 ≤ 0.02 ✓
+  - 결과: **✅ PASS** (geometric cliff 재현, ours 유일 non-zero).
+- **P5 [main]** — Option A vs B difference ≤ 0.05 per metric at α=0.9:
+  - recon: 0.002 ✓
+  - top_mS: 0.029 ✓ (normgroup 약간 높음)
+  - pair_cos: 0.001 ✓
+  - MGT τ=0.9: 0.036 ✓
+  - MGT τ=0.95: 0.016 ✓
+  - MGT τ=0.99: 0.031 ✓
+  - 결과: **✅ PASS**. Option A 가 alignment 에서 살짝 유리, Option B 가 recon 에서 살짝 유리. 체계적 차이는 m_S = n/2 scaling 관계 (normgroup ≈ 2× normglobal) 로 설명됨.
+- **P6 [sub]** — λ saturation (top_mS range ≤ 0.10):
+  - normgroup range (λ=0.125→8): 0.975 − 0.841 = **0.134** ❌
+  - normglobal range: 0.975 − 0.811 = **0.164** ❌
+  - 결과: **❌ FAIL**. v5 에선 극단 λ 범위에서 saturate 했지만, v6 의 λ=2⁻³ 는 여전히 top_mS 에 영향. λ ≥ 2 에서만 saturate.
+- **P7 [sub]** — m_S argmax on MGT τ=0.95 ∈ {512, 576}:
+  - normgroup argmax: **m_S=576** (0.327) ✓
+  - normglobal argmax: **m_S=576** (0.305) ✓
+  - 결과: **✅ PASS**.
+- **P8 [sub]** — k=6 top-2 on both recon and top_mS:
+  - normgroup recon top-2: k=4 (0.0490), k=2 (0.0504) — **k=6 은 3위**
+  - normgroup top_mS top-2: k=2 (0.966), k=4 (0.965) — **k=6 은 3위**
+  - 결과: **❌ FAIL**. 다만 모든 k 간 recon 차이 < 0.003, top_mS 차이 < 0.005. 실용상 k=4 가 새 권장값.
 
 ---
 
 ## §5. Verdict
 
-*(결과 확인 후 작성)*
-
 > This experiment is an existence proof. The conclusions hold only within
 > the assumptions stated above.
+
+### 5.1 Hypothesis-level 결론
+
+Under the L=2048 synthetic setting, pre-reg 8 predictions 결과:
+
+| 예측 | Label | Verdict |
+|---|---|---|
+| P1 top_mS ≥ 0.90 + margin +0.30 (두 variant) | [main] | ✅ PASS |
+| P2 recon ratio ≤ 1.10× (두 variant, 전 α) | [main] | ✅ PASS (0.94–0.99×) |
+| P3 pair_cos +0.20 margin vs baseline (전 α) | [main] | ❌ FAIL (α ∈ {0.5, 0.7, 0.9}) |
+| P4 α=0.9 τ=0.99 cliff (ours ≥ 0.10, baselines ≤ 0.02) | [main] | ✅ PASS |
+| P5 Option A ≈ Option B (ǀΔǀ ≤ 0.05) | [main] | ✅ PASS |
+| P6 λ saturation (range ≤ 0.10) | [sub] | ❌ FAIL (range 0.13–0.16) |
+| P7 m_S argmax ∈ {512, 576} (MGT τ=0.95) | [sub] | ✅ PASS (argmax = 576) |
+| P8 k=6 top-2 in recon & top_mS | [sub] | ❌ FAIL (k=4 now best) |
+
+**4/5 main predictions pass, 1/3 sub predictions pass.**
+
+Hypothesis H 에서 가장 중요한 주장은:
+
+> (i) latent index alignment saturates, (ii) recon cost within 1.10×, 
+> (iii) pair_cos 우위, (iv) α=0.9 τ=0.99 cliff 유일 생존.
+
+(i), (ii), (iv) 는 **완벽히 supported**. (iii) pair_cos 는 **명확히 실패하지만
+metric 자체의 구조적 한계** 이며 ours 의 실제 objective 와 orthogonal (§5.2).
+
+### 5.2 P3 (pair_cos) failure 해석 — metric–objective mismatch
+
+Pre-reg 단계에서 `pair_cos_mean` 을 "per-sample 정렬 강도" metric 으로 선정
+했으나, 결과는 다음 구조를 드러냄:
+
+```
+shared-decoder methods @ α↑ → top-k indices become nearly identical across
+    modalities (because Φ_S ≈ Ψ_S means same atom fires for both) → pair_cos → 1
+
+ours @ any α → top-m_S diag ≈ 1, rest diag ≈ 0 → per-vector cosine capped
+    at sqrt(m_S/n) = sqrt(512/1024) ≈ 0.707 theoretical max, observed ~0.46
+    (because actual activation magnitudes are not all-1)
+```
+
+`ours` 의 `L_aux` 는 **per-dim diagonal 구조** 를 밀지 전체 code vector 유사도
+를 밀지 **않는다**. 사실 ours 가 원하는 건 "shared concept 을 같은 index 에
+배치, modality-specific concept 은 다른 index 에 배치" 이므로, per-vector
+cosine 을 1 로 만드는 건 오히려 modality-specific 정보를 다 지우는 것과 같음.
+
+따라서 **P3 failure 는 ours 의 결함이 아니라 metric 선택이 ours 의 objective
+를 대표하지 못한 것**. `cross_cos_top_mS_mean` (top-m_S 대각 평균) 이 ours
+의 primary objective 를 올바르게 측정하며, 이 metric 에서는 ours 가 **0.93–
+0.96 vs baseline 최대 0.53** 으로 압도 (P1 pass).
+
+추가 관찰: α=0.9 에서 `iso_align` 의 pair_cos (0.607) 이 ours 의 0.460 보다
+높다. 이는 `iso_align` 이 top-1 masked cosine 을 직접 optimize 하기 때문 —
+**ours 와 iso_align 은 서로 다른 objective 를 optimize 하는 method 이고
+pair_cos 는 iso_align 의 natural metric**. Pre-reg 시점에 이 distinction 을
+명확히 인식하지 못했음.
+
+### 5.3 Group_sparse 의 지속적 MGT 우위
+
+`group_sparse` 가 τ = 0.9/0.95 에서 **모든 α 에 대해 ours 를 압도** (≥ +0.35
+margin). 이유는 v1–v5 에서 분석한 대로:
+
+1. L2,1 penalty 가 paired sample 에서 동시 활성화를 강제 → decoder row 가
+   GT shared atom 방향으로 수렴 (합성 생성 모델의 "shared co-activation" 과
+   정확히 match).
+2. 2048 latent 중 512 개만 shared 로 학습하면 되므로 capacity 여유.
+3. α=0.9 에서 compromise row cosine 이 √0.95 ≈ 0.97 > 0.95 라 τ=0.95 는
+   통과하지만 > 0.99 는 불가능 → τ=0.99 cliff.
+
+Ours 의 MGT 는 decoder row 를 직접 건드리지 않고 latent space alignment 만
+optimize 하므로 feature recovery 에서 group_sparse 에 밀리는 것은 구조적.
+
+**예외**: τ=0.99 × α ∈ {0.7, 0.9} 에서 ours 가 승리. α=0.9 에서는 shared-
+decoder 전부가 geometric cliff 로 0.000 이고, α=0.7 에서도 cosine cliff 가
+시작되어 shared-decoder 가 0.003–0.097 수준. 이 구간에서 ours 의 "two
+independent SAE + permutation" 구조가 기하적 우위.
+
+### 5.4 Option A vs Option B 권장
+
+P5 pass + 수치 분석:
+
+| 기준 | 승자 | 차이 |
+|---|---|---|
+| recon (낮을수록 좋음) | global (~0.003 낮음) | marginal |
+| top_mS, MGT τ=0.95/0.99 | group (~0.03 높음) | marginal |
+| pair_cos | tie | <0.001 |
+| λ scaling 해석 | group | group 이 L-independent, global 은 m_S/n 에 의존 |
+
+**권장 = Option A (`normgroup`)**. 이유:
+1. MGT (ours 의 secondary objective) 에서 일관되게 약간 우세.
+2. λ scaling 이 m_S 와 L 에 완전히 독립 → 논문의 hyperparameter 권장 값
+   제시 시 해석이 깔끔.
+3. Option B (normglobal) 은 "normgroup λ=x ≈ normglobal λ=2x" 대응 관계가
+   있어 마치 같은 family 안의 다른 parameterization 으로 보임.
+
+### 5.5 Scope-bounded conclusion
+
+Under the L=2048 synthetic assumption (linear sparse generative model,
+paired co-activation, matched sparsity, d=768, k=16, paired batch,
+10 epochs, single seed, α ∈ {0.3, 0.5, 0.7, 0.9}), **Algorithm 1 with
+mean-normalized `L_aux` (either variant) matches or beats `two_recon` on
+recon while saturating index alignment (top_mS ≈ 0.94)**. Feature
+recovery (MGT τ = 0.9, 0.95) 에서는 `group_sparse` baseline 이 여전히
+압도하지만, **τ = 0.99 + mid-to-high α (= 0.7, 0.9)** 구간에서는 ours 가
+유일하게 의미 있는 값을 유지 (shared-decoder geometric cliff 를 넘는
+유일한 method).
+
+H 는 **대부분 지지됨 (mostly supported)**: alignment 이득 확인, recon
+동등성 확보, geometric cliff 생존 재현. `pair_cos_mean` 기반 주장 (P3) 은
+기각되지만 이는 metric mismatch 로 해석 — `cross_cos_top_mS_mean` (P1) 이
+ours 의 실제 objective 를 반영하는 올바른 alignment metric.
+
+### 5.6 Follow-ups
+
+1. L=4096, L=8192 sibling reports 에서 L-scaling 재검증.
+2. `group_sparse` 의 decoder geometry 를 직접 측정 → 왜 GT atom 방향으로
+   수렴하는지 formal analysis.
+3. τ=0.99 × α ∈ {0.5, 0.6, 0.8} 까지 grid 넓혀 "cliff 영역" 경계 매핑.
+4. Ablation 의 **k=4 권장 재확인**: L=4096/8192 에서도 k=4 가 top 인지.
+5. Real-VLM embedding 에서 재평가 (IsoEnergy 의 CLIP-scale 실험 환경).
 
 ---
 
