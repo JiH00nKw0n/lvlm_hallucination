@@ -28,6 +28,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
@@ -226,8 +227,41 @@ def _train_two_recon(
 
 
 # ------------------------------------------------------------------ #
-# Method 3/4: shared SAE + paired auxiliary loss                     #
+# Method 3/4/5: shared SAE + paired auxiliary loss                   #
 # ------------------------------------------------------------------ #
+
+
+def _iso_alignment_penalty(z_img: torch.Tensor, z_txt: torch.Tensor) -> torch.Tensor:
+    """Parabrele/IsoEnergy `alignment_penalty(alignment_metric='cosim')` variant.
+
+    Differs from `trace_alignment_loss` (paper Eq. 1) in two ways:
+      1. Masks each modality's top-1 latent index in BOTH halves before
+         computing cosine similarity (so the "modality-specific" top-1 does
+         not dominate the alignment signal).
+      2. Uses `F.cosine_similarity(..., dim=1).mean()` directly instead of the
+         pre-normalized trace formulation.
+
+    Returns a loss `∈ [-1, 1]` (pre-scaling), same bounds as
+    `trace_alignment_loss`. The caller multiplies by `aux_weight`.
+
+    Reference: `Parabrele/IsoEnergy/src/losses.py::alignment_penalty`.
+    """
+    n = z_img.shape[0]
+    top_1_img = torch.topk(z_img, k=1, dim=1).indices.squeeze(1)  # (n,)
+    top_1_txt = torch.topk(z_txt, k=1, dim=1).indices.squeeze(1)  # (n,)
+    arange = torch.arange(n, device=z_img.device)
+
+    mask_i = torch.ones_like(z_img)
+    mask_t = torch.ones_like(z_txt)
+    mask_i[arange, top_1_img] = 0.0
+    mask_i[arange, top_1_txt] = 0.0
+    mask_t[arange, top_1_img] = 0.0
+    mask_t[arange, top_1_txt] = 0.0
+
+    masked_i = z_img * mask_i
+    masked_t = z_txt * mask_t
+    cos = F.cosine_similarity(masked_i, masked_t, dim=1).mean()
+    return -cos
 
 
 def _train_single_paired_aux(
@@ -407,10 +441,12 @@ def _apply_latent_permutation(
 def _auxiliary_alignment_loss(
     z_i: torch.Tensor, z_t: torch.Tensor, m_S: int,
 ) -> torch.Tensor:
-    """Paper-exact diag-only auxiliary alignment loss.
+    """Paper-exact diag-only auxiliary alignment loss (v6: mean-normalized).
 
     For the first `m_S` latent dims, push batch-level diagonal correlation to 1;
-    for the remaining dims, push it to 0.
+    for the remaining dims, push it to 0. v6 normalizes both terms via `.mean()`
+    so the total loss is bounded in `[0, 5]` regardless of latent size `n`,
+    making the λ hyperparameter L-independent.
     """
     zi = z_i - z_i.mean(dim=0, keepdim=True)
     zt = z_t - z_t.mean(dim=0, keepdim=True)
@@ -419,8 +455,8 @@ def _auxiliary_alignment_loss(
     diag = (zi * zt).mean(dim=0) / (si * st)
 
     zero = diag.new_tensor(0.0)
-    shared_term = ((diag[:m_S] - 1.0) ** 2).sum() if m_S > 0 else zero
-    private_term = (diag[m_S:] ** 2).sum() if m_S < diag.shape[0] else zero
+    shared_term = ((diag[:m_S] - 1.0) ** 2).mean() if m_S > 0 else zero
+    private_term = (diag[m_S:] ** 2).mean() if m_S < diag.shape[0] else zero
     return shared_term + private_term
 
 
@@ -789,6 +825,16 @@ def _run_single(
         )
         _finish("trace_align", model, model)
 
+    if "iso_align" in methods:
+        # Parabrele/IsoEnergy's actual code path (with top-1 masking).
+        # Differs from `trace_align` which follows paper Eq. 1 verbatim.
+        model = _train_single_paired_aux(
+            train_img, train_txt, args, latent_size, seed, device,
+            aux_fn=_iso_alignment_penalty, aux_weight=args.iso_align_beta,
+            desc="iso_align",
+        )
+        _finish("iso_align", model, model)
+
     if "ours" in methods:
         for cfg in ours_configs:
             args._current_m_S = cfg.m_S
@@ -1022,6 +1068,12 @@ def parse_args() -> argparse.Namespace:
     # Baseline lambdas (from their papers)
     parser.add_argument("--group-sparse-lambda", type=float, default=0.05)
     parser.add_argument("--trace-beta", type=float, default=1e-4)
+    parser.add_argument(
+        "--iso-align-beta", type=float, default=0.03,
+        help="Penalty coefficient for the IsoEnergy code-variant alignment "
+             "loss (`_iso_alignment_penalty`, top-1 masked cosine). Default "
+             "matches Parabrele/IsoEnergy src/losses.py::alignment_penalty.",
+    )
 
     # Ours (Algorithm 1)
     parser.add_argument("--lambda-aux-sweep", type=str, default="1.0")
@@ -1102,6 +1154,7 @@ def main() -> None:
             "methods": args.methods,
             "group_sparse_lambda": args.group_sparse_lambda,
             "trace_beta": args.trace_beta,
+            "iso_align_beta": args.iso_align_beta,
             "lambda_aux_sweep": args.lambda_aux_sweep,
             "m_s_sweep": args.m_s_sweep,
             "k_align_sweep": args.k_align_sweep,

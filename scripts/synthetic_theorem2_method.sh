@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 : "${OUTPUT_ROOT:=outputs/synthetic_theorem2}"
 : "${STAGE:=all}"   # smoke|main|ablation|all
 
-ALL_METHODS="single_recon,two_recon,group_sparse,trace_align,ours"
+ALL_METHODS="single_recon,two_recon,group_sparse,trace_align,iso_align,ours"
 
 COMMON_FULL="--k 16 --num-epochs 10 --num-train 50000 --num-eval 10000 \
   --lr 2e-4 --batch-size 256 \
@@ -29,25 +29,25 @@ if [[ "$STAGE" == "smoke" || "$STAGE" == "all" ]]; then
 fi
 
 if [[ "$STAGE" == "main" || "$STAGE" == "all" ]]; then
-  # ours operating point: lambda = 2^-8, m_S = 512, k_align = 6.
-  # Selected from v4 lambda ablation as the smallest lambda that still
-  # saturates top_mS (0.974) while keeping ours avg_eval within 1.10 of
-  # two_recon's recon loss.
+  # v6 ours operating point: lambda = 1.0 (with mean-normalized L_aux).
+  # This replaces v5's lambda = 2^-8 which applied to an un-normalized
+  # sum-based L_aux. The two lambdas are NOT numerically comparable
+  # because the underlying loss changed.
   python synthetic_theorem2_method.py \
     --alpha-sweep "0.3,0.6,0.9,1.0" \
     --methods "$ALL_METHODS" \
-    --lambda-aux-sweep "0.00390625" --m-s-sweep "512" --k-align-sweep "6" \
-    --group-sparse-lambda 0.05 --trace-beta 1e-4 \
+    --lambda-aux-sweep "1.0" --m-s-sweep "512" --k-align-sweep "6" \
+    --group-sparse-lambda 0.05 --trace-beta 1e-4 --iso-align-beta 0.03 \
     --run-tag "main_comparison" \
     $COMMON_FULL "$@"
 fi
 
 if [[ "$STAGE" == "ablation" || "$STAGE" == "all" ]]; then
-  # Ablation 1: extended lambda sweep (m_S = 512, k_align = 6)
-  # Adds smaller values 2^-6, 2^-8, 2^-10 to probe the λ→0 limit.
+  # v6 ablation 1: lambda sweep (mean-normalized L_aux, m_S=512, k_align=6)
+  # 9-point factor-~3 grid centered around the new operating point λ=1.
   python synthetic_theorem2_method.py \
     --alpha-sweep "1.0" --methods "ours" \
-    --lambda-aux-sweep "0.0009765625,0.00390625,0.015625,0.0625,0.25,1,4,16,64,256" \
+    --lambda-aux-sweep "0.01,0.03,0.1,0.3,1,3,10,30,100" \
     --m-s-sweep "512" --k-align-sweep "6" \
     --run-tag "ablation_lambda" \
     $COMMON_FULL "$@"
