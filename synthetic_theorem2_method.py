@@ -145,7 +145,7 @@ def _train_single_recon(
     )
     loader = _paired_loader(
         train_img, train_txt, args.batch_size, device,
-        shuffle=True, drop_last=False,
+        shuffle=True, drop_last=True,
     )
     pbar = tqdm(range(args.num_epochs), desc="single_recon", leave=False)
     for _ in pbar:
@@ -178,9 +178,17 @@ def _train_two_recon(
     *,
     num_epochs: Optional[int] = None,
 ) -> tuple[TopKSAE, TopKSAE]:
-    """Two independent SAEs, each with latent_size // 2 so the total latent
+    """Two independent SAEs, each with `latent_size // 2` so the total latent
     budget matches the single-SAE baselines (Theorem 1 fair-comparison
-    convention)."""
+    convention).
+
+    Joint-step training: on every batch both SAEs process their respective
+    (paired) sample and we take one AdamW step over the concatenated parameter
+    set. The two SAEs' parameters are disjoint so this is mathematically
+    equivalent to running two independent optimizers, but it keeps the
+    training structure aligned with `_train_ours` Stage 1 and the other
+    methods (paired loader, `drop_last=True`, summed loss).
+    """
     n_epochs: int = int(num_epochs) if num_epochs is not None else int(args.num_epochs)
     sub_latent = latent_size // 2
     _seed_everything(seed)
@@ -190,31 +198,28 @@ def _train_two_recon(
     sae_i.train()
     sae_t.train()
 
-    opt_i = torch.optim.AdamW(sae_i.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    opt_t = torch.optim.AdamW(sae_t.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-
-    img_loader = DataLoader(
-        TensorDataset(train_img), batch_size=args.batch_size, shuffle=True,
-        drop_last=False, num_workers=0, pin_memory=device.type == "cuda",
+    optimizer = torch.optim.AdamW(
+        list(sae_i.parameters()) + list(sae_t.parameters()),
+        lr=args.lr, weight_decay=args.weight_decay,
     )
-    txt_loader = DataLoader(
-        TensorDataset(train_txt), batch_size=args.batch_size, shuffle=True,
-        drop_last=False, num_workers=0, pin_memory=device.type == "cuda",
+
+    loader = _paired_loader(
+        train_img, train_txt, args.batch_size, device,
+        shuffle=True, drop_last=True,
     )
 
     pbar = tqdm(range(n_epochs), desc="two_recon", leave=False)
     for _ in pbar:
         last_i = last_t = 0.0
-        for (img_b,) in img_loader:
-            hs = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
-            out = sae_i(hidden_states=hs)
-            _sae_step(sae_i, opt_i, out.recon_loss, args.max_grad_norm)
-            last_i = float(out.recon_loss.detach().item())
-        for (txt_b,) in txt_loader:
-            hs = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
-            out = sae_t(hidden_states=hs)
-            _sae_step(sae_t, opt_t, out.recon_loss, args.max_grad_norm)
-            last_t = float(out.recon_loss.detach().item())
+        for img_b, txt_b in loader:
+            hs_i = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
+            hs_t = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
+            out_i = sae_i(hidden_states=hs_i)
+            out_t = sae_t(hidden_states=hs_t)
+            loss = out_i.recon_loss + out_t.recon_loss
+            _joint_step([sae_i, sae_t], optimizer, loss, args.max_grad_norm)
+            last_i = float(out_i.recon_loss.detach().item())
+            last_t = float(out_t.recon_loss.detach().item())
         pbar.set_postfix(img=f"{last_i:.4f}", txt=f"{last_t:.4f}")
     pbar.close()
     return sae_i, sae_t

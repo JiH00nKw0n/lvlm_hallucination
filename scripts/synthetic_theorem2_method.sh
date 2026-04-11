@@ -39,10 +39,11 @@ if [[ "$STAGE" == "main" || "$STAGE" == "all" ]]; then
 fi
 
 if [[ "$STAGE" == "ablation" || "$STAGE" == "all" ]]; then
-  # Ablation 1: lambda sweep (m_S = 512, k_align = 6)
+  # Ablation 1: extended lambda sweep (m_S = 512, k_align = 6)
+  # Adds smaller values 2^-6, 2^-8, 2^-10 to probe the λ→0 limit.
   python synthetic_theorem2_method.py \
     --alpha-sweep "1.0" --methods "ours" \
-    --lambda-aux-sweep "0.0625,0.25,1,4,16,64,256" \
+    --lambda-aux-sweep "0.0009765625,0.00390625,0.015625,0.0625,0.25,1,4,16,64,256" \
     --m-s-sweep "512" --k-align-sweep "6" \
     --run-tag "ablation_lambda" \
     $COMMON_FULL "$@"
@@ -56,11 +57,13 @@ if [[ "$STAGE" == "ablation" || "$STAGE" == "all" ]]; then
     --run-tag "ablation_mS" \
     $COMMON_FULL "$@"
 
-  # Ablation 3: k_align sweep (lambda = 1, m_S = 512)
+  # Ablation 3: k_align sweep with k=10 endpoint
+  # k=10 disables Stage 2 entirely -> diagnostic for "Stage 1 only recon
+  # compared to two_recon".
   python synthetic_theorem2_method.py \
     --alpha-sweep "1.0" --methods "ours" \
     --lambda-aux-sweep "1" --m-s-sweep "512" \
-    --k-align-sweep "2,4,6,8" \
+    --k-align-sweep "2,4,6,8,10" \
     --run-tag "ablation_kalign" \
     $COMMON_FULL "$@"
 fi
