@@ -29,6 +29,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
+from tqdm.auto import tqdm
 
 from synthetic_sae_theory_experiment import (
     _seed_everything,
@@ -146,7 +147,9 @@ def _train_single_recon(
         train_img, train_txt, args.batch_size, device,
         shuffle=True, drop_last=False,
     )
-    for _ in range(args.num_epochs):
+    pbar = tqdm(range(args.num_epochs), desc="single_recon", leave=False)
+    for _ in pbar:
+        last = 0.0
         for img_b, txt_b in loader:
             hs_i = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             hs_t = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
@@ -154,6 +157,9 @@ def _train_single_recon(
             out_t = model(hidden_states=hs_t)
             loss = out_i.recon_loss + out_t.recon_loss
             _sae_step(model, optimizer, loss, args.max_grad_norm)
+            last = float(loss.detach().item())
+        pbar.set_postfix(loss=f"{last:.4f}")
+    pbar.close()
     return model
 
 
@@ -192,15 +198,21 @@ def _train_two_recon(
         drop_last=False, num_workers=0, pin_memory=device.type == "cuda",
     )
 
-    for _ in range(n_epochs):
+    pbar = tqdm(range(n_epochs), desc="two_recon", leave=False)
+    for _ in pbar:
+        last_i = last_t = 0.0
         for (img_b,) in img_loader:
             hs = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             out = sae_i(hidden_states=hs)
             _sae_step(sae_i, opt_i, out.recon_loss, args.max_grad_norm)
+            last_i = float(out.recon_loss.detach().item())
         for (txt_b,) in txt_loader:
             hs = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             out = sae_t(hidden_states=hs)
             _sae_step(sae_t, opt_t, out.recon_loss, args.max_grad_norm)
+            last_t = float(out.recon_loss.detach().item())
+        pbar.set_postfix(img=f"{last_i:.4f}", txt=f"{last_t:.4f}")
+    pbar.close()
     return sae_i, sae_t
 
 
@@ -218,6 +230,7 @@ def _train_single_paired_aux(
     device: torch.device,
     aux_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     aux_weight: float,
+    desc: str = "paired_aux",
 ) -> TopKSAE:
     _seed_everything(seed)
     model = _make_sae(args, latent_size, device)
@@ -229,7 +242,9 @@ def _train_single_paired_aux(
         train_img, train_txt, args.batch_size, device,
         shuffle=True, drop_last=True,
     )
-    for _ in range(args.num_epochs):
+    pbar = tqdm(range(args.num_epochs), desc=desc, leave=False)
+    for _ in pbar:
+        last_rec = last_aux = 0.0
         for img_b, txt_b in loader:
             hs_i = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             hs_t = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
@@ -237,12 +252,13 @@ def _train_single_paired_aux(
             out_t = model(hidden_states=hs_t, return_dense_latents=True)
             z_i = _dense_latents(out_i)
             z_t = _dense_latents(out_t)
-            loss = (
-                out_i.recon_loss
-                + out_t.recon_loss
-                + aux_weight * aux_fn(z_i, z_t)
-            )
+            aux = aux_fn(z_i, z_t)
+            loss = out_i.recon_loss + out_t.recon_loss + aux_weight * aux
             _sae_step(model, optimizer, loss, args.max_grad_norm)
+            last_rec = float((out_i.recon_loss + out_t.recon_loss).detach().item())
+            last_aux = float(aux.detach().item())
+        pbar.set_postfix(rec=f"{last_rec:.4f}", aux=f"{last_aux:.4f}")
+    pbar.close()
     return model
 
 
@@ -441,7 +457,13 @@ def _train_ours(
         train_img, train_txt, args.batch_size, device,
         shuffle=True, drop_last=True,
     )
-    for _ in range(stage2_epochs):
+    pbar = tqdm(
+        range(stage2_epochs),
+        desc=f"ours_stage2(mS={m_S_supplied},lam={lambda_aux})",
+        leave=False,
+    )
+    for _ in pbar:
+        last_rec = last_aux = 0.0
         for img_b, txt_b in loader:
             hs_i = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             hs_t = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
@@ -449,12 +471,13 @@ def _train_ours(
             out_t = sae_t(hidden_states=hs_t, return_dense_latents=True)
             z_i = _dense_latents(out_i)
             z_t = _dense_latents(out_t)
-            loss = (
-                out_i.recon_loss
-                + out_t.recon_loss
-                + lambda_aux * _auxiliary_alignment_loss(z_i, z_t, m_S_supplied)
-            )
+            aux = _auxiliary_alignment_loss(z_i, z_t, m_S_supplied)
+            loss = out_i.recon_loss + out_t.recon_loss + lambda_aux * aux
             _joint_step([sae_i, sae_t], optimizer, loss, args.max_grad_norm)
+            last_rec = float((out_i.recon_loss + out_t.recon_loss).detach().item())
+            last_aux = float(aux.detach().item())
+        pbar.set_postfix(rec=f"{last_rec:.4f}", aux=f"{last_aux:.4f}")
+    pbar.close()
 
     return sae_i, sae_t, diagnostics
 
@@ -660,6 +683,7 @@ def _run_single(
         model = _train_single_paired_aux(
             train_img, train_txt, args, latent_size, seed, device,
             aux_fn=group_sparse_loss, aux_weight=args.group_sparse_lambda,
+            desc="group_sparse",
         )
         _finish("group_sparse", model, model)
 
@@ -667,6 +691,7 @@ def _run_single(
         model = _train_single_paired_aux(
             train_img, train_txt, args, latent_size, seed, device,
             aux_fn=trace_alignment_loss, aux_weight=args.trace_beta,
+            desc="trace_align",
         )
         _finish("trace_align", model, model)
 
@@ -783,11 +808,18 @@ def _run_experiment(args: argparse.Namespace) -> dict[str, Any]:
             method_ids.append(m)
 
     sweep_results = []
+    total_cfgs = len(latent_sizes) * len(alphas) * int(args.num_seeds)
+    outer_pbar = tqdm(
+        total=total_cfgs, desc="sweep", dynamic_ncols=True, leave=True,
+    )
     for latent_size in latent_sizes:
         for alpha in alphas:
             seed_results = []
             for i in range(args.num_seeds):
                 seed = args.seed_base + i
+                outer_pbar.set_postfix(
+                    alpha=f"{alpha:.2f}", L=latent_size, seed=seed,
+                )
                 logger.info(
                     "alpha=%.2f latent_size=%d seed=%d methods=%s ours_cfgs=%d",
                     alpha, latent_size, seed, ",".join(methods), len(ours_configs),
@@ -795,6 +827,7 @@ def _run_experiment(args: argparse.Namespace) -> dict[str, Any]:
                 result = _run_single(
                     args, alpha, latent_size, seed, methods, ours_configs,
                 )
+                outer_pbar.update(1)
                 # Compact per-seed log
                 for mid in method_ids:
                     m = result.get(mid)
@@ -819,6 +852,7 @@ def _run_experiment(args: argparse.Namespace) -> dict[str, Any]:
                 "seed_results": seed_results,
             })
 
+    outer_pbar.close()
     return {
         "sweep_param": "method_x_alpha_x_latent_size",
         "sweep_results": sweep_results,

@@ -29,7 +29,11 @@ pip install --no-cache-dir \
   --index-url https://download.pytorch.org/whl/cu121 \
   torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1
 
-pip install -r requirements.txt
+# Skip flash-attn: it requires torch at its own build time and breaks isolated
+# pip builds. Synthetic experiments do not need it.
+grep -v '^flash-attn' requirements.txt > /tmp/req-no-flash.txt
+pip install --no-cache-dir -r /tmp/req-no-flash.txt
+rm -f /tmp/req-no-flash.txt
 
 echo ""
 echo "Environment ready."
