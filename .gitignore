@@ -37,3 +37,4 @@ sparse_autoencoder/*
 *.pdf
 papers/
 .claude/*
+.log/*
