@@ -34,7 +34,7 @@ from tqdm.auto import tqdm
 from synthetic_sae_theory_experiment import (
     _seed_everything,
     _resolve_device,
-    _compute_recovery_metrics,
+    _normalize_rows,
 )
 from synthetic_theorem1_unified import (
     _eval_loss_single_modality,
@@ -495,6 +495,32 @@ def _train_ours(
 # ------------------------------------------------------------------ #
 
 
+def _compute_recovery_metrics_multi_tau(
+    learned_vectors: np.ndarray,
+    gt_matrix: np.ndarray,
+    taus: tuple[float, ...],
+) -> dict[str, float]:
+    """Multi-threshold MGT + MIP in a single pass.
+
+    `learned_vectors`: (k, d) — SAE decoder rows.
+    `gt_matrix`: (d, n_gt) — ground-truth atoms as columns.
+    Returns `{"mip": ..., "mgt_tau0.8": ..., "mgt_tau0.95": ..., ...}`.
+    """
+    if gt_matrix.shape[1] == 0:
+        out: dict[str, float] = {"mip": float("nan")}
+        for tau in taus:
+            out[f"mgt_tau{tau}"] = float("nan")
+        return out
+    learned_norm = _normalize_rows(learned_vectors.astype(np.float64))
+    gt_norm = _normalize_rows(gt_matrix.T.astype(np.float64))
+    sim = np.abs(learned_norm @ gt_norm.T)
+    best = sim.max(axis=0)
+    out = {"mip": float(best.mean())}
+    for tau in taus:
+        out[f"mgt_tau{tau}"] = float((best > tau).mean())
+    return out
+
+
 def _cross_corr_mean_parts(
     sae_i: TopKSAE,
     sae_t: TopKSAE,
@@ -545,11 +571,14 @@ def _evaluate_method(
     w_dec_img = sae_i.W_dec.detach().cpu().numpy()
     w_dec_txt = sae_t.W_dec.detach().cpu().numpy()
 
-    recovery_img = _compute_recovery_metrics(
-        w_dec_img, phi_S, args.gt_recovery_threshold,
+    # Multi-threshold MGT: always measure at three τ's so the report can
+    # contrast loose (0.80 ≈ 36.9°), strict (0.95 ≈ 18.2°), and very
+    # strict (0.99 ≈ 8.1°) angular recovery.
+    img_mgt_multi = _compute_recovery_metrics_multi_tau(
+        w_dec_img, phi_S, (0.8, 0.95, 0.99),
     )
-    recovery_txt = _compute_recovery_metrics(
-        w_dec_txt, psi_S, args.gt_recovery_threshold,
+    txt_mgt_multi = _compute_recovery_metrics_multi_tau(
+        w_dec_txt, psi_S, (0.8, 0.95, 0.99),
     )
 
     cross = _gt_based_shared_alignment_mismatched(
@@ -568,10 +597,18 @@ def _evaluate_method(
         "img_eval_loss": img_eval,
         "txt_eval_loss": txt_eval,
         "avg_eval_loss": avg_eval,
-        "img_mgt_shared": recovery_img["gt_recovery"],
-        "img_mip_shared": recovery_img["mip"],
-        "txt_mgt_shared": recovery_txt["gt_recovery"],
-        "txt_mip_shared": recovery_txt["mip"],
+        # Backward-compat: `img_mgt_shared` / `txt_mgt_shared` == τ=0.8 figure.
+        "img_mgt_shared": img_mgt_multi["mgt_tau0.8"],
+        "txt_mgt_shared": txt_mgt_multi["mgt_tau0.8"],
+        "img_mip_shared": img_mgt_multi["mip"],
+        "txt_mip_shared": txt_mgt_multi["mip"],
+        # Multi-tau MGT (new).
+        "img_mgt_shared_tau0.8": img_mgt_multi["mgt_tau0.8"],
+        "img_mgt_shared_tau0.95": img_mgt_multi["mgt_tau0.95"],
+        "img_mgt_shared_tau0.99": img_mgt_multi["mgt_tau0.99"],
+        "txt_mgt_shared_tau0.8": txt_mgt_multi["mgt_tau0.8"],
+        "txt_mgt_shared_tau0.95": txt_mgt_multi["mgt_tau0.95"],
+        "txt_mgt_shared_tau0.99": txt_mgt_multi["mgt_tau0.99"],
         "cross_cos_top_mS_mean": top_diag,
         "cross_cos_rest_mean": rest_diag,
         "cross_cos_gt_mean": cross["cross_cos_mean"],
@@ -733,6 +770,12 @@ METRIC_SUFFIXES = [
     "img_mip_shared",
     "txt_mgt_shared",
     "txt_mip_shared",
+    "img_mgt_shared_tau0.8",
+    "img_mgt_shared_tau0.95",
+    "img_mgt_shared_tau0.99",
+    "txt_mgt_shared_tau0.8",
+    "txt_mgt_shared_tau0.95",
+    "txt_mgt_shared_tau0.99",
     "cross_cos_top_mS_mean",
     "cross_cos_rest_mean",
     "cross_cos_gt_mean",

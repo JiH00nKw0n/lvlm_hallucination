@@ -32,27 +32,27 @@ if [[ "$STAGE" == "main" || "$STAGE" == "all" ]]; then
   python synthetic_theorem2_method.py \
     --alpha-sweep "0.3,0.6,0.9,1.0" \
     --methods "$ALL_METHODS" \
-    --lambda-aux-sweep "1.0" --m-s-sweep "512" --k-align-sweep "4" \
+    --lambda-aux-sweep "1.0" --m-s-sweep "512" --k-align-sweep "6" \
     --group-sparse-lambda 0.05 --trace-beta 1e-4 \
     --run-tag "main_comparison" \
     $COMMON_FULL "$@"
 fi
 
 if [[ "$STAGE" == "ablation" || "$STAGE" == "all" ]]; then
-  # Ablation 1: lambda sweep (m_S = 512, k_align = 4)
+  # Ablation 1: lambda sweep (m_S = 512, k_align = 6)
   python synthetic_theorem2_method.py \
     --alpha-sweep "1.0" --methods "ours" \
     --lambda-aux-sweep "0.0625,0.25,1,4,16,64,256" \
-    --m-s-sweep "512" --k-align-sweep "4" \
+    --m-s-sweep "512" --k-align-sweep "6" \
     --run-tag "ablation_lambda" \
     $COMMON_FULL "$@"
 
-  # Ablation 2: m_S sweep (lambda = 1, k_align = 4)
+  # Ablation 2: m_S fine scan around n_shared (lambda = 1, k_align = 6)
   python synthetic_theorem2_method.py \
     --alpha-sweep "1.0" --methods "ours" \
     --lambda-aux-sweep "1" \
-    --m-s-sweep "256,384,512,640,768,896,1024" \
-    --k-align-sweep "4" \
+    --m-s-sweep "384,448,512,576,640" \
+    --k-align-sweep "6" \
     --run-tag "ablation_mS" \
     $COMMON_FULL "$@"
 
