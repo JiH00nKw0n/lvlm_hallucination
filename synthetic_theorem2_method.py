@@ -371,17 +371,32 @@ def _greedy_permutation_match_full(C: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return P_I, P_T, ordered
 
 
-def _apply_latent_permutation(sae: TopKSAE, perm_idx: np.ndarray) -> None:
+def _apply_latent_permutation(
+    sae: TopKSAE,
+    perm_idx: np.ndarray,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+) -> None:
     """In-place row-permutation of encoder weight/bias and decoder weight.
 
     `perm_idx[k] = j` means "new latent k is old latent j", so the new
     parameter row k is the old row j.
+
+    When `optimizer` is supplied, the Adam(W) moment buffers
+    (`exp_avg`, `exp_avg_sq`) for the three permuted parameters are
+    reordered identically so they remain aligned with the new row order.
+    This is essential for preserving optimizer state across the
+    Stage 1 → Stage 2 transition in `_train_ours`.
     """
     idx = torch.as_tensor(perm_idx, dtype=torch.long, device=sae.W_dec.device)
+    params_to_permute = [sae.encoder.weight, sae.encoder.bias, sae.W_dec]
     with torch.no_grad():
-        sae.encoder.weight.data = sae.encoder.weight.data[idx].contiguous()
-        sae.encoder.bias.data = sae.encoder.bias.data[idx].contiguous()
-        sae.W_dec.data = sae.W_dec.data[idx].contiguous()
+        for p in params_to_permute:
+            p.data = p.data[idx].contiguous()
+            if optimizer is not None and p in optimizer.state:
+                st = optimizer.state[p]
+                for key in ("exp_avg", "exp_avg_sq"):
+                    if key in st and isinstance(st[key], torch.Tensor):
+                        st[key] = st[key][idx].contiguous()
 
 
 def _auxiliary_alignment_loss(
@@ -415,26 +430,62 @@ def _train_ours(
     lambda_aux: float,
     m_S_supplied: int,
 ) -> tuple[TopKSAE, TopKSAE, dict[str, Any]]:
-    """Stage 1 (recon-only) for k_align epochs, then permutation, then Stage 2
-    (recon + lambda_aux * L_aux) for (num_epochs - k_align) epochs."""
+    """Algorithm 1 (v3): Stage 1 (recon-only) for `k_align` epochs, then greedy
+    latent permutation, then Stage 2 (recon + `lambda_aux * L_aux`) for
+    `num_epochs - k_align` epochs.
+
+    Single joint AdamW optimizer spans both stages so momentum / second-moment
+    state carries across the permutation. Permutation also reorders Adam moment
+    buffers (`_apply_latent_permutation(..., optimizer)`).
+    """
 
     num_epochs = args.num_epochs
     stage1_epochs = max(0, min(k_align, num_epochs))
     stage2_epochs = num_epochs - stage1_epochs
 
-    # -- Stage 1 --
-    sae_i, sae_t = _train_two_recon(
-        train_img, train_txt, args, latent_size, seed, device,
-        num_epochs=stage1_epochs,
+    sub_latent = latent_size // 2
+    _seed_everything(seed)
+    sae_i = _make_sae(args, sub_latent, device)
+    _seed_everything(seed + 10000)
+    sae_t = _make_sae(args, sub_latent, device)
+    sae_i.train()
+    sae_t.train()
+
+    optimizer = torch.optim.AdamW(
+        list(sae_i.parameters()) + list(sae_t.parameters()),
+        lr=args.lr, weight_decay=args.weight_decay,
     )
 
-    # -- Permutation --
+    loader = _paired_loader(
+        train_img, train_txt, args.batch_size, device,
+        shuffle=True, drop_last=True,
+    )
+
+    # -- Stage 1: joint training, recon only --
+    if stage1_epochs > 0:
+        pbar1 = tqdm(
+            range(stage1_epochs), desc="ours_stage1(recon)", leave=False,
+        )
+        for _ in pbar1:
+            last_rec = 0.0
+            for img_b, txt_b in loader:
+                hs_i = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
+                hs_t = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
+                out_i = sae_i(hidden_states=hs_i)
+                out_t = sae_t(hidden_states=hs_t)
+                loss = out_i.recon_loss + out_t.recon_loss
+                _joint_step([sae_i, sae_t], optimizer, loss, args.max_grad_norm)
+                last_rec = float(loss.detach().item())
+            pbar1.set_postfix(rec=f"{last_rec:.4f}")
+        pbar1.close()
+
+    # -- Permutation (also reorders optimizer moment buffers) --
     C = _compute_latent_correlation(
         sae_i, sae_t, train_img, train_txt, args.batch_size, device,
     )
     P_I, P_T, ordered = _greedy_permutation_match_full(C)
-    _apply_latent_permutation(sae_i, P_I)
-    _apply_latent_permutation(sae_t, P_T)
+    _apply_latent_permutation(sae_i, P_I, optimizer=optimizer)
+    _apply_latent_permutation(sae_t, P_T, optimizer=optimizer)
 
     rho = float(args.rho)
     m_S_hat_rho = int((ordered > rho).sum())
@@ -455,22 +506,13 @@ def _train_ours(
     if stage2_epochs <= 0:
         return sae_i, sae_t, diagnostics
 
-    # -- Stage 2 --
-    sae_i.train()
-    sae_t.train()
-    params = list(sae_i.parameters()) + list(sae_t.parameters())
-    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
-
-    loader = _paired_loader(
-        train_img, train_txt, args.batch_size, device,
-        shuffle=True, drop_last=True,
-    )
-    pbar = tqdm(
+    # -- Stage 2: joint training, recon + lambda_aux * L_aux --
+    pbar2 = tqdm(
         range(stage2_epochs),
         desc=f"ours_stage2(mS={m_S_supplied},lam={lambda_aux})",
         leave=False,
     )
-    for _ in pbar:
+    for _ in pbar2:
         last_rec = last_aux = 0.0
         for img_b, txt_b in loader:
             hs_i = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
@@ -484,8 +526,8 @@ def _train_ours(
             _joint_step([sae_i, sae_t], optimizer, loss, args.max_grad_norm)
             last_rec = float((out_i.recon_loss + out_t.recon_loss).detach().item())
             last_aux = float(aux.detach().item())
-        pbar.set_postfix(rec=f"{last_rec:.4f}", aux=f"{last_aux:.4f}")
-    pbar.close()
+        pbar2.set_postfix(rec=f"{last_rec:.4f}", aux=f"{last_aux:.4f}")
+    pbar2.close()
 
     return sae_i, sae_t, diagnostics
 
