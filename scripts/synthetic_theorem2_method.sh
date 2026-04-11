@@ -29,49 +29,49 @@ if [[ "$STAGE" == "smoke" || "$STAGE" == "all" ]]; then
 fi
 
 if [[ "$STAGE" == "main" || "$STAGE" == "all" ]]; then
-  # v6 main comparison:
+  # v7 main comparison:
   #  - α ∈ {0.3, 0.5, 0.7, 0.9} (all mismatched; drop the α=1.0 identity case)
-  #  - ours runs BOTH normalization variants per config (group + global)
-  #  - lambda = 1.0 (mean-normalized L_aux default), m_S = 512, k_align = 6
+  #  - ours: GLOBAL normalization only (decided after L=8192 v6 Pareto)
+  #  - lambda = 1.0, m_S = 512, k_align = 6
   #  - baselines: group_sparse λ=0.05 (paper), trace_align β=1e-4 (paper
   #    Eq. 1), iso_align β=0.03 (IsoEnergy repo code default).
   python synthetic_theorem2_method.py \
     --alpha-sweep "0.3,0.5,0.7,0.9" \
     --methods "$ALL_METHODS" \
     --lambda-aux-sweep "1.0" --m-s-sweep "512" --k-align-sweep "6" \
-    --aux-norm-sweep "group,global" \
+    --aux-norm-sweep "global" \
     --group-sparse-lambda 0.05 --trace-beta 1e-4 --iso-align-beta 0.03 \
     --run-tag "main_comparison" \
     $COMMON_FULL "$@"
 fi
 
 if [[ "$STAGE" == "ablation" || "$STAGE" == "all" ]]; then
-  # v6 ablation 1: lambda sweep on ours (both norm variants)
-  # 7-point factor-2 grid centered on λ=1: {2^-3, ..., 2^3}.
+  # v7 ablation 1: lambda sweep on ours (global only)
+  # 7-point FACTOR-OF-4 grid centered on λ=1: {2^-6, 2^-4, ..., 2^6}.
   python synthetic_theorem2_method.py \
     --alpha-sweep "0.9" --methods "ours" \
-    --lambda-aux-sweep "0.125,0.25,0.5,1,2,4,8" \
+    --lambda-aux-sweep "0.015625,0.0625,0.25,1,4,16,64" \
     --m-s-sweep "512" --k-align-sweep "6" \
-    --aux-norm-sweep "group,global" \
+    --aux-norm-sweep "global" \
     --run-tag "ablation_lambda" \
     $COMMON_FULL "$@"
 
-  # v6 ablation 2: m_S fine scan around n_shared (λ=1, k_align=6)
+  # v7 ablation 2: m_S fine scan around n_shared (λ=1, k_align=6)
   python synthetic_theorem2_method.py \
     --alpha-sweep "0.9" --methods "ours" \
     --lambda-aux-sweep "1" \
     --m-s-sweep "384,448,512,576,640" \
     --k-align-sweep "6" \
-    --aux-norm-sweep "group,global" \
+    --aux-norm-sweep "global" \
     --run-tag "ablation_mS" \
     $COMMON_FULL "$@"
 
-  # v6 ablation 3: k_align sweep with k=10 diagnostic endpoint
+  # v7 ablation 3: k_align sweep with k=10 diagnostic endpoint
   python synthetic_theorem2_method.py \
     --alpha-sweep "0.9" --methods "ours" \
     --lambda-aux-sweep "1" --m-s-sweep "512" \
     --k-align-sweep "2,4,6,8,10" \
-    --aux-norm-sweep "group,global" \
+    --aux-norm-sweep "global" \
     --run-tag "ablation_kalign" \
     $COMMON_FULL "$@"
 fi

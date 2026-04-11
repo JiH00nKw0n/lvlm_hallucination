@@ -29,6 +29,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
+from scipy.optimize import linear_sum_assignment
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
@@ -602,6 +603,64 @@ def _train_ours(
 # ------------------------------------------------------------------ #
 
 
+def _compute_mcc_and_uniqueness(
+    learned_vectors: np.ndarray,
+    gt_matrix: np.ndarray,
+) -> dict[str, float]:
+    """Mean Correlation Coefficient (MCC) + Feature Uniqueness.
+
+    Reference: Chanin & Garriga-Alonso 2026, "SynthSAEBench" (arxiv 2602.14687), Equations (17)-(18).
+
+    Given `L` SAE decoder rows `w_j` and `N` GT atoms `d_i`, compute the
+    absolute cosine similarity matrix `|S_ij| = |w_j^T d_i|` and:
+
+    - **MCC**: optimal one-to-one matching via the Hungarian algorithm.
+      `MCC = (1/min(L, N)) * Σ_{(i,j) ∈ matching} |w_j^T d_i|`. Penalises
+      SAE collapses onto few atoms (stricter than `MGT`/`MIP` which allow
+      many-to-one mapping).
+    - **Uniqueness**: for each latent `j`, find its best-matching GT
+      `i*(j) = argmax_i |w_j^T d_i|`, then count distinct targets.
+      `Uniqueness_raw = |{i*(j)}| / L`. Paper formula.
+      `Uniqueness_norm = |{i*(j)}| / min(L, N)` is a cross-L-comparable
+      variant bounded in [0, 1].
+
+    Args:
+        learned_vectors: `(L, d)` SAE decoder rows.
+        gt_matrix: `(d, N)` GT atoms as columns.
+    """
+    if gt_matrix.shape[1] == 0 or learned_vectors.shape[0] == 0:
+        return {
+            "mcc": float("nan"),
+            "uniqueness_raw": float("nan"),
+            "uniqueness_norm": float("nan"),
+        }
+
+    L = int(learned_vectors.shape[0])
+    N = int(gt_matrix.shape[1])
+
+    learned_norm = _normalize_rows(learned_vectors.astype(np.float64))  # (L, d)
+    gt_norm = _normalize_rows(gt_matrix.T.astype(np.float64))  # (N, d)
+    sim = np.abs(learned_norm @ gt_norm.T)  # (L, N), abs cosine
+
+    # --- MCC via Hungarian algorithm ---
+    # linear_sum_assignment minimises cost; maximise similarity => -sim.
+    row_ind, col_ind = linear_sum_assignment(-sim)  # min(L, N) pairs
+    matched = sim[row_ind, col_ind]
+    mcc = float(matched.sum() / max(min(L, N), 1))
+
+    # --- Feature Uniqueness ---
+    best_gt_per_row = sim.argmax(axis=1)  # (L,)
+    num_distinct = int(np.unique(best_gt_per_row).size)
+    uniqueness_raw = float(num_distinct / max(L, 1))
+    uniqueness_norm = float(num_distinct / max(min(L, N), 1))
+
+    return {
+        "mcc": mcc,
+        "uniqueness_raw": uniqueness_raw,
+        "uniqueness_norm": uniqueness_norm,
+    }
+
+
 def _compute_recovery_metrics_multi_tau(
     learned_vectors: np.ndarray,
     gt_matrix: np.ndarray,
@@ -705,6 +764,8 @@ def _evaluate_method(
     eval_txt: torch.Tensor,
     phi_S: np.ndarray,
     psi_S: np.ndarray,
+    phi_I: Optional[np.ndarray],
+    psi_T: Optional[np.ndarray],
     n_shared: int,
     args: argparse.Namespace,
     device: torch.device,
@@ -731,6 +792,35 @@ def _evaluate_method(
     txt_mgt_multi = _compute_recovery_metrics_multi_tau(
         w_dec_txt, psi_S, (0.9, 0.95, 0.99),
     )
+
+    # v7: full per-modality GT = private + shared (drops the zero-padding
+    # cross-modality columns from `phi_full`/`psi_full`). Lets us tell apart
+    # methods that recover only shared atoms (high mgt_shared) from methods
+    # that recover both shared and private (high mgt_full).
+    if phi_I is not None and phi_I.size > 0:
+        phi_full = np.concatenate([phi_I, phi_S], axis=1)
+    else:
+        phi_full = phi_S
+    if psi_T is not None and psi_T.size > 0:
+        psi_full = np.concatenate([psi_S, psi_T], axis=1)
+    else:
+        psi_full = psi_S
+
+    img_mgt_full = _compute_recovery_metrics_multi_tau(
+        w_dec_img, phi_full, (0.9, 0.95, 0.99),
+    )
+    txt_mgt_full = _compute_recovery_metrics_multi_tau(
+        w_dec_txt, psi_full, (0.9, 0.95, 0.99),
+    )
+
+    # MCC / Uniqueness against shared GT (v6 addition).
+    # Separately per modality side since two-SAE methods have distinct decoders.
+    img_mcc_unique = _compute_mcc_and_uniqueness(w_dec_img, phi_S)
+    txt_mcc_unique = _compute_mcc_and_uniqueness(w_dec_txt, psi_S)
+
+    # v7: MCC / Uniqueness against full per-modality GT.
+    img_mcc_full = _compute_mcc_and_uniqueness(w_dec_img, phi_full)
+    txt_mcc_full = _compute_mcc_and_uniqueness(w_dec_txt, psi_full)
 
     cross = _gt_based_shared_alignment_mismatched(
         w_dec_img, w_dec_txt, phi_S, psi_S,
@@ -762,6 +852,29 @@ def _evaluate_method(
         "txt_mgt_shared_tau0.9": txt_mgt_multi["mgt_tau0.9"],
         "txt_mgt_shared_tau0.95": txt_mgt_multi["mgt_tau0.95"],
         "txt_mgt_shared_tau0.99": txt_mgt_multi["mgt_tau0.99"],
+        # v7: full per-modality GT MGT/MIP (private + shared).
+        "img_mip_full": img_mgt_full["mip"],
+        "txt_mip_full": txt_mgt_full["mip"],
+        "img_mgt_full_tau0.9": img_mgt_full["mgt_tau0.9"],
+        "img_mgt_full_tau0.95": img_mgt_full["mgt_tau0.95"],
+        "img_mgt_full_tau0.99": img_mgt_full["mgt_tau0.99"],
+        "txt_mgt_full_tau0.9": txt_mgt_full["mgt_tau0.9"],
+        "txt_mgt_full_tau0.95": txt_mgt_full["mgt_tau0.95"],
+        "txt_mgt_full_tau0.99": txt_mgt_full["mgt_tau0.99"],
+        # MCC + Feature Uniqueness against shared GT (v6 addition).
+        "img_mcc_shared": img_mcc_unique["mcc"],
+        "txt_mcc_shared": txt_mcc_unique["mcc"],
+        "img_uniqueness_shared_raw": img_mcc_unique["uniqueness_raw"],
+        "txt_uniqueness_shared_raw": txt_mcc_unique["uniqueness_raw"],
+        "img_uniqueness_shared_norm": img_mcc_unique["uniqueness_norm"],
+        "txt_uniqueness_shared_norm": txt_mcc_unique["uniqueness_norm"],
+        # v7: MCC + Uniqueness against full per-modality GT.
+        "img_mcc_full": img_mcc_full["mcc"],
+        "txt_mcc_full": txt_mcc_full["mcc"],
+        "img_uniqueness_full_raw": img_mcc_full["uniqueness_raw"],
+        "txt_uniqueness_full_raw": txt_mcc_full["uniqueness_raw"],
+        "img_uniqueness_full_norm": img_mcc_full["uniqueness_norm"],
+        "txt_uniqueness_full_norm": txt_mcc_full["uniqueness_norm"],
         "pair_cos_mean": pair_cos,
         "cross_cos_top_mS_mean": top_diag,
         "cross_cos_rest_mean": rest_diag,
@@ -856,6 +969,7 @@ def _run_single(
             sae_i=sae_i, sae_t=sae_t,
             eval_img=eval_img, eval_txt=eval_txt,
             phi_S=builder.phi_S, psi_S=builder.psi_S,
+            phi_I=builder.phi_I, psi_T=builder.psi_T,
             n_shared=args.n_shared,
             args=args, device=device,
         )
@@ -944,7 +1058,32 @@ METRIC_SUFFIXES = [
     "txt_mgt_shared_tau0.9",
     "txt_mgt_shared_tau0.95",
     "txt_mgt_shared_tau0.99",
-    # v6: new per-pair eval latent cosine similarity metric
+    # v7: full per-modality GT (private + shared) MGT/MIP
+    "img_mip_full",
+    "txt_mip_full",
+    "img_mgt_full_tau0.9",
+    "img_mgt_full_tau0.95",
+    "img_mgt_full_tau0.99",
+    "txt_mgt_full_tau0.9",
+    "txt_mgt_full_tau0.95",
+    "txt_mgt_full_tau0.99",
+    # v6: MCC + Feature Uniqueness against shared GT
+    # (Chanin & Garriga-Alonso 2026 SynthSAEBench; Hungarian 1-to-1 matching
+    #  + count of distinct best-match GTs per decoder row).
+    "img_mcc_shared",
+    "txt_mcc_shared",
+    "img_uniqueness_shared_raw",
+    "txt_uniqueness_shared_raw",
+    "img_uniqueness_shared_norm",
+    "txt_uniqueness_shared_norm",
+    # v7: MCC + Uniqueness against full per-modality GT.
+    "img_mcc_full",
+    "txt_mcc_full",
+    "img_uniqueness_full_raw",
+    "txt_uniqueness_full_raw",
+    "img_uniqueness_full_norm",
+    "txt_uniqueness_full_norm",
+    # v6: per-pair eval latent cosine similarity metric
     "pair_cos_mean",
     "cross_cos_top_mS_mean",
     "cross_cos_rest_mean",
