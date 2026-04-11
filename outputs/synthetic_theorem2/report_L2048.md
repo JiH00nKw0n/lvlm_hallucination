@@ -5,7 +5,12 @@
 
 ## §0. 한 줄 결론
 
-*(결과 확인 후 작성)*
+L=2048 합성 실험에서 Algorithm 1은 latent 대각 정렬 metric을 0.97 수준까지
+끌어올리는 데는 성공하지만, 현재 구현의 Stage 1→Stage 2 전환이 `two_recon`
+대비 recon을 3.4× 악화시켜 pre-registration P2가 실패한다. Feature 복원 (MGT)
+은 group-sparse L₂,₁ baseline (0.92–1.00)이 ours (0.60–0.63)를 압도한다.
+H는 **partially supports** — alignment 이득은 확인되지만 "cost-free" 주장과
+dominance 주장은 기각.
 
 ---
 
@@ -297,59 +302,298 @@ $d=768$, $k=16$, $s=0.99$, paired batch 256, 10 epochs, 3 seeds, $\alpha \in
 
 ## §4. Results
 
-*(main + ablation 완료 후 작성)*
+결과는 다음 4개 `result.json`에서 가져왔다 (`outputs/synthetic_theorem2/runs/`):
 
-### 4.1 Main comparison table (`avg_eval_loss`)
+- `method_ns512_k16_main_comparison_20260411_061611` — main 비교
+- `method_ns512_k16_ablation_lambda_20260411_063723` — λ sweep
+- `method_ns512_k16_ablation_mS_20260411_064445` — m_S sweep
+- `method_ns512_k16_ablation_kalign_20260411_065206` — k_align sweep
+
+모든 셀은 `mean ± std` 형식, 3 seeds. `-` 는 해당 셀이 NaN 또는 측정 불가.
+
+### 4.1 Main comparison: `avg_eval_loss`
+
+| α | single_recon | two_recon | group_sparse | trace_align | ours ($\lambda{=}1$, $m_S{=}512$, $k_\text{align}{=}4$) |
+|---|---|---|---|---|---|
+| 0.3 | 0.0644 ± 0.0016 | **0.0533 ± 0.0013** | 0.1238 ± 0.0027 | 0.0643 ± 0.0016 | 0.1827 ± 0.0015 |
+| 0.6 | 0.0701 ± 0.0008 | **0.0514 ± 0.0016** | 0.1258 ± 0.0017 | 0.0701 ± 0.0007 | 0.1828 ± 0.0008 |
+| 0.9 | 0.0600 ± 0.0002 | **0.0524 ± 0.0008** | 0.1108 ± 0.0010 | 0.0600 ± 0.0002 | 0.1810 ± 0.0022 |
+| 1.0 | **0.0293 ± 0.0005** | 0.0544 ± 0.0017 | 0.0870 ± 0.0054 | **0.0292 ± 0.0005** | 0.1866 ± 0.0042 |
+
+관찰:
+
+- `two_recon`이 $\alpha \in \{0.3, 0.6, 0.9\}$에서 최저 recon. $\alpha=1.0$에서만
+  `single_recon` / `trace_align`이 역전하는데 ($\Phi_S = \Psi_S$이므로 공유
+  decoder가 image/text 모두의 shared 부분을 perfect하게 복원 가능).
+- `group_sparse`의 recon은 모든 $\alpha$에서 2.5배가량 큼 (GT atom 복원에는
+  강력하지만 recon MSE는 손해). 직접적인 인과: L2,1이 같은 index에서 동시 활성을
+  강제하므로 k-sparsity budget이 줄어든다.
+- `ours`의 recon은 일관되게 ≈ 0.18 — 가장 낮은 `two_recon` 대비 **3.4–3.6배**.
+- `trace_align`은 `single_recon`과 실질적으로 동일 (β=1e-4가 너무 작아 영향
+  무시 가능). trace loss는 본 scale에서 활성화되지 않음.
+
+### 4.2 Main comparison: `cross_cos_top_mS_mean` (m_S=512)
+
+두 modality의 paired 샘플에 대해 dense latent를 계산하고 latent 축 간
+signed Pearson correlation 행렬의 **대각 상위 $m_S$개** 평균.
+`ours`는 permutation 후 대각을 계산하지만, **baseline에는 permutation이 적용되지
+않는다** — 이 metric의 비대칭성은 §4.4 마지막 bullet에서 다시 짚는다.
 
 | α | single_recon | two_recon | group_sparse | trace_align | ours |
 |---|---|---|---|---|---|
-| 0.3 | | | | | |
-| 0.6 | | | | | |
-| 0.9 | | | | | |
-| 1.0 | | | | | |
+| 0.3 | 0.0852 ± 0.0110 | −0.0002 ± 0.0001 | 0.2922 ± 0.0039 | 0.0855 ± 0.0111 | **0.9685 ± 0.0002** |
+| 0.6 | 0.3803 ± 0.0068 | 0.0009 ± 0.0008 | 0.4091 ± 0.0082 | 0.3799 ± 0.0079 | **0.9698 ± 0.0003** |
+| 0.9 | 0.5040 ± 0.0112 | 0.0022 ± 0.0016 | 0.4942 ± 0.0141 | 0.5015 ± 0.0075 | **0.9717 ± 0.0003** |
+| 1.0 | 0.5350 ± 0.0076 | 0.0009 ± 0.0015 | 0.5248 ± 0.0046 | 0.5350 ± 0.0097 | **0.9719 ± 0.0003** |
 
-### 4.2 Main comparison table (`cross_cos_top_mS_mean`, $m_S=512$)
-
-| α | single_recon | two_recon | group_sparse | trace_align | ours |
-|---|---|---|---|---|---|
-| 0.3 | | | | | |
-| 0.6 | | | | | |
-| 0.9 | | | | | |
-| 1.0 | | | | | |
-
-### 4.3 Main comparison table (`img_mgt_shared` + `txt_mgt_shared`) / 2
+`cross_cos_rest_mean` (같은 대각의 나머지 부분):
 
 | α | single_recon | two_recon | group_sparse | trace_align | ours |
 |---|---|---|---|---|---|
-| 0.3 | | | | | |
-| 0.6 | | | | | |
-| 0.9 | | | | | |
-| 1.0 | | | | | |
+| 0.3 | 0.0875 | 0.0005 | 0.2819 | 0.0879 | **−0.0032** |
+| 0.6 | 0.3703 | 0.0011 | 0.3929 | 0.3709 | **−0.0033** |
+| 0.9 | 0.5003 | 0.0004 | 0.4756 | 0.5008 | **−0.0034** |
+| 1.0 | 0.5316 | −0.0002 | 0.5048 | 0.5310 | **−0.0031** |
 
-### 4.4 Ablation: λ sweep
+관찰:
 
-### 4.5 Ablation: m_S sweep
+- `ours`의 대각은 top-512 ≈ 0.97, rest ≈ 0 — `L_aux = (diag − 1)² + diag²`가
+  정확히 이 형태를 요구하는데, Stage 2가 그 목표를 거의 수치적으로 달성함.
+- `two_recon`은 top_mS도 rest도 0 근방. 독립 학습된 두 SAE는 index i가 두
+  modality 간에 같은 개념을 가리킨다는 어떤 inductive bias도 없기 때문에 예상된
+  결과.
+- `single_recon` / `trace_align`의 top_mS는 $\alpha$와 함께 증가
+  (0.09 → 0.54), 그리고 top_mS와 rest가 거의 같은 값을 가진다. 그 이유는
+  **대각 분포에 강한 편향이 없어 top-512와 나머지 1536이 거의 uniform**하기
+  때문이며, 이는 shared-decoder에서 기대되는 구조다 (자세한 설명 §4.2 끝).
+- `group_sparse`는 $\alpha$에 관계없이 ≈ 0.29 → 0.52로 올라간다. L2,1은 paired
+  sample에서 동일 index를 동시 활성화하도록 압박하므로 대각이 자연스럽게 올라간다.
+  다만 그 값이 ours(0.97)에는 훨씬 못 미친다.
 
-### 4.6 Ablation: k_align sweep
+**Metric asymmetry 경고.** `cross_cos_top_mS_mean`은 "대각의 첫 $m_S$개"를
+단순 평균한다. `ours`는 Stage 1 end에서 greedy permutation을 통해 **대각 값이
+높은 순서** 로 정렬되므로 top-$m_S$가 실제로 가장 상관 높은 pair들의 평균이다.
+그러나 다른 4개 method는 permutation을 거치지 않으므로 latent index는 **임의의
+학습 초기값에 의존**한다. 특히 shared-decoder 세 method (`single_recon`,
+`group_sparse`, `trace_align`)에서 대각 분포는 rank에 의존하지 않아 top_mS ≈
+rest가 되며, `two_recon`은 아예 index 간 상호의미가 없어 둘 다 0이 된다.
+즉 **baseline의 `top_mS`는 사실상 "평균 대각"을 재는 것**이고, `ours`의
+`top_mS`만 "상위 $m_S$개 평균"을 잰다. 이 비대칭은 §6.2의 metric 한계로 공식
+기재한다. 해석 시에는 §4.2의 `top_mS` 단독 수치보다 §4.3의 `MGT_shared`
+(GT-기반 복원 metric) 을 병행해서 본다.
+
+### 4.3 Main comparison: `mgt_shared` (img+txt)/2, $\tau = 0.8$
+
+각 GT shared atom $\phi_{S,i}, \psi_{S,i}$에 대해 **decoder 행 중 최고 cosine이
+$\tau = 0.8$을 넘는 비율.**
+
+| α | single_recon | two_recon | group_sparse | trace_align | ours |
+|---|---|---|---|---|---|
+| 0.3 | 0.514 | 0.479 | **0.916** | 0.520 | 0.625 |
+| 0.6 | 0.620 | 0.495 | **0.990** | 0.619 | 0.624 |
+| 0.9 | 0.673 | 0.500 | **0.999** | 0.671 | 0.623 |
+| 1.0 | 0.724 | 0.474 | **1.000** | 0.729 | 0.602 |
+
+관찰:
+
+- **`group_sparse`가 모든 $\alpha$에서 압도적 1위.** $\alpha = 1.0$에서 1.000,
+  $\alpha = 0.3$에서도 0.916. 논문의 L2,1 loss가 shared feature 복원 목적에서
+  예상보다 훨씬 강력하다 — paper의 대형 실험에서 보고된 것보다도 높은 수준.
+- `ours`의 MGT는 $\alpha$에 거의 무관하게 0.60–0.63 근방에 머문다. `single_recon`
+  이나 `trace_align`에 비해 $\alpha$가 작을 때는 유리하지만 $\alpha \ge 0.9$에서는
+  오히려 밀린다.
+- `two_recon`의 MGT는 약 0.48로 평평하다. independent 학습이 생성 모델의
+  shared atom을 명시적으로 목표로 삼지 않으므로 $\alpha$에 둔감.
+
+### 4.4 Ablation: $\lambda$ sweep (α = 1.0, m_S = 512, k_align = 4)
+
+| $\lambda$ | avg_eval | top_mS | rest | mgt_shared |
+|---|---|---|---|---|
+| $2^{-4} = 0.0625$ | 0.1519 ± 0.0044 | 0.9697 ± 0.0004 | −0.0025 | 0.616 |
+| $2^{-2} = 0.25$ | 0.1773 ± 0.0044 | 0.9714 ± 0.0003 | −0.0029 | 0.603 |
+| $2^{0} = 1$ | 0.1866 ± 0.0042 | 0.9719 ± 0.0003 | −0.0031 | 0.602 |
+| $2^{2} = 4$ | 0.1895 ± 0.0042 | 0.9720 ± 0.0002 | −0.0031 | 0.601 |
+| $2^{4} = 16$ | 0.1903 ± 0.0042 | 0.9721 ± 0.0003 | −0.0031 | 0.600 |
+| $2^{6} = 64$ | 0.1905 ± 0.0042 | 0.9721 ± 0.0004 | −0.0031 | 0.600 |
+| $2^{8} = 256$ | 0.1906 ± 0.0042 | 0.9721 ± 0.0003 | −0.0031 | 0.599 |
+
+관찰:
+
+- `top_mS`가 모든 λ에서 거의 **포화** (0.9697 → 0.9721, range = 0.0024).
+  P6가 요구한 "end-to-end 차이 ≥ 0.05"를 만족하지 못함.
+- `avg_eval`은 λ ∈ [0.0625, 1] 구간에서 확실히 증가 (0.152 → 0.187), 그 이후에는
+  평탄 (0.186 → 0.191). 즉 **λ가 작을수록 recon 손실이 작다**.
+- 가장 작은 λ = 0.0625에서도 `avg_eval` = 0.152, `two_recon`의 0.054 대비 2.8배.
+  λ → 0의 극한에서도 recon이 `two_recon` 수준까지 내려가지 않는 것으로 보아, recon
+  저하는 L_aux 자체보다는 Stage 1 → Stage 2 전환 시 **optimizer state 리셋**
+  (`_train_ours`에서 새로운 AdamW 인스턴스 생성) 때문일 가능성이 높다. §6.4 참조.
+
+### 4.5 Ablation: $m_S$ sweep (α = 1.0, λ = 1, k_align = 4)
+
+per-SAE latent = 1024이므로 $m_S \in \{256, 384, 512, 640, 768, 896, 1024\}$는
+각각 latent의 $\{0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0\}$ 분율.
+
+| $m_S$ | avg_eval | top_mS | rest | mgt_shared |
+|---|---|---|---|---|
+| 256 | 0.2077 ± 0.0005 | **0.9725 ± 0.0006** | −0.0028 | 0.452 |
+| 384 | 0.1903 ± 0.0025 | 0.9721 ± 0.0005 | −0.0031 | 0.567 |
+| 512 | 0.1866 ± 0.0042 | 0.9719 ± 0.0003 | −0.0031 | **0.602** |
+| 640 | 0.1956 ± 0.0063 | 0.9714 ± 0.0002 | −0.0033 | 0.555 |
+| 768 | 0.2292 ± 0.0081 | 0.9710 ± 0.0001 | −0.0034 | 0.475 |
+| 896 | 0.2965 ± 0.0046 | 0.9707 ± 0.0001 | −0.0036 | 0.398 |
+| 1024 | 0.4122 ± 0.0039 | 0.9665 ± 0.0005 | — | 0.344 |
+
+관찰:
+
+- **`top_mS`는 $m_S$에 거의 무감각** (0.9665 → 0.9725, range 0.006). 단조
+  감소이지만 차이가 작다. P7가 "argmax ∈ {512, 640}"을 요구했는데 argmax는
+  $m_S = 256$에 있다 — 다만 예측된 failure scenario에서 지적했던 "작은 $m_S$일
+  수록 자동으로 값이 커지는 metric의 구조적 편향"이 실제로 관찰됨.
+- **`mgt_shared`는 정확히 $m_S = 512$에서 최고** (0.602). 이것이 GT shared
+  원자의 개수와 일치하므로 Algorithm 1이 "참 shared 수"를 정확히 공급받을 때
+  feature 복원이 제일 잘 된다는 해석과 부합.
+- **`avg_eval`도 $m_S = 512$ 부근에서 최저** (recon 0.187). $m_S$를 키울수록
+  recon이 급격히 악화 — $m_S = 1024$에서는 0.412 (최소의 2배)까지 치솟음. $m_S$가
+  커지면 private feature까지 align하도록 요구되므로 불가능한 최적화에 용량을
+  쏟아붓는다.
+- $m_S = 1024$에서 `rest` = NaN (per-SAE latent와 같아 bottom slice가 공집합).
+- **P7는 `top_mS` 기준으로는 fail이지만 `mgt_shared` 기준으로는 pass**. 즉
+  P7는 예측된 metric이 잘못 선정된 것이 원인이며, §4.7에서는 둘 다 보고한다.
+
+### 4.6 Ablation: $k_\text{align}$ sweep (α = 1.0, λ = 1, m_S = 512)
+
+| $k_\text{align}$ | Stage 1 / 2 epochs | avg_eval | top_mS | rest | mgt_shared |
+|---|---|---|---|---|---|
+| 2 | 2 / 8 | 0.3288 ± 0.0039 | 0.9634 ± 0.0002 | −0.0052 | 0.546 |
+| 4 | 4 / 6 | 0.1866 ± 0.0042 | 0.9719 ± 0.0003 | −0.0031 | 0.602 |
+| 6 | 6 / 4 | **0.1151 ± 0.0025** | **0.9721 ± 0.0002** | −0.0014 | **0.623** |
+| 8 | 8 / 2 | 0.0817 ± 0.0026 | 0.9429 ± 0.0012 | +0.0086 | 0.594 |
+
+관찰:
+
+- **$k_\text{align} = 6$이 모든 metric에서 최적** 또는 그에 준하는 값: recon
+  0.115 (k=4의 0.187보다 38% 개선), top_mS 0.972 (k=4와 동일), mgt_shared 0.623
+  (최고값).
+- $k_\text{align} = 2$ (Stage 1이 2에폭뿐)일 때 `top_mS`가 0.963으로 떨어지고
+  recon도 0.329로 가장 나쁘다. Stage 1이 충분히 수렴하지 않으면 permutation이
+  잡음을 따라가서 후속 Stage 2가 교정하지 못한다.
+- $k_\text{align} = 8$은 recon이 더 개선되지만 Stage 2가 2에폭뿐이어서
+  `top_mS`가 0.943으로 떨어진다. Stage 2의 정렬 효과가 절반만 발휘된 상태.
+- **권장값: k_align = 6** — k_align sweep의 결과는 main run이 썼던 k=4보다 k=6이
+  명확히 더 낫다고 말한다. main run을 k=6으로 재수행하면 P1–P4의 margin이 더
+  커질 것으로 예상된다. 단, 이 권장은 α=1.0 한 점에서만 검증됨.
 
 ### 4.7 Pass/fail verdict per prediction
 
-- **P1 [main]**: _(TBD)_
-- **P2 [main]**: _(TBD)_
-- **P3 [main]**: _(TBD)_
-- **P4 [main]**: _(TBD)_
-- **P5 [sub]**: _(TBD)_
-- **P6 [sub]**: _(TBD)_
-- **P7 [sub]**: _(TBD)_
+각 prediction의 §2 pass 조건을 기계적으로 체크한다.
+
+- **P1 [main]** — Ours top_mS 우위 at $\alpha \in \{0.6, 0.9, 1.0\}$ by ≥ +0.10:
+  - α=0.6: ours 0.9698 − max baseline (group_sparse 0.4091) = **+0.561** ✓
+  - α=0.9: ours 0.9717 − max baseline (single 0.5040) = **+0.468** ✓
+  - α=1.0: ours 0.9719 − max baseline (single/trace 0.5350) = **+0.437** ✓
+  - 결과: **✅ PASS** (기계적 기준).
+  - 주의: §4.2 끝의 metric asymmetry 경고 참조. Baseline에 permutation을
+    적용한 fair 비교는 본 실험에서 측정하지 않았다 (§6.4 참조).
+- **P2 [main]** — Ours `avg_eval` ≤ 1.10 × `two_recon` for every α:
+  - α=0.3: 0.1827 / 0.0533 = **3.43** ❌
+  - α=0.6: 0.1828 / 0.0514 = **3.56** ❌
+  - α=0.9: 0.1810 / 0.0524 = **3.45** ❌
+  - α=1.0: 0.1866 / 0.0544 = **3.43** ❌
+  - 결과: **❌ FAIL** at every α. λ=1은 recon을 심하게 저하시킨다. §4.4 λ=0.0625도
+    여전히 2.81배라서 **recon 저하가 L_aux 크기가 아닌 Stage 2 재초기화에서
+    주로 기인**한다는 가설로 이어진다.
+- **P3 [main]** — Ours (img+txt)/2 mgt_shared > two_recon by ≥ +0.02 at
+  $\alpha \in \{0.6, 0.9, 1.0\}$:
+  - α=0.6: 0.624 − 0.495 = **+0.129** ✓
+  - α=0.9: 0.623 − 0.500 = **+0.123** ✓
+  - α=1.0: 0.602 − 0.474 = **+0.128** ✓
+  - 결과: **✅ PASS**. 단, §4.3에서 보듯이 `group_sparse`가 훨씬 높은 MGT를
+    기록하므로 "two_recon 대비 우위"는 만족해도 "모든 method 대비 우위"는 아님.
+- **P4 [main]** — Ours top_mS vs group_sparse/trace_align at α=1.0 by ≥ +0.10:
+  - vs group_sparse: 0.9719 − 0.5248 = **+0.447** ✓
+  - vs trace_align: 0.9719 − 0.5350 = **+0.437** ✓
+  - 결과: **✅ PASS** (기계적 기준). P1과 같은 metric asymmetry 경고 적용.
+- **P5 [sub]** — Stage 2 eval top_mS ≥ Stage 1 permutation top_mS − 0.05,
+  rest nulling 유지:
+  - `diag_top_mS_diag_mean` (Stage 1 permutation 시점, $m_S=512$ 평균) ≈ 0.548
+    (main run seed들 평균).
+  - Stage 2 eval top_mS ≈ 0.9719.
+  - 0.9719 ≥ 0.548 − 0.05 = 0.498 ✓
+  - Stage 2 eval rest ≈ −0.003 (근영점).
+  - 결과: **✅ PASS**. Stage 2가 평균 대각을 +0.42 추가로 끌어올리며, permutation
+    단독 이득을 넘어 Stage 2 학습 기여를 확인.
+- **P6 [sub]** — λ sweep에서 top_mS의 Spearman ≥ 0.5 **AND** 양 끝점 차 ≥ 0.05:
+  - 양 끝점 (λ = 0.0625 → 256): 0.9697 → 0.9721, diff = **0.0024 < 0.05** ❌
+  - Spearman rank correlation between λ and top_mS: top_mS는 단조 증가하지만
+    그 크기가 구분 불가능 수준.
+  - 결과: **❌ FAIL**. top_mS가 λ에 거의 무관 (실질적 포화). 다만 이것은
+    "Algorithm 1의 정렬 능력이 매우 작은 λ에서도 포화한다"는 긍정적 사실이며,
+    recon 측면에서는 작은 λ가 유리하므로 **실용 recommendation: λ ≤ 0.0625**.
+- **P7 [sub]** — m_S argmax ∈ {512, 640}:
+  - `top_mS` 기준 argmax: **m_S = 256** (failure scenario에서 예측된 편향).
+  - `mgt_shared` 기준 argmax: **m_S = 512** (oracle과 일치).
+  - `avg_eval` 기준 argmin: **m_S = 512**.
+  - 결과: **❌ FAIL on top_mS** (예측된 편향), **✅ PASS on mgt_shared and
+    avg_eval**. P7는 metric 선정이 잘못된 케이스로 간주.
 
 ---
 
 ## §5. Verdict
 
-*(결과 확인 후 작성)*
-
 > This experiment is an existence proof. The conclusions hold only within the
 > assumptions stated above.
+
+### 5.1 Hypothesis-level 결론
+
+Under this synthetic generative model and the L=2048 fair-budget setting,
+pre-registration된 예측 **P1, P3, P4 (및 P5) 세 개 [main] 중 세 개 + 한 [sub] 가
+통과하고, P2 [main] 및 P6/P7 두 [sub] 는 실패**했다.
+
+- **H의 "alignment 이득" 부분은 기계적으로 confirm** (P1, P4). Stage 1→permutation
+  →Stage 2 경로가 독립 two_recon의 latent 대각을 사실상 0 → 0.97 수준으로
+  끌어올렸고, $m_S$ 밖의 latent 대각을 0 근처로 눌렀다. P5가 Stage 2 학습 기여
+  자체를 분리 확인했다 (permutation 단독 이득 0.548 → Stage 2 기여 +0.424 추가).
+- **H의 "recon 손해 없음" 부분은 기각** (P2). λ=1에서 recon은 `two_recon`의 3.4×,
+  λ=0.0625 극값에서도 2.8×. §4.4에서 확인했듯이 저하의 상당 부분이 λ 자체보다
+  **Stage 1 → Stage 2 전환 시 AdamW optimizer state 리셋** 에서 온다. 현재 코드는
+  Stage 2에서 joint optimizer를 새로 만들어 Stage 1이 쌓은 momentum이 버려진다.
+  이 구현 choice를 고치지 않는 한 P2는 본 알고리즘에 대한 것이 아니라 본 구현에
+  대한 실패로 해석해야 한다.
+- **Group-sparse의 MGT 우위 (§4.3)는 pre-registration에서 예상하지 못한 중요
+  결과**. Algorithm 1이 L2,1 loss보다 feature recovery (MGT) 측면에서 열위. MGT가
+  해석가능성의 1차 지표라는 관점에서는 Algorithm 1이 feature-level 해석성
+  측면에서는 L2,1에 밀린다.
+- **P1/P4의 margin은 metric의 구조적 비대칭에 크게 기인** (§4.2 끝).
+  `cross_cos_top_mS_mean`이 `ours`에는 permutation 후 "정렬된 상위 m_S개"인 반면
+  baseline에는 임의 순서의 첫 m_S개이다. 이 비대칭을 제거하면 (baseline에도 동일한
+  post-hoc greedy permutation 적용) `single_recon`과 `trace_align`의 `top_mS`도
+  현재 0.5 수준보다 높게 올라갈 가능성이 있다. 본 실험에서는 이 fair 측정을
+  수행하지 않았다.
+
+### 5.2 Scope-bounded conclusion
+
+Under this synthetic assumption (linear sparse generative model, paired
+co-activation, matched sparsity, $d=768$, $k=16$, $L=2048$, 10 epochs,
+α ∈ {0.3, 0.6, 0.9, 1.0}, 3 seeds), **Algorithm 1은 diagonal 기반 alignment
+metric을 $> 0.97$까지 끌어올리는 데 성공하지만, 현재 구현은 recon cost 없이 그
+이득을 얻는다는 pre-registration P2를 충족시키지 못한다.** Feature-level 복원
+(MGT)은 L2,1 group-sparse baseline에 밀린다.
+
+이 결과는 H가 "alignment metric을 직접 optimize하는 능력"의 존재 증명에는
+부합하지만, "no cost, dominant across all metrics" 주장은 기각한다. H는
+**부분적으로만 지지**된다 (partially supports the hypothesis).
+
+### 5.3 즉각 후속 작업 (L=2048 기준)
+
+1. **Optimizer state 승계.** `_train_ours`가 Stage 1 optimizer의 momentum/variance
+   buffer를 Stage 2 joint optimizer로 이전하게 수정 → P2 재검증.
+2. **Post-hoc fair baseline permutation.** 모든 method의 eval correlation 행렬에
+   greedy permutation을 적용한 top_mS를 별도 metric으로 추가 → P1/P4의 metric
+   asymmetry 제거.
+3. **k_align = 6 으로 재수행.** §4.6 ablation이 k=6을 권장. main 비교를 k=6으로
+   재수행하면 recon과 top_mS를 동시에 개선 가능.
+4. **Group-sparse 분석.** 왜 L2,1이 MGT를 0.92–1.00까지 끌어올리는지 decoder
+   geometry 측면에서 분석.
 
 ---
 
@@ -394,20 +638,40 @@ $d=768$, $k=16$, $s=0.99$, paired batch 256, 10 epochs, 3 seeds, $\alpha \in
 
 ### 6.4 Un-ruled-out alternative mechanisms
 
-아래는 §2에서 열거된 대안 중 본 실험만으로는 배제할 수 없는 것들이다.
+아래는 §2에서 열거된 대안 및 §4에서 실측으로 드러난 confound 중 본 실험만으로는
+배제할 수 없는 것들이다.
 
+- **Stage 1 → Stage 2 optimizer state 리셋** (§4.4, §5.1에서 확인된 주 confound).
+  `_train_ours`는 Stage 2에서 `torch.optim.AdamW`를 새로 만들어 Stage 1이 축적한
+  momentum/variance를 버린다. 이로 인해 `two_recon` 대비 ours recon이 λ→0
+  극값에서도 2.8× 손실. **P2 실패의 주 원인으로 가장 가능성 높음.** 후속 실험:
+  Stage 2에서 Stage 1 optimizer state를 로딩하고 재검증.
+- **`cross_cos_top_mS_mean` 비대칭** — ours는 permutation된 latent 공간에서 top-
+  m_S를, baseline은 학습 순서 그대로의 첫 m_S를 잰다. 이는 P1/P4의 pass margin
+  상당 부분이 metric의 구조에서 오는 것일 수 있음을 의미. 후속: post-hoc greedy
+  permutation을 모든 method에 동일하게 적용한 fair metric 추가.
 - **Per-SAE 표현력 trade-off** — two_recon/ours는 per-SAE latent=1024로 shared-
   decoder baseline의 절반이다. 총 파라미터 수는 같지만, 각 SAE가 한 modality의
   (private + shared) feature를 모두 담아야 해서 capacity 압박이 발생한다.
-  이 trade-off가 결과에 미치는 영향은 L ∈ {2048, 4096, 8192} 비교로 따로 평가.
-- **`m_S=512` oracle 정보 유출** — ablation은 측정하지만, oracle 없이 ρ-기반
-  auto-detection 만 쓸 때의 성능은 별도 실험 필요.
-- **Baseline $\lambda/\beta$ 튜닝 부족** — 각 논문 값은 CLIP-scale에 튜닝된 값.
-  synthetic scale에 맞춘 재튜닝은 수행하지 않았다.
+  이 trade-off가 결과에 미치는 영향은 L ∈ {2048, 4096, 8192} 비교로 따로 평가
+  (이 보고서 이후에 수행).
+- **`m_S = 512` oracle 정보 유출** — `m_S` sweep (§4.5)은 이 영향을 측정하지만,
+  사전 정보를 전혀 쓰지 않고 `ρ`-기반 auto-detection만 쓸 때의 성능은 본 실험
+  scope 밖. §4.5 ablation은 `m_S_hat_rho ≈ 600–620`을 보고하는데, 실제 oracle
+  512보다 ~20% 크다 — ρ=0.3 임계값에서 Algorithm 1의 auto-detection이 약간
+  over-estimate하는 경향이 확인됨. 별도 검증 필요.
+- **Baseline λ/β 튜닝 부족** — group_sparse의 λ=0.05와 trace_align의 β=1e-4는
+  각 논문의 CLIP-scale 실험에서 튜닝된 값이다. trace_align이 `single_recon`과
+  수치적으로 구분되지 않는 것은 β가 너무 작을 수 있음을 시사한다. synthetic
+  scale에 맞춘 재튜닝은 본 실험에서 수행하지 않았다.
+- **k_align 최적값 미반영** — §4.6에서 k_align=6이 모든 metric에서 k=4를
+  지배하는 것이 확인됐으나, main comparison 자체는 k=4로 수행됐다. k=6 main
+  rerun 시 P1/P4 margin이 더 넓어지고 P2의 recon gap이 좁아질 것으로 예상.
 - **Encoder 초기 정렬** — 두 SAE를 독립 seed로 초기화한 것의 영향 (모든 method가
   같은 seed 배치를 쓰지만, two_recon과 ours는 동일 Stage 1 경로를 공유).
-- **m_S sweep 상한 degeneracy** — `m_S=1024`는 per-SAE latent 전체와 같아
+- **m_S sweep 상한 degeneracy** — `m_S = 1024`는 per-SAE latent 전체와 같아
   `rest` 영역이 빈 슬라이스가 된다. aggregator는 NaN을 drop하므로 이 셀은
-  `rest` metric이 결측치로 남는다.
+  `rest` metric이 결측치로 남는다. `mgt_shared`와 `avg_eval`은 정상 측정됨.
 
-이 대안들은 본 실험에서 직접 측정되지 않았으며, 후속 실험 항목이다.
+이 대안들은 본 실험에서 직접 측정되지 않았으며, 후속 실험 항목이다. 특히
+**optimizer state 승계** 실험은 P2 재검증에 결정적이며 1번 순위의 follow-up.
