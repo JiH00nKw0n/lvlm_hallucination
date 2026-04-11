@@ -178,11 +178,15 @@ def _train_two_recon(
     *,
     num_epochs: Optional[int] = None,
 ) -> tuple[TopKSAE, TopKSAE]:
+    """Two independent SAEs, each with latent_size // 2 so the total latent
+    budget matches the single-SAE baselines (Theorem 1 fair-comparison
+    convention)."""
     n_epochs: int = int(num_epochs) if num_epochs is not None else int(args.num_epochs)
+    sub_latent = latent_size // 2
     _seed_everything(seed)
-    sae_i = _make_sae(args, latent_size, device)
+    sae_i = _make_sae(args, sub_latent, device)
     _seed_everything(seed + 10000)
-    sae_t = _make_sae(args, latent_size, device)
+    sae_t = _make_sae(args, sub_latent, device)
     sae_i.train()
     sae_t.train()
 
@@ -274,17 +278,21 @@ def _compute_latent_correlation(
     train_txt: torch.Tensor,
     batch_size: int,
     device: torch.device,
-    latent_size: int,
 ) -> np.ndarray:
     """Signed Pearson correlation between paired dense latents, computed
-    over the full training set in float64. Returns (n, n) numpy array."""
+    over the full training set in float64. Returns (n, n) numpy array,
+    where n is the per-SAE latent size (both SAEs must have the same
+    latent_size)."""
+    assert sae_i.latent_size == sae_t.latent_size, (
+        f"latent sizes differ: {sae_i.latent_size} vs {sae_t.latent_size}"
+    )
     sae_i.eval()
     sae_t.eval()
     loader = _paired_loader(
         train_img, train_txt, batch_size, device, shuffle=False, drop_last=False,
     )
 
-    n = latent_size
+    n = int(sae_i.latent_size)
     sum_i = np.zeros(n, dtype=np.float64)
     sum_t = np.zeros(n, dtype=np.float64)
     sum_ii = np.zeros(n, dtype=np.float64)
@@ -422,7 +430,7 @@ def _train_ours(
 
     # -- Permutation --
     C = _compute_latent_correlation(
-        sae_i, sae_t, train_img, train_txt, args.batch_size, device, latent_size,
+        sae_i, sae_t, train_img, train_txt, args.batch_size, device,
     )
     P_I, P_T, ordered = _greedy_permutation_match_full(C)
     _apply_latent_permutation(sae_i, P_I)
@@ -494,18 +502,20 @@ def _cross_corr_mean_parts(
     eval_txt: torch.Tensor,
     batch_size: int,
     device: torch.device,
-    latent_size: int,
     m_S: int,
 ) -> tuple[float, float]:
     """Signed Pearson correlation on the *eval* set, then split into
-    first `m_S` diag entries (cross_cos_top_mS_mean) and rest (cross_cos_rest_mean).
+    first `m_S` diag entries (cross_cos_top_mS_mean) and rest
+    (cross_cos_rest_mean). `m_S` is clipped to the actual latent count.
     """
     C = _compute_latent_correlation(
-        sae_i, sae_t, eval_img, eval_txt, batch_size, device, latent_size,
+        sae_i, sae_t, eval_img, eval_txt, batch_size, device,
     )
     diag = np.diag(C)
-    top = float(diag[:m_S].mean()) if m_S > 0 else float("nan")
-    rest = float(diag[m_S:].mean()) if m_S < diag.shape[0] else float("nan")
+    n = diag.shape[0]
+    m_S_eff = max(0, min(int(m_S), n))
+    top = float(diag[:m_S_eff].mean()) if m_S_eff > 0 else float("nan")
+    rest = float(diag[m_S_eff:].mean()) if m_S_eff < n else float("nan")
     return top, rest
 
 
@@ -519,13 +529,13 @@ def _evaluate_method(
     phi_S: np.ndarray,
     psi_S: np.ndarray,
     n_shared: int,
-    latent_size: int,
     args: argparse.Namespace,
     device: torch.device,
 ) -> dict[str, float]:
     """Compute a flat metrics dict for a trained (sae_i, sae_t) pair.
 
     For shared-decoder methods (1, 3, 4), pass the same model as sae_i and sae_t.
+    The latent size is inferred from `sae_i.latent_size`.
     """
     same_model = sae_i is sae_t
     img_eval = _eval_loss_single_modality(sae_i, eval_img, args.batch_size, device)
@@ -551,7 +561,7 @@ def _evaluate_method(
         m_S_for_diag = int(args._current_m_S)
     top_diag, rest_diag = _cross_corr_mean_parts(
         sae_i, sae_t, eval_img, eval_txt,
-        args.batch_size, device, latent_size, m_S_for_diag,
+        args.batch_size, device, m_S_for_diag,
     )
 
     return {
@@ -651,7 +661,7 @@ def _run_single(
             sae_i=sae_i, sae_t=sae_t,
             eval_img=eval_img, eval_txt=eval_txt,
             phi_S=builder.phi_S, psi_S=builder.psi_S,
-            n_shared=args.n_shared, latent_size=latent_size,
+            n_shared=args.n_shared,
             args=args, device=device,
         )
         metrics_any: dict[str, Any] = {}
