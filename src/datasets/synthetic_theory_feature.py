@@ -88,8 +88,16 @@ class SyntheticTheoryFeatureBuilder(BaseBuilder):
     # Sparsity (uniform across all blocks)
     sparsity: float = 0.999
     min_active: int = 1
+
+    # Coefficient distribution: "exponential" or "relu_gaussian"
+    # exponential: c = cmin + Exp(beta)
+    # relu_gaussian: c = ReLU(mu + sigma * N(0,1))
+    #   (SynthSAEBench, Chanin & Garriga-Alonso 2026)
+    coeff_dist: Literal["exponential", "relu_gaussian"] = "exponential"
     cmin: float = 0.0
     beta: float = 1.0
+    coeff_mu: float = 4.5
+    coeff_sigma: float = 0.5
 
     # Dictionary generation
     max_interference: float = 0.3
@@ -541,9 +549,22 @@ class SyntheticTheoryFeatureBuilder(BaseBuilder):
                 chosen = rng.choice(inactive, size=need, replace=False)
                 mask[idx, chosen] = 1.0
 
-        coeffs = self.cmin + rng.exponential(self.beta, size=(num_samples, num_features))
+        coeffs = self._sample_coefficients(rng, num_samples, num_features)
         values = _safe_float_array(mask * coeffs)
         return values, mask
+
+    def _sample_coefficients(
+        self, rng: np.random.Generator, num_samples: int, num_features: int,
+    ) -> np.ndarray:
+        if self.coeff_dist == "exponential":
+            return self.cmin + rng.exponential(self.beta, size=(num_samples, num_features))
+        elif self.coeff_dist == "relu_gaussian":
+            raw = self.coeff_mu + self.coeff_sigma * rng.standard_normal(
+                size=(num_samples, num_features)
+            )
+            return np.maximum(raw, 0.0)
+        else:
+            raise ValueError(f"Unknown coeff_dist '{self.coeff_dist}'; expected 'exponential' or 'relu_gaussian'.")
 
     # ------------------------------------------------------------------ #
     # Split building                                                      #
@@ -573,8 +594,8 @@ class SyntheticTheoryFeatureBuilder(BaseBuilder):
 
         if self.shared_coeff_mode == "independent":
             _, shared_mask = self._sample_block(num_samples, self.n_shared, rng)
-            coeffs_img = self.cmin + rng.exponential(self.beta, size=(num_samples, self.n_shared))
-            coeffs_txt = self.cmin + rng.exponential(self.beta, size=(num_samples, self.n_shared))
+            coeffs_img = self._sample_coefficients(rng, num_samples, self.n_shared)
+            coeffs_txt = self._sample_coefficients(rng, num_samples, self.n_shared)
             shared_values_img = _safe_float_array(shared_mask * coeffs_img)
             shared_values_txt = _safe_float_array(shared_mask * coeffs_txt)
         else:

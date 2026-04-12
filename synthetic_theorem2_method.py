@@ -952,6 +952,9 @@ def _build_dataset(
         cmin=args.cmin,
         beta=args.beta,
         max_interference=args.max_interference,
+        coeff_dist=getattr(args, "coeff_dist", "exponential"),
+        coeff_mu=getattr(args, "coeff_mu", 4.5),
+        coeff_sigma=getattr(args, "coeff_sigma", 0.5),
         shared_coeff_mode=getattr(args, "shared_coeff_mode", "identical"),
         strategy=args.dictionary_strategy,
         shared_mode=shared_mode,
@@ -1308,6 +1311,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-active", type=int, default=1)
     parser.add_argument("--cmin", type=float, default=0.0)
     parser.add_argument("--beta", type=float, default=1.0)
+    parser.add_argument(
+        "--coeff-dist", type=str, choices=["exponential", "relu_gaussian"],
+        default="exponential",
+        help="Coefficient distribution: 'exponential' (cmin + Exp(beta)) or "
+             "'relu_gaussian' (ReLU(mu + sigma*N(0,1)), SynthSAEBench).",
+    )
+    parser.add_argument("--coeff-mu", type=float, default=4.5,
+                        help="Mean for relu_gaussian coeff dist.")
+    parser.add_argument("--coeff-sigma", type=float, default=0.5,
+                        help="Std for relu_gaussian coeff dist.")
     parser.add_argument("--max-interference", type=float, default=0.1)
     parser.add_argument(
         "--shared-coeff-mode",
@@ -1439,6 +1452,7 @@ def main() -> None:
             "k_align_sweep": args.k_align_sweep,
             "rho": args.rho,
             "shared_coeff_mode": getattr(args, "shared_coeff_mode", "identical"),
+            "coeff_dist": getattr(args, "coeff_dist", "exponential"),
             "run_name": run_name,
         },
         **result,
