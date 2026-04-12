@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-mkdir -p .log .cache result
+mkdir -p .log .cache outputs
 
-echo "Simple setup script - no version checks"
+echo "=== LVLM Hallucination Project Setup ==="
 
 # Use existing Python
 if command -v python3 &> /dev/null; then
@@ -28,33 +28,37 @@ source .venv/bin/activate
 echo "Upgrading pip..."
 pip install --upgrade pip
 
-# Install PyTorch with CUDA 12.1 (compatible with driver 535)
-echo "Installing PyTorch 2.5.1 with CUDA 12.1..."
-pip install --no-cache-dir --force-reinstall \
-  --index-url https://download.pytorch.org/whl/cu121 \
-  torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1
+# Detect CUDA driver version and install matching PyTorch
+echo "Detecting CUDA driver..."
+if command -v nvidia-smi &> /dev/null; then
+    DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)
+    CUDA_VERSION=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1)
+    echo "NVIDIA driver: $DRIVER_VERSION"
+
+    # Try CUDA 12.4 first (most common on recent drivers), fallback to 12.1
+    echo "Installing PyTorch with CUDA 12.4..."
+    if pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124 2>/dev/null; then
+        echo "Installed PyTorch 2.6.0+cu124"
+    else
+        echo "Falling back to CUDA 12.1..."
+        pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu121
+        echo "Installed PyTorch 2.6.0+cu121"
+    fi
+else
+    echo "No NVIDIA GPU detected, installing CPU-only PyTorch..."
+    pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+fi
 
 # Install other dependencies from requirements.txt
 echo "Installing dependencies from requirements.txt..."
 pip install -r requirements.txt
 
+# Verify installation
+echo ""
+echo "=== Verification ==="
+python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA available: {torch.cuda.is_available()}')"
+python -c "from synthetic_theorem2_method import _make_sae; print('synthetic_theorem2_method: OK')"
+
 echo ""
 echo "Setup complete!"
-echo "PyTorch with CUDA 12.1 installed (compatible with driver 535+)"
-
-# Run evaluation after setup
-if [ -n "$HFtoken" ] && [ -z "$HF_TOKEN" ]; then
-    export HF_TOKEN="$HFtoken"
-fi
-
-export HF_HOME="$(pwd)/.cache"
-export HF_DATASETS_CACHE="$(pwd)/.cache"
-export LOG_DIR="$(pwd)/.log"
-
-CFG_PATH="${CFG_PATH:-config/evaluate/llama3-llava-next-8b-hf.yaml}"
-DEVICES="${DEVICES:-0}"
-
-echo "Running evaluation with config: $CFG_PATH"
-echo "Using GPUs: $DEVICES"
-
-bash scripts/eval.sh "$DEVICES" "$CFG_PATH"
+echo "To activate: source .venv/bin/activate"
