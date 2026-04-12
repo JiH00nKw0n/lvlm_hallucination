@@ -35,7 +35,7 @@ python synthetic_theorem2_method.py \
   --aux-norm-sweep "global" \
   --group-sparse-lambda 0.05 --trace-beta 1e-4 --iso-align-beta 0.03 \
   --run-tag "main_${TAG}" \
-  $COMMON "$@" >> "$LOG" 2>&1
+  $COMMON >> "$LOG" 2>&1
 echo "----- main DONE $(date -u +%H:%M:%SZ) -----" >> "$LOG"
 
 # Ablation 1: lambda sweep (α=0.9 only)
@@ -48,7 +48,7 @@ python synthetic_theorem2_method.py \
   --m-s-sweep "512" --k-align-sweep "6" \
   --aux-norm-sweep "global" \
   --run-tag "ablation_lambda_${TAG}" \
-  $COMMON "$@" >> "$LOG" 2>&1
+  $COMMON >> "$LOG" 2>&1
 echo "----- ablation_lambda DONE $(date -u +%H:%M:%SZ) -----" >> "$LOG"
 
 # Ablation 2: m_S sweep (α=0.9 only)
@@ -60,7 +60,7 @@ python synthetic_theorem2_method.py \
   --lambda-aux-sweep "2.0" --m-s-sweep "384,448,512,576,640" --k-align-sweep "6" \
   --aux-norm-sweep "global" \
   --run-tag "ablation_mS_${TAG}" \
-  $COMMON "$@" >> "$LOG" 2>&1
+  $COMMON >> "$LOG" 2>&1
 echo "----- ablation_mS DONE $(date -u +%H:%M:%SZ) -----" >> "$LOG"
 
 # Ablation 3: k_align sweep (α=0.9 only)
@@ -72,7 +72,7 @@ python synthetic_theorem2_method.py \
   --lambda-aux-sweep "2.0" --m-s-sweep "512" --k-align-sweep "2,4,6,8,10" \
   --aux-norm-sweep "global" \
   --run-tag "ablation_kalign_${TAG}" \
-  $COMMON "$@" >> "$LOG" 2>&1
+  $COMMON >> "$LOG" 2>&1
 echo "----- ablation_kalign DONE $(date -u +%H:%M:%SZ) -----" >> "$LOG"
 
 echo "===== basic chain DONE $(date -u +%Y-%m-%dT%H:%M:%SZ) =====" >> "$LOG"
