@@ -100,6 +100,11 @@ class SyntheticTheoryFeatureBuilder(BaseBuilder):
     dict_max_iters: int = 2000
     dict_tol: float = 1e-4
 
+    # Shared coefficient mode: "identical" = same z_S for both modalities,
+    # "independent" = same support (which features active) but magnitudes
+    # sampled independently from cmin + Exp(beta) for each modality.
+    shared_coeff_mode: Literal["identical", "independent"] = "identical"
+
     # Shared mode
     shared_mode: Literal["identical", "alpha", "range"] = "identical"
     alpha_target: float = 0.8          # target mean diag cosine between Phi_S and Psi_S
@@ -563,21 +568,31 @@ class SyntheticTheoryFeatureBuilder(BaseBuilder):
     ) -> dict[str, np.ndarray]:
         rng = np.random.default_rng(seed_seq)
 
-        shared_values, shared_mask = self._sample_block(num_samples, self.n_shared, rng)
         image_values, image_mask = self._sample_block(num_samples, self.n_image, rng)
         text_values, text_mask = self._sample_block(num_samples, self.n_text, rng)
+
+        if self.shared_coeff_mode == "independent":
+            _, shared_mask = self._sample_block(num_samples, self.n_shared, rng)
+            coeffs_img = self.cmin + rng.exponential(self.beta, size=(num_samples, self.n_shared))
+            coeffs_txt = self.cmin + rng.exponential(self.beta, size=(num_samples, self.n_shared))
+            shared_values_img = _safe_float_array(shared_mask * coeffs_img)
+            shared_values_txt = _safe_float_array(shared_mask * coeffs_txt)
+        else:
+            shared_values, shared_mask = self._sample_block(num_samples, self.n_shared, rng)
+            shared_values_img = shared_values
+            shared_values_txt = shared_values
 
         psi_S_use = psi_S_override if psi_S_override is not None else self._psi_S
         assert psi_S_use is not None
 
-        # x = Phi_I @ z_I + Phi_S @ z_S
+        # x = Phi_I @ z_I + Phi_S @ z_S^img
         assert self._phi_S is not None
-        image_rep = shared_values @ self._phi_S.T
+        image_rep = shared_values_img @ self._phi_S.T
         if self._phi_I is not None and self.n_image > 0:
             image_rep = image_rep + image_values @ self._phi_I.T
 
-        # y = Psi_S @ z_S + Psi_T @ z_T
-        text_rep = shared_values @ psi_S_use.T
+        # y = Psi_S @ z_S^txt + Psi_T @ z_T
+        text_rep = shared_values_txt @ psi_S_use.T
         if self._psi_T is not None and self.n_text > 0:
             text_rep = text_rep + text_values @ self._psi_T.T
 
@@ -588,8 +603,8 @@ class SyntheticTheoryFeatureBuilder(BaseBuilder):
             "shared_ground_truth": shared_mask,
             "image_private_ground_truth": image_mask,
             "text_private_ground_truth": text_mask,
-            # Internal: keep coefficient values for calibration
-            "_shared_values": shared_values,
+            "_shared_values_img": shared_values_img,
+            "_shared_values_txt": shared_values_txt,
             "_image_values": image_values,
             "_text_values": text_values,
         }

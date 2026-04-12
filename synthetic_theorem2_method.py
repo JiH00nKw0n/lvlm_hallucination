@@ -127,6 +127,14 @@ def _dense_latents(out) -> torch.Tensor:
 
 
 # ------------------------------------------------------------------ #
+# Loss logging helper                                                #
+# ------------------------------------------------------------------ #
+
+def _log_interval(total_batches: int) -> int:
+    return max(1, total_batches // 10)
+
+
+# ------------------------------------------------------------------ #
 # Method 1: single recon (shared SAE)                                #
 # ------------------------------------------------------------------ #
 
@@ -138,7 +146,7 @@ def _train_single_recon(
     latent_size: int,
     seed: int,
     device: torch.device,
-) -> TopKSAE:
+) -> tuple[TopKSAE, list[dict[str, float]]]:
     _seed_everything(seed)
     model = _make_sae(args, latent_size, device)
     model.train()
@@ -149,10 +157,13 @@ def _train_single_recon(
         train_img, train_txt, args.batch_size, device,
         shuffle=True, drop_last=True,
     )
+    loss_history: list[dict] = []
+    total_batches = len(loader)
+    log_every = _log_interval(total_batches)
     pbar = tqdm(range(args.num_epochs), desc="single_recon", leave=False)
-    for _ in pbar:
+    for ep in pbar:
         last = 0.0
-        for img_b, txt_b in loader:
+        for bi, (img_b, txt_b) in enumerate(loader):
             hs_i = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             hs_t = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             out_i = model(hidden_states=hs_i)
@@ -160,9 +171,11 @@ def _train_single_recon(
             loss = out_i.recon_loss + out_t.recon_loss
             _sae_step(model, optimizer, loss, args.max_grad_norm)
             last = float(loss.detach().item())
+            if (bi + 1) % log_every == 0 or bi == total_batches - 1:
+                loss_history.append({"t": round(ep + (bi + 1) / total_batches, 2), "rec": last})
         pbar.set_postfix(loss=f"{last:.4f}")
     pbar.close()
-    return model
+    return model, loss_history
 
 
 # ------------------------------------------------------------------ #
@@ -179,7 +192,7 @@ def _train_two_recon(
     device: torch.device,
     *,
     num_epochs: Optional[int] = None,
-) -> tuple[TopKSAE, TopKSAE]:
+) -> tuple[TopKSAE, TopKSAE, list[dict]]:
     """Two independent SAEs, each with `latent_size // 2` so the total latent
     budget matches the single-SAE baselines (Theorem 1 fair-comparison
     convention).
@@ -210,10 +223,13 @@ def _train_two_recon(
         shuffle=True, drop_last=True,
     )
 
+    loss_history: list[dict] = []
+    total_batches = len(loader)
+    log_every = _log_interval(total_batches)
     pbar = tqdm(range(n_epochs), desc="two_recon", leave=False)
-    for _ in pbar:
+    for ep in pbar:
         last_i = last_t = 0.0
-        for img_b, txt_b in loader:
+        for bi, (img_b, txt_b) in enumerate(loader):
             hs_i = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             hs_t = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             out_i = sae_i(hidden_states=hs_i)
@@ -222,9 +238,11 @@ def _train_two_recon(
             _joint_step([sae_i, sae_t], optimizer, loss, args.max_grad_norm)
             last_i = float(out_i.recon_loss.detach().item())
             last_t = float(out_t.recon_loss.detach().item())
+            if (bi + 1) % log_every == 0 or bi == total_batches - 1:
+                loss_history.append({"t": round(ep + (bi + 1) / total_batches, 2), "rec": last_i + last_t})
         pbar.set_postfix(img=f"{last_i:.4f}", txt=f"{last_t:.4f}")
     pbar.close()
-    return sae_i, sae_t
+    return sae_i, sae_t, loss_history
 
 
 # ------------------------------------------------------------------ #
@@ -275,7 +293,7 @@ def _train_single_paired_aux(
     aux_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     aux_weight: float,
     desc: str = "paired_aux",
-) -> TopKSAE:
+) -> tuple[TopKSAE, list[dict[str, float]]]:
     _seed_everything(seed)
     model = _make_sae(args, latent_size, device)
     model.train()
@@ -286,10 +304,13 @@ def _train_single_paired_aux(
         train_img, train_txt, args.batch_size, device,
         shuffle=True, drop_last=True,
     )
+    loss_history: list[dict] = []
+    total_batches = len(loader)
+    log_every = _log_interval(total_batches)
     pbar = tqdm(range(args.num_epochs), desc=desc, leave=False)
-    for _ in pbar:
+    for ep in pbar:
         last_rec = last_aux = 0.0
-        for img_b, txt_b in loader:
+        for bi, (img_b, txt_b) in enumerate(loader):
             hs_i = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             hs_t = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             out_i = model(hidden_states=hs_i, return_dense_latents=True)
@@ -301,9 +322,11 @@ def _train_single_paired_aux(
             _sae_step(model, optimizer, loss, args.max_grad_norm)
             last_rec = float((out_i.recon_loss + out_t.recon_loss).detach().item())
             last_aux = float(aux.detach().item())
+            if (bi + 1) % log_every == 0 or bi == total_batches - 1:
+                loss_history.append({"t": round(ep + (bi + 1) / total_batches, 2), "rec": last_rec, "aux": last_aux, "total": last_rec + aux_weight * last_aux})
         pbar.set_postfix(rec=f"{last_rec:.4f}", aux=f"{last_aux:.4f}")
     pbar.close()
-    return model
+    return model, loss_history
 
 
 # ------------------------------------------------------------------ #
@@ -526,14 +549,18 @@ def _train_ours(
         shuffle=True, drop_last=True,
     )
 
+    loss_history: list[dict] = []
+    total_batches = len(loader)
+    log_every = _log_interval(total_batches)
+
     # -- Stage 1: joint training, recon only --
     if stage1_epochs > 0:
         pbar1 = tqdm(
             range(stage1_epochs), desc="ours_stage1(recon)", leave=False,
         )
-        for _ in pbar1:
+        for ep in pbar1:
             last_rec = 0.0
-            for img_b, txt_b in loader:
+            for bi, (img_b, txt_b) in enumerate(loader):
                 hs_i = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
                 hs_t = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
                 out_i = sae_i(hidden_states=hs_i)
@@ -541,6 +568,8 @@ def _train_ours(
                 loss = out_i.recon_loss + out_t.recon_loss
                 _joint_step([sae_i, sae_t], optimizer, loss, args.max_grad_norm)
                 last_rec = float(loss.detach().item())
+                if (bi + 1) % log_every == 0 or bi == total_batches - 1:
+                    loss_history.append({"t": round(ep + (bi + 1) / total_batches, 2), "stage": "s1", "rec": last_rec})
             pbar1.set_postfix(rec=f"{last_rec:.4f}")
         pbar1.close()
 
@@ -569,6 +598,8 @@ def _train_ours(
         "aux_norm": str(aux_norm),
     }
 
+    diagnostics["loss_history"] = loss_history
+
     if stage2_epochs <= 0:
         return sae_i, sae_t, diagnostics
 
@@ -578,9 +609,9 @@ def _train_ours(
         desc=f"ours_stage2(mS={m_S_supplied},lam={lambda_aux},norm={aux_norm})",
         leave=False,
     )
-    for _ in pbar2:
+    for ep2 in pbar2:
         last_rec = last_aux = 0.0
-        for img_b, txt_b in loader:
+        for bi, (img_b, txt_b) in enumerate(loader):
             hs_i = img_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             hs_t = txt_b.to(device=device, dtype=torch.float32).unsqueeze(1)
             out_i = sae_i(hidden_states=hs_i, return_dense_latents=True)
@@ -592,6 +623,9 @@ def _train_ours(
             _joint_step([sae_i, sae_t], optimizer, loss, args.max_grad_norm)
             last_rec = float((out_i.recon_loss + out_t.recon_loss).detach().item())
             last_aux = float(aux.detach().item())
+            if (bi + 1) % log_every == 0 or bi == total_batches - 1:
+                gep = stage1_epochs + ep2 + (bi + 1) / total_batches
+                loss_history.append({"t": round(gep, 2), "stage": "s2", "rec": last_rec, "aux": last_aux, "total": last_rec + lambda_aux * last_aux})
         pbar2.set_postfix(rec=f"{last_rec:.4f}", aux=f"{last_aux:.4f}")
     pbar2.close()
 
@@ -918,6 +952,7 @@ def _build_dataset(
         cmin=args.cmin,
         beta=args.beta,
         max_interference=args.max_interference,
+        shared_coeff_mode=getattr(args, "shared_coeff_mode", "identical"),
         strategy=args.dictionary_strategy,
         shared_mode=shared_mode,
         alpha_lo=max(alpha - 0.03, 0.0) if shared_mode == "range" else 0.7,
@@ -990,39 +1025,44 @@ def _run_single(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    loss_histories: dict[str, Any] = {}
+
     if "single_recon" in methods:
-        model = _train_single_recon(train_img, train_txt, args, latent_size, seed, device)
+        model, lh = _train_single_recon(train_img, train_txt, args, latent_size, seed, device)
         _finish("single_recon", model, model)
+        loss_histories["single_recon"] = lh
 
     if "two_recon" in methods:
-        sae_i, sae_t = _train_two_recon(train_img, train_txt, args, latent_size, seed, device)
+        sae_i, sae_t, lh = _train_two_recon(train_img, train_txt, args, latent_size, seed, device)
         _finish("two_recon", sae_i, sae_t)
+        loss_histories["two_recon"] = lh
 
     if "group_sparse" in methods:
-        model = _train_single_paired_aux(
+        model, lh = _train_single_paired_aux(
             train_img, train_txt, args, latent_size, seed, device,
             aux_fn=group_sparse_loss, aux_weight=args.group_sparse_lambda,
             desc="group_sparse",
         )
         _finish("group_sparse", model, model)
+        loss_histories["group_sparse"] = lh
 
     if "trace_align" in methods:
-        model = _train_single_paired_aux(
+        model, lh = _train_single_paired_aux(
             train_img, train_txt, args, latent_size, seed, device,
             aux_fn=trace_alignment_loss, aux_weight=args.trace_beta,
             desc="trace_align",
         )
         _finish("trace_align", model, model)
+        loss_histories["trace_align"] = lh
 
     if "iso_align" in methods:
-        # Parabrele/IsoEnergy's actual code path (with top-1 masking).
-        # Differs from `trace_align` which follows paper Eq. 1 verbatim.
-        model = _train_single_paired_aux(
+        model, lh = _train_single_paired_aux(
             train_img, train_txt, args, latent_size, seed, device,
             aux_fn=_iso_alignment_penalty, aux_weight=args.iso_align_beta,
             desc="iso_align",
         )
         _finish("iso_align", model, model)
+        loss_histories["iso_align"] = lh
 
     if "ours" in methods:
         for cfg in ours_configs:
@@ -1034,9 +1074,12 @@ def _run_single(
                 m_S_supplied=cfg.m_S,
                 aux_norm=cfg.aux_norm,
             )
-            _finish(f"ours::{cfg.tag}", sae_i, sae_t, extras=diag)
+            tag = f"ours::{cfg.tag}"
+            loss_histories[tag] = diag.pop("loss_history", [])
+            _finish(tag, sae_i, sae_t, extras=diag)
         args._current_m_S = args.n_shared
 
+    result["_loss_histories"] = loss_histories
     return result
 
 
@@ -1267,6 +1310,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--beta", type=float, default=1.0)
     parser.add_argument("--max-interference", type=float, default=0.1)
     parser.add_argument(
+        "--shared-coeff-mode",
+        type=str, choices=["identical", "independent"], default="identical",
+        help="'identical': same z_S for both modalities (v7 default). "
+             "'independent': same support but magnitudes sampled independently.",
+    )
+    parser.add_argument(
         "--dictionary-strategy",
         type=str, choices=["gradient", "random"], default="gradient",
     )
@@ -1389,6 +1438,7 @@ def main() -> None:
             "m_s_sweep": args.m_s_sweep,
             "k_align_sweep": args.k_align_sweep,
             "rho": args.rho,
+            "shared_coeff_mode": getattr(args, "shared_coeff_mode", "identical"),
             "run_name": run_name,
         },
         **result,
@@ -1397,6 +1447,21 @@ def main() -> None:
     json_path = run_dir / "result.json"
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False, default=str)
+
+    loss_data = {}
+    for sr_entry in result.get("sweep_results", []):
+        for sr in sr_entry.get("seed_results", []):
+            seed_val = sr.get("seed", "?")
+            lh = sr.pop("_loss_histories", {})
+            if lh:
+                for mid, hist in lh.items():
+                    key = f"alpha={sr_entry['alpha_target']}_L={sr_entry['latent_size']}_seed={seed_val}/{mid}"
+                    loss_data[key] = hist
+    if loss_data:
+        loss_path = run_dir / "loss.json"
+        with open(loss_path, "w", encoding="utf-8") as f:
+            json.dump(loss_data, f, indent=1, ensure_ascii=False, default=str)
+        logger.info("Saved: %s", loss_path)
     logger.info("Saved: %s", json_path)
 
     # Summary table
