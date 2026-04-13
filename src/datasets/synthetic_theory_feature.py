@@ -99,6 +99,10 @@ class SyntheticTheoryFeatureBuilder(BaseBuilder):
     coeff_mu: float = 4.5
     coeff_sigma: float = 0.5
 
+    # Observation noise: Gaussian noise added to x, y embeddings after
+    # sparse combination. 0 = clean embeddings (default).
+    obs_noise_std: float = 0.0
+
     # Dictionary generation
     max_interference: float = 0.3
     strategy: Literal["gradient", "random"] = "gradient"
@@ -616,6 +620,10 @@ class SyntheticTheoryFeatureBuilder(BaseBuilder):
         text_rep = shared_values_txt @ psi_S_use.T
         if self._psi_T is not None and self.n_text > 0:
             text_rep = text_rep + text_values @ self._psi_T.T
+
+        if self.obs_noise_std > 0:
+            image_rep = image_rep + rng.normal(0.0, self.obs_noise_std, size=image_rep.shape)
+            text_rep = text_rep + rng.normal(0.0, self.obs_noise_std, size=text_rep.shape)
 
         split: dict[str, np.ndarray] = {
             "idx": np.arange(num_samples, dtype=np.int64),

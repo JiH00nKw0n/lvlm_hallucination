@@ -955,6 +955,7 @@ def _build_dataset(
         coeff_dist=getattr(args, "coeff_dist", "exponential"),
         coeff_mu=getattr(args, "coeff_mu", 4.5),
         coeff_sigma=getattr(args, "coeff_sigma", 0.5),
+        obs_noise_std=getattr(args, "obs_noise_std", 0.0),
         shared_coeff_mode=getattr(args, "shared_coeff_mode", "identical"),
         strategy=args.dictionary_strategy,
         shared_mode=shared_mode,
@@ -1321,6 +1322,8 @@ def parse_args() -> argparse.Namespace:
                         help="Mean for relu_gaussian coeff dist.")
     parser.add_argument("--coeff-sigma", type=float, default=0.5,
                         help="Std for relu_gaussian coeff dist.")
+    parser.add_argument("--obs-noise-std", type=float, default=0.0,
+                        help="Std of Gaussian noise added to x, y embeddings (0 = no noise).")
     parser.add_argument("--max-interference", type=float, default=0.1)
     parser.add_argument(
         "--shared-coeff-mode",
@@ -1453,6 +1456,9 @@ def main() -> None:
             "rho": args.rho,
             "shared_coeff_mode": getattr(args, "shared_coeff_mode", "identical"),
             "coeff_dist": getattr(args, "coeff_dist", "exponential"),
+            "coeff_mu": getattr(args, "coeff_mu", 4.5),
+            "coeff_sigma": getattr(args, "coeff_sigma", 0.5),
+            "obs_noise_std": getattr(args, "obs_noise_std", 0.0),
             "run_name": run_name,
         },
         **result,
