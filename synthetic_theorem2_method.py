@@ -1391,6 +1391,10 @@ METRIC_SUFFIXES = [
     "txt_uniqueness_full_raw",
     "img_uniqueness_full_norm",
     "txt_uniqueness_full_norm",
+    # followup9: merged_fraction — fraction of shared pairs where the best
+    # image-matching column equals the best text-matching column (direct
+    # signature of Theorem-2 partition merging on partially aligned pairs).
+    "merged_fraction",
     # v6: per-pair eval latent cosine similarity metric
     "pair_cos_mean",
     "cross_cos_top_mS_mean",
