@@ -2,235 +2,229 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Hypothesis figure — Theorem 2 on partially aligned shared atoms</title>
+<title>Hypothesis figure — generative model and single-decoder failure modes</title>
 <style>
-  body {
-    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
-    margin: 24px;
-    background: #fafafa;
-    color: #222;
-  }
-  h1 { font-size: 18px; font-weight: 600; margin: 0 0 8px 0; }
-  .subtitle { color: #666; font-size: 13px; margin-bottom: 20px; }
-  .panels {
-    display: flex;
-    flex-direction: row;
-    gap: 18px;
-    justify-content: flex-start;
-    align-items: flex-start;
-    flex-wrap: nowrap;
-  }
-  .panel {
-    flex: 1 1 0;
-    min-width: 320px;
-    background: white;
-    border: 1px solid #e0e0e0;
-    border-radius: 8px;
-    padding: 14px 14px 12px 14px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-  }
-  .panel-title {
-    font-size: 14px;
-    font-weight: 600;
-    margin: 0 0 2px 0;
-  }
-  .panel-sub {
-    font-size: 12px;
-    color: #777;
-    margin: 0 0 10px 0;
-    min-height: 30px;
-  }
-  .caption {
-    font-size: 11.5px;
-    color: #444;
-    margin-top: 6px;
-    line-height: 1.45;
-  }
-  .legend {
-    display: flex;
-    gap: 14px;
-    font-size: 11px;
-    color: #555;
-    margin-top: 24px;
-    flex-wrap: wrap;
-    padding-top: 12px;
-    border-top: 1px solid #eee;
-  }
-  .legend .swatch {
-    display: inline-block;
-    width: 18px;
-    height: 3px;
-    vertical-align: middle;
-    margin-right: 4px;
-    border-radius: 2px;
-  }
-  svg { display: block; width: 100%; height: auto; }
-  .hl-good  { color: #188a3c; font-weight: 600; }
-  .hl-bad   { color: #b12a2a; font-weight: 600; }
+  body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+         margin: 24px; background:#fafafa; color:#222; }
+  h1   { font-size:17px; font-weight:700; margin:0 0 4px 0; }
+  h2   { font-size:14px; font-weight:700; margin:0 0 8px 0; }
+  .sub { color:#666; font-size:13px; margin-bottom:18px; }
+  .card{ background:#fff; border:1px solid #e0e0e0; border-radius:8px;
+         padding:14px 16px; box-shadow:0 1px 3px rgba(0,0,0,0.04);
+         margin-bottom:18px; }
+  .row { display:flex; flex-direction:row; gap:14px; }
+  .panel { flex:1 1 0; min-width:300px; border:1px solid #eee; border-radius:6px;
+           padding:10px 10px 8px 10px; background:#fff; }
+  .pt  { font-size:13px; font-weight:700; margin:0 0 2px 0; }
+  .ps  { font-size:11.5px; color:#777; margin:0 0 8px 0; min-height:30px; }
+  .cap { font-size:11.5px; color:#444; margin-top:6px; line-height:1.45; }
+  .hl-good { color:#188a3c; font-weight:700; }
+  .hl-bad  { color:#b12a2a; font-weight:700; }
+  svg  { display:block; width:100%; height:auto; }
+  .legend { display:flex; gap:14px; font-size:11px; color:#555; margin-top:10px;
+            flex-wrap:wrap; padding-top:10px; border-top:1px solid #eee; }
+  .legend .swatch { display:inline-block; width:16px; height:12px; vertical-align:middle;
+                    margin-right:4px; border-radius:2px; }
 </style>
 </head>
 <body>
 
-<h1>Theorem 2 on partially aligned shared atoms — hypothesis</h1>
-<div class="subtitle">
-  Shared atoms $\boldsymbol{\phi}_i, \boldsymbol{\psi}_i$ are <i>partially aligned</i>
-  (cosine $\alpha$, neither identical nor orthogonal). How does a single decoder recover them?
+<h1>Generative model &rarr; single-decoder failure modes under a partially aligned shared pair</h1>
+<div class="sub">How interference (no explicit loss) and dimensionality reduction (explicit alignment loss) both push a single decoder's column toward the bisector.</div>
+
+<!-- ============================================================ -->
+<!-- (a) Generative model                                          -->
+<!-- ============================================================ -->
+<div class="card">
+  <h2>(a) Synthetic bimodal generative model</h2>
+  <svg viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="#3a8c8c"/>
+      </marker>
+      <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="#f1a860"/>
+      </marker>
+      <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="#7b8691"/>
+      </marker>
+    </defs>
+
+    <!-- z box -->
+    <rect x="40" y="145" width="90" height="70" rx="14" fill="#4a6fa5"/>
+    <text x="85" y="190" font-family="serif" font-size="30" font-weight="700" fill="white" text-anchor="middle">z</text>
+
+    <!-- Phi / Psi branching arrows -->
+    <path d="M 130 165 Q 200 110 270 65" fill="none" stroke="#3a8c8c" stroke-width="3.5" marker-end="url(#a1)"/>
+    <text x="175" y="115" font-family="serif" font-size="22" font-weight="700" fill="#3a8c8c">Φ</text>
+
+    <path d="M 130 195 Q 200 250 270 300" fill="none" stroke="#3a8c8c" stroke-width="3.5" marker-end="url(#a1)"/>
+    <text x="175" y="260" font-family="serif" font-size="22" font-weight="700" fill="#3a8c8c">Ψ</text>
+
+    <!-- x box -->
+    <rect x="275" y="40" width="85" height="65" rx="12" fill="#3a8c8c"/>
+    <text x="317" y="85" font-family="serif" font-style="italic" font-size="30" font-weight="700" fill="white" text-anchor="middle">x</text>
+    <text x="317" y="128" font-family="serif" font-size="14" fill="#333" text-anchor="middle" font-style="italic">x = Φ_I z_I + Φ_S z_S</text>
+
+    <!-- y box -->
+    <rect x="275" y="255" width="85" height="65" rx="12" fill="#3a8c8c"/>
+    <text x="317" y="300" font-family="serif" font-style="italic" font-size="30" font-weight="700" fill="white" text-anchor="middle">y</text>
+    <text x="317" y="240" font-family="serif" font-size="14" fill="#333" text-anchor="middle" font-style="italic">y = Ψ_S z_S + Ψ_T z_T</text>
+
+    <!-- V^T σ → z̃_i -->
+    <line x1="370" y1="72" x2="555" y2="72" stroke="#f1a860" stroke-width="3.5" marker-end="url(#a2)"/>
+    <text x="460" y="56" font-family="serif" font-size="18" font-weight="700" fill="#f1a860" text-anchor="middle">V<tspan font-size="12" dy="-6">⊤</tspan><tspan dy="6">, σ</tspan></text>
+    <rect x="560" y="40" width="110" height="65" rx="12" fill="#f1a860"/>
+    <text x="615" y="83" font-family="serif" font-style="italic" font-size="26" font-weight="700" fill="white" text-anchor="middle">z̃<tspan font-size="18" dy="6">I</tspan></text>
+
+    <!-- W^T σ → z̃_t -->
+    <line x1="370" y1="287" x2="555" y2="287" stroke="#f1a860" stroke-width="3.5" marker-end="url(#a2)"/>
+    <text x="460" y="307" font-family="serif" font-size="18" font-weight="700" fill="#f1a860" text-anchor="middle">W<tspan font-size="12" dy="-6">⊤</tspan><tspan dy="6">, σ</tspan></text>
+    <rect x="560" y="255" width="110" height="65" rx="12" fill="#f1a860"/>
+    <text x="615" y="298" font-family="serif" font-style="italic" font-size="26" font-weight="700" fill="white" text-anchor="middle">z̃<tspan font-size="18" dy="6">T</tspan></text>
+
+    <!-- V → x̃ -->
+    <line x1="680" y1="72" x2="870" y2="72" stroke="#7b8691" stroke-width="3.5" marker-end="url(#a3)"/>
+    <text x="775" y="56" font-family="serif" font-size="22" font-weight="700" fill="#7b8691" text-anchor="middle">V</text>
+    <rect x="875" y="40" width="95" height="65" rx="12" fill="#7b8691"/>
+    <text x="922" y="85" font-family="serif" font-style="italic" font-size="30" font-weight="700" fill="white" text-anchor="middle">x̃</text>
+
+    <!-- W → ỹ -->
+    <line x1="680" y1="287" x2="870" y2="287" stroke="#7b8691" stroke-width="3.5" marker-end="url(#a3)"/>
+    <text x="775" y="307" font-family="serif" font-size="22" font-weight="700" fill="#7b8691" text-anchor="middle">W</text>
+    <rect x="875" y="255" width="95" height="65" rx="12" fill="#7b8691"/>
+    <text x="922" y="300" font-family="serif" font-style="italic" font-size="30" font-weight="700" fill="white" text-anchor="middle">ỹ</text>
+  </svg>
+
+  <div class="legend">
+    <span><span class="swatch" style="background:#4a6fa5"></span>Monosemantic latent</span>
+    <span><span class="swatch" style="background:#3a8c8c"></span>Observed embeddings</span>
+    <span><span class="swatch" style="background:#f1a860"></span>Reconst. latent features</span>
+    <span><span class="swatch" style="background:#7b8691"></span>Reconst. embeddings</span>
+  </div>
 </div>
 
-<div class="panels">
+<!-- ============================================================ -->
+<!-- (b) Three sub-panels                                         -->
+<!-- ============================================================ -->
+<div class="card">
+  <h2>(b) How a single decoder reconstructs a partially aligned shared pair (φᵢ, ψᵢ)</h2>
 
-  <!-- ============================================================ -->
-  <!-- Panel (a) — Ideal: both endpoints recovered                  -->
-  <!-- ============================================================ -->
-  <div class="panel">
-    <div class="panel-title">(a) Ideal reconstruction</div>
-    <div class="panel-sub">Two SAE columns land exactly on $\boldsymbol{\phi}_i$ and $\boldsymbol{\psi}_i$.</div>
-    <svg viewBox="0 0 320 260" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <marker id="arrB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-          <path d="M0,0 L10,5 L0,10 z" fill="#2b6cb0"/>
-        </marker>
-        <marker id="arrO" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-          <path d="M0,0 L10,5 L0,10 z" fill="#dd6b20"/>
-        </marker>
-        <marker id="arrG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-          <path d="M0,0 L10,5 L0,10 z" fill="#188a3c"/>
-        </marker>
-      </defs>
+  <div class="row">
 
-      <!-- unit circle -->
-      <circle cx="160" cy="170" r="110" fill="none" stroke="#ddd" stroke-width="1" stroke-dasharray="2,3"/>
-
-      <!-- origin -->
-      <circle cx="160" cy="170" r="2.5" fill="#333"/>
-
-      <!-- phi_i: pointing up-left (blue) -->
-      <!-- angle 110° from horizontal, length 110 -->
-      <line x1="160" y1="170" x2="122.4" y2="66.6" stroke="#2b6cb0" stroke-width="2.6" marker-end="url(#arrB)"/>
-      <text x="108" y="58" font-size="14" font-family="serif" font-style="italic" fill="#2b6cb0">φᵢ</text>
-
-      <!-- psi_i: pointing up-right (orange), angle 70° -->
-      <line x1="160" y1="170" x2="197.6" y2="66.6" stroke="#dd6b20" stroke-width="2.6" marker-end="url(#arrO)"/>
-      <text x="204" y="58" font-size="14" font-family="serif" font-style="italic" fill="#dd6b20">ψᵢ</text>
-
-      <!-- learned features: two dashed green arrows exactly on phi and psi -->
-      <line x1="160" y1="170" x2="122.4" y2="66.6" stroke="#188a3c" stroke-width="2.4" stroke-dasharray="6,3" marker-end="url(#arrG)"/>
-      <line x1="160" y1="170" x2="197.6" y2="66.6" stroke="#188a3c" stroke-width="2.4" stroke-dasharray="6,3" marker-end="url(#arrG)"/>
-      <text x="142" y="104" font-size="11" font-family="serif" fill="#188a3c">v₁</text>
-      <text x="180" y="104" font-size="11" font-family="serif" fill="#188a3c">v₂</text>
-
-      <!-- angle arc -->
-      <path d="M 131 115 A 60 60 0 0 1 189 115" fill="none" stroke="#888" stroke-width="1"/>
-      <text x="152" y="112" font-size="12" font-family="serif" fill="#555">α</text>
-    </svg>
-    <div class="caption">
-      Two dictionary columns $\mathbf{v}_1, \mathbf{v}_2$ recover each endpoint exactly.
-      <span class="hl-good">✓ strict recovery</span>, <span class="hl-good">✓ cross-modal slot identity</span> (trivial if two slots bound to same shared index).
+    <!-- (i) Ideal -->
+    <div class="panel">
+      <div class="pt">(i) Ideal</div>
+      <div class="ps">Two dictionary columns recover each endpoint separately.</div>
+      <svg viewBox="0 0 320 260">
+        <defs>
+          <marker id="bi_B" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#2b6cb0"/>
+          </marker>
+          <marker id="bi_O" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#dd6b20"/>
+          </marker>
+          <marker id="bi_G" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#188a3c"/>
+          </marker>
+        </defs>
+        <circle cx="160" cy="170" r="110" fill="none" stroke="#ddd" stroke-dasharray="2,3"/>
+        <circle cx="160" cy="170" r="2.5" fill="#333"/>
+        <line x1="160" y1="170" x2="122.4" y2="66.6" stroke="#2b6cb0" stroke-width="2.6" marker-end="url(#bi_B)"/>
+        <text x="108" y="58" font-family="serif" font-style="italic" font-size="14" fill="#2b6cb0">φᵢ</text>
+        <line x1="160" y1="170" x2="197.6" y2="66.6" stroke="#dd6b20" stroke-width="2.6" marker-end="url(#bi_O)"/>
+        <text x="204" y="58" font-family="serif" font-style="italic" font-size="14" fill="#dd6b20">ψᵢ</text>
+        <line x1="160" y1="170" x2="122.4" y2="66.6" stroke="#188a3c" stroke-width="2.4" stroke-dasharray="6,3" marker-end="url(#bi_G)"/>
+        <line x1="160" y1="170" x2="197.6" y2="66.6" stroke="#188a3c" stroke-width="2.4" stroke-dasharray="6,3" marker-end="url(#bi_G)"/>
+        <text x="142" y="104" font-family="serif" font-size="11" fill="#188a3c">v₁</text>
+        <text x="180" y="104" font-family="serif" font-size="11" fill="#188a3c">v₂</text>
+        <path d="M 131 115 A 60 60 0 0 1 189 115" fill="none" stroke="#888"/>
+        <text x="152" y="112" font-family="serif" font-size="12" fill="#555">α</text>
+      </svg>
+      <div class="cap">
+        <span class="hl-good">✓ strict recovery</span>, <span class="hl-good">✓ cross-modal slot identity</span>.
+      </div>
     </div>
+
+    <!-- (ii) Naive: interference -->
+    <div class="panel">
+      <div class="pt">(ii) Naive single decoder &mdash; <span style="color:#b12a2a">interference</span></div>
+      <div class="ps">φᵢ and ψᵢ share one decoder column; their pulls cancel onto the bisector.</div>
+      <svg viewBox="0 0 320 260">
+        <defs>
+          <marker id="bii_B" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#2b6cb0"/>
+          </marker>
+          <marker id="bii_O" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#dd6b20"/>
+          </marker>
+          <marker id="bii_P" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#6b46c1"/>
+          </marker>
+        </defs>
+        <circle cx="160" cy="170" r="110" fill="none" stroke="#ddd" stroke-dasharray="2,3"/>
+        <circle cx="160" cy="170" r="2.5" fill="#333"/>
+        <line x1="160" y1="170" x2="122.4" y2="66.6" stroke="#2b6cb0" stroke-width="2.6" opacity="0.85" marker-end="url(#bii_B)"/>
+        <text x="108" y="58" font-family="serif" font-style="italic" font-size="14" fill="#2b6cb0">φᵢ</text>
+        <line x1="160" y1="170" x2="197.6" y2="66.6" stroke="#dd6b20" stroke-width="2.6" opacity="0.85" marker-end="url(#bii_O)"/>
+        <text x="204" y="58" font-family="serif" font-style="italic" font-size="14" fill="#dd6b20">ψᵢ</text>
+        <line x1="160" y1="170" x2="160" y2="60" stroke="#6b46c1" stroke-width="3" marker-end="url(#bii_P)"/>
+        <text x="166" y="70" font-family="serif" font-size="12" fill="#6b46c1">v (merged)</text>
+        <path d="M 140 85 A 80 80 0 0 1 160 78" fill="none" stroke="#c53030" stroke-dasharray="2,2"/>
+        <path d="M 160 78 A 80 80 0 0 1 180 85" fill="none" stroke="#c53030" stroke-dasharray="2,2"/>
+        <text x="128" y="98" font-size="10" fill="#c53030">α/2</text>
+        <text x="175" y="98" font-size="10" fill="#c53030">α/2</text>
+      </svg>
+      <div class="cap">
+        Cause: <b>interference</b> — one shared column must reconstruct both atoms; the two pulls cancel onto the bisector.<br>
+        <span class="hl-bad">✗ each endpoint off by α/2</span>; recovered α inflated.
+      </div>
+    </div>
+
+    <!-- (iii) + alignment loss: forced dim reduction -->
+    <div class="panel">
+      <div class="pt">(iii) + prior alignment loss &mdash; <span style="color:#b12a2a">forced merge</span></div>
+      <div class="ps">L<sub>align</sub> ties two latent slots together → extra slots collapse to one direction.</div>
+      <svg viewBox="0 0 320 260">
+        <defs>
+          <marker id="biii_B" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#2b6cb0"/>
+          </marker>
+          <marker id="biii_O" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#dd6b20"/>
+          </marker>
+          <marker id="biii_P" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#6b46c1"/>
+          </marker>
+        </defs>
+        <circle cx="160" cy="170" r="110" fill="none" stroke="#ddd" stroke-dasharray="2,3"/>
+        <circle cx="160" cy="170" r="2.5" fill="#333"/>
+        <line x1="160" y1="170" x2="122.4" y2="66.6" stroke="#2b6cb0" stroke-width="2.6" opacity="0.4" marker-end="url(#biii_B)"/>
+        <text x="108" y="58" font-family="serif" font-style="italic" font-size="14" fill="#2b6cb0" opacity="0.55">φᵢ</text>
+        <line x1="160" y1="170" x2="197.6" y2="66.6" stroke="#dd6b20" stroke-width="2.6" opacity="0.4" marker-end="url(#biii_O)"/>
+        <text x="204" y="58" font-family="serif" font-style="italic" font-size="14" fill="#dd6b20" opacity="0.55">ψᵢ</text>
+        <line x1="160" y1="170" x2="156" y2="60" stroke="#6b46c1" stroke-width="3" opacity="0.4" marker-end="url(#biii_P)"/>
+        <line x1="160" y1="170" x2="164" y2="60" stroke="#6b46c1" stroke-width="3" opacity="0.4" marker-end="url(#biii_P)"/>
+        <line x1="160" y1="170" x2="160" y2="60" stroke="#6b46c1" stroke-width="4" marker-end="url(#biii_P)"/>
+        <text x="166" y="80" font-family="serif" font-size="11" fill="#6b46c1">v₁ = v₂</text>
+        <path d="M 132 118 Q 160 140 188 118" fill="none" stroke="#c53030" stroke-width="1.3" stroke-dasharray="3,2"/>
+        <text x="130" y="152" font-size="10" fill="#c53030">L<tspan font-size="8" dy="3">align</tspan><tspan dy="-3"> pull</tspan></text>
+      </svg>
+      <div class="cap">
+        Cause: <b>dimensionality reduction</b> — the loss explicitly forces two latent slots to be identical, so multiple columns waste capacity on one merged direction.<br>
+        <span class="hl-bad">✗ merge amplified</span>; dictionary slots wasted.
+      </div>
+    </div>
+
   </div>
 
-  <!-- ============================================================ -->
-  <!-- Panel (b) — Naive single decoder: Theorem 2 merging          -->
-  <!-- ============================================================ -->
-  <div class="panel">
-    <div class="panel-title">(b) Naive single decoder ($\mathcal{L}_{\mathrm{rec}}$ only)</div>
-    <div class="panel-sub">Theorem 2 partitions $\{\boldsymbol{\phi}_i, \boldsymbol{\psi}_i\}$ into one group; top eigenvector lands on the bisector.</div>
-    <svg viewBox="0 0 320 260" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <marker id="arrB2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-          <path d="M0,0 L10,5 L0,10 z" fill="#2b6cb0"/>
-        </marker>
-        <marker id="arrO2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-          <path d="M0,0 L10,5 L0,10 z" fill="#dd6b20"/>
-        </marker>
-        <marker id="arrP" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-          <path d="M0,0 L10,5 L0,10 z" fill="#6b46c1"/>
-        </marker>
-      </defs>
-
-      <!-- unit circle -->
-      <circle cx="160" cy="170" r="110" fill="none" stroke="#ddd" stroke-width="1" stroke-dasharray="2,3"/>
-      <circle cx="160" cy="170" r="2.5" fill="#333"/>
-
-      <!-- phi_i, psi_i (same as panel a) -->
-      <line x1="160" y1="170" x2="122.4" y2="66.6" stroke="#2b6cb0" stroke-width="2.6" marker-end="url(#arrB2)" opacity="0.85"/>
-      <text x="108" y="58" font-size="14" font-family="serif" font-style="italic" fill="#2b6cb0">φᵢ</text>
-      <line x1="160" y1="170" x2="197.6" y2="66.6" stroke="#dd6b20" stroke-width="2.6" marker-end="url(#arrO2)" opacity="0.85"/>
-      <text x="204" y="58" font-size="14" font-family="serif" font-style="italic" fill="#dd6b20">ψᵢ</text>
-
-      <!-- bisector = midway up. angle 90°, length 110 -->
-      <line x1="160" y1="170" x2="160" y2="60" stroke="#6b46c1" stroke-width="3" marker-end="url(#arrP)"/>
-      <text x="166" y="70" font-size="12" font-family="serif" fill="#6b46c1">v</text>
-
-      <!-- residual angle labels: show gap between v and phi/psi -->
-      <path d="M 140 85 A 80 80 0 0 1 160 78" fill="none" stroke="#c53030" stroke-width="1" stroke-dasharray="2,2"/>
-      <path d="M 160 78 A 80 80 0 0 1 180 85" fill="none" stroke="#c53030" stroke-width="1" stroke-dasharray="2,2"/>
-      <text x="128" y="98" font-size="10" fill="#c53030">α/2</text>
-      <text x="175" y="98" font-size="10" fill="#c53030">α/2</text>
-    </svg>
-    <div class="caption">
-      One column merges both shared atoms. Bisector 에 떨어진 $\mathbf{v}$ 는
-      $\boldsymbol{\phi}_i$ 도 $\boldsymbol{\psi}_i$ 도 각도 $\alpha/2$ 만큼 빗겨남.
-      <span class="hl-bad">✗ strict endpoint recall</span>, recovered $\alpha_{\mathrm{proxy}}$ inflated.
-    </div>
+  <div class="legend">
+    <span><span class="swatch" style="background:#2b6cb0; width:18px; height:3px"></span>image shared atom φᵢ</span>
+    <span><span class="swatch" style="background:#dd6b20; width:18px; height:3px"></span>text shared atom ψᵢ</span>
+    <span><span class="swatch" style="background:#188a3c; width:18px; height:3px"></span>learned column (ideal)</span>
+    <span><span class="swatch" style="background:#6b46c1; width:18px; height:3px"></span>learned column (naive / +align)</span>
+    <span><span class="swatch" style="background:#c53030; width:18px; height:3px"></span>alignment-loss pull / residual angle</span>
   </div>
-
-  <!-- ============================================================ -->
-  <!-- Panel (c) — + prior alignment loss: merging amplified        -->
-  <!-- ============================================================ -->
-  <div class="panel">
-    <div class="panel-title">(c) + prior alignment loss ($\mathcal{L}_{\mathrm{rec}} + \lambda \mathcal{L}_{\mathrm{align}}$)</div>
-    <div class="panel-sub">$\mathcal{L}_{\mathrm{align}}$ pulls "shared-index $i$" latents to identity → extra columns collapse to bisector.</div>
-    <svg viewBox="0 0 320 260" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <marker id="arrB3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-          <path d="M0,0 L10,5 L0,10 z" fill="#2b6cb0"/>
-        </marker>
-        <marker id="arrO3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-          <path d="M0,0 L10,5 L0,10 z" fill="#dd6b20"/>
-        </marker>
-        <marker id="arrP2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-          <path d="M0,0 L10,5 L0,10 z" fill="#6b46c1"/>
-        </marker>
-      </defs>
-
-      <!-- unit circle -->
-      <circle cx="160" cy="170" r="110" fill="none" stroke="#ddd" stroke-width="1" stroke-dasharray="2,3"/>
-      <circle cx="160" cy="170" r="2.5" fill="#333"/>
-
-      <!-- phi_i, psi_i (faded to show they're ignored) -->
-      <line x1="160" y1="170" x2="122.4" y2="66.6" stroke="#2b6cb0" stroke-width="2.6" marker-end="url(#arrB3)" opacity="0.4"/>
-      <text x="108" y="58" font-size="14" font-family="serif" font-style="italic" fill="#2b6cb0" opacity="0.55">φᵢ</text>
-      <line x1="160" y1="170" x2="197.6" y2="66.6" stroke="#dd6b20" stroke-width="2.6" marker-end="url(#arrO3)" opacity="0.4"/>
-      <text x="204" y="58" font-size="14" font-family="serif" font-style="italic" fill="#dd6b20" opacity="0.55">ψᵢ</text>
-
-      <!-- multiple overlapping arrows on bisector (thicker/darker to convey reinforcement) -->
-      <line x1="160" y1="170" x2="156" y2="60" stroke="#6b46c1" stroke-width="3" opacity="0.4" marker-end="url(#arrP2)"/>
-      <line x1="160" y1="170" x2="164" y2="60" stroke="#6b46c1" stroke-width="3" opacity="0.4" marker-end="url(#arrP2)"/>
-      <line x1="160" y1="170" x2="160" y2="60" stroke="#6b46c1" stroke-width="4" marker-end="url(#arrP2)"/>
-      <text x="166" y="80" font-size="11" font-family="serif" fill="#6b46c1">v₁</text>
-      <text x="140" y="80" font-size="11" font-family="serif" fill="#6b46c1">v₂</text>
-
-      <!-- force arrows indicating L_align pulling latents together -->
-      <path d="M 132 118 Q 160 140 188 118"
-            fill="none" stroke="#c53030" stroke-width="1.3" stroke-dasharray="3,2"/>
-      <text x="145" y="150" font-size="10" fill="#c53030">L_align pull</text>
-    </svg>
-    <div class="caption">
-      $\mathcal{L}_{\mathrm{align}}$ forces $\tilde z_{\mathrm I,i} \approx \tilde z_{\mathrm T,i}$, so both slots must fire identically for
-      $\boldsymbol{\phi}_i$ and $\boldsymbol{\psi}_i$ → both columns collapse to the bisector.
-      <span class="hl-bad">✗ merging amplified</span>, multiple dictionary slots wasted on one merged feature.
-    </div>
-  </div>
-
-</div>
-
-<div class="legend">
-  <span><span class="swatch" style="background:#2b6cb0"></span>image shared atom $\boldsymbol{\phi}_i$</span>
-  <span><span class="swatch" style="background:#dd6b20"></span>text shared atom $\boldsymbol{\psi}_i$</span>
-  <span><span class="swatch" style="background:#188a3c"></span>learned dictionary column (ideal)</span>
-  <span><span class="swatch" style="background:#6b46c1"></span>learned dictionary column (naive / +align)</span>
-  <span><span class="swatch" style="background:#c53030"></span>alignment-loss pull / residual angle</span>
 </div>
 
 </body>
