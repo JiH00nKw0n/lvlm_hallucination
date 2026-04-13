@@ -695,6 +695,31 @@ def _compute_mcc_and_uniqueness(
     }
 
 
+def _compute_merged_fraction(
+    w_dec_img: np.ndarray,
+    w_dec_txt: np.ndarray,
+    phi_S: np.ndarray,
+    psi_S: np.ndarray,
+) -> float:
+    """Fraction of shared GT atoms i whose best-matching image slot equals
+    the best-matching text slot: argmax_j|cos(V_j, phi_i)| == argmax_j|cos(W_j, psi_i)|.
+
+    1.0 = every shared pair is merged into one shared column (single-decoder
+    bisector collapse), 0.0 = the two sides use completely different slots.
+    """
+    if phi_S.size == 0 or psi_S.size == 0:
+        return float("nan")
+    v = _normalize_rows(w_dec_img.astype(np.float64))
+    w = _normalize_rows(w_dec_txt.astype(np.float64))
+    phi = _normalize_rows(phi_S.T.astype(np.float64))
+    psi = _normalize_rows(psi_S.T.astype(np.float64))
+    sim_i = np.abs(v @ phi.T)  # (L, n_S)
+    sim_t = np.abs(w @ psi.T)  # (L, n_S)
+    top_i = sim_i.argmax(axis=0)
+    top_t = sim_t.argmax(axis=0)
+    return float((top_i == top_t).mean())
+
+
 def _compute_recovery_metrics_multi_tau(
     learned_vectors: np.ndarray,
     gt_matrix: np.ndarray,
@@ -719,6 +744,165 @@ def _compute_recovery_metrics_multi_tau(
     for tau in taus:
         out[f"mgt_tau{tau}"] = float((best > tau).mean())
     return out
+
+
+def _compute_joint_mgt(
+    w_dec_img: np.ndarray,
+    w_dec_txt: np.ndarray,
+    phi_S: np.ndarray,
+    psi_S: np.ndarray,
+    taus: tuple[float, ...],
+) -> dict[str, float]:
+    """Joint cross-modal recovery metric.
+
+    For each GT shared atom g, computes
+        joint(g) = max_i ½·(|cos(W_img[i], phi_g)| + |cos(W_txt[i], psi_g)|)
+    and reports the fraction with joint(g) > τ for each τ, plus the mean.
+
+    `w_dec_img`: (L, m_img) decoder rows of img-side SAE
+    `w_dec_txt`: (L, m_txt) decoder rows of txt-side SAE
+    `phi_S`:     (m_img, n_S) shared GT atoms in img embedding
+    `psi_S`:     (m_txt, n_S) shared GT atoms in txt embedding
+
+    Single-SAE methods should pass the same array for both (img and txt halves
+    are intrinsically tied). The metric will then ask whether the SAME feature
+    is good for both modalities, which is a strictly harder requirement than
+    per-modality MGT.
+    """
+    if (
+        phi_S.shape[1] == 0 or psi_S.shape[1] == 0
+        or w_dec_img.shape[0] == 0 or w_dec_txt.shape[0] == 0
+    ):
+        out: dict[str, float] = {"joint_match_mean": float("nan")}
+        for tau in taus:
+            out[f"joint_mgt_tau{tau}"] = float("nan")
+        return out
+    Wi = _normalize_rows(w_dec_img.astype(np.float64))
+    Wt = _normalize_rows(w_dec_txt.astype(np.float64))
+    Pi = _normalize_rows(phi_S.T.astype(np.float64))
+    Pt = _normalize_rows(psi_S.T.astype(np.float64))
+    img_cos = np.abs(Wi @ Pi.T)  # (L, n_S)
+    txt_cos = np.abs(Wt @ Pt.T)  # (L, n_S)
+    joint = 0.5 * (img_cos + txt_cos)
+    best = joint.max(axis=0)
+    out = {"joint_match_mean": float(best.mean())}
+    for tau in taus:
+        out[f"joint_mgt_tau{tau}"] = float((best > tau).mean())
+    return out
+
+
+def _probe_gt_pair_activation(
+    sae_i: TopKSAE,
+    sae_t: TopKSAE,
+    phi_S: np.ndarray,
+    psi_S: np.ndarray,
+    device: torch.device,
+    *,
+    txt_permutation: Optional[np.ndarray] = None,
+) -> dict[str, float]:
+    """Encoder-side GT probe metric (XMA — Cross-Modal Alignment).
+
+    For each shared GT atom g, construct a synthetic paired sample
+    (x_img = phi_g, x_txt = psi_g) — i.e., an idealized "only atom g is active"
+    sample — and encode through both SAEs. Then measure whether the two SAEs
+    agree on which latent slot fires:
+
+    - probe_top1_agree: fraction of GT atoms where argmax z_img == argmax z_txt
+    - probe_vec_cos: mean cosine similarity of the dense latent vectors
+    - probe_topk_jaccard: mean Jaccard overlap of the top-k fired indices
+    - probe_top1_both_valid: fraction where both top-1s are non-zero
+
+    If `txt_permutation` is given (length m, with entry i holding the original
+    txt-SAE index that should occupy position i after permutation), the txt
+    latent vector is re-indexed accordingly before the comparison — this is
+    the "post-hoc Hungarian" variant of the probe.
+    """
+    n_S = phi_S.shape[1]
+    if n_S == 0 or psi_S.shape[1] == 0:
+        return {
+            "probe_top1_agree": float("nan"),
+            "probe_vec_cos": float("nan"),
+            "probe_topk_jaccard": float("nan"),
+            "probe_top1_both_valid": float("nan"),
+        }
+    x_img = torch.from_numpy(phi_S.T.astype(np.float32)).unsqueeze(1).to(device)
+    x_txt = torch.from_numpy(psi_S.T.astype(np.float32)).unsqueeze(1).to(device)
+    sae_i.eval()
+    sae_t.eval()
+    with torch.no_grad():
+        out_i = sae_i(hidden_states=x_img, return_dense_latents=True)
+        out_t = sae_t(hidden_states=x_txt, return_dense_latents=True)
+        z_i = _dense_latents(out_i)  # (n_S, L_i)
+        z_t = _dense_latents(out_t)  # (n_S, L_t)
+    if txt_permutation is not None:
+        perm = torch.as_tensor(txt_permutation, dtype=torch.long, device=z_t.device)
+        z_t = z_t.index_select(dim=1, index=perm)
+    # top-1 index agreement
+    top1_i = z_i.argmax(dim=1)
+    top1_t = z_t.argmax(dim=1)
+    agree = (top1_i == top1_t).float()
+    val_i = z_i.gather(1, top1_i.unsqueeze(1)).squeeze(1)
+    val_t = z_t.gather(1, top1_t.unsqueeze(1)).squeeze(1)
+    both_valid = ((val_i > 0) & (val_t > 0)).float()
+    valid_agree = (agree * both_valid).mean().item()
+    both_valid_rate = both_valid.mean().item()
+
+    vec_cos = F.cosine_similarity(z_i, z_t, dim=1, eps=1e-12).mean().item()
+
+    k = int(sae_i.cfg.k)
+    k_eff = min(k, z_i.shape[1], z_t.shape[1])
+    topk_i = z_i.topk(k_eff, dim=1).indices.cpu().numpy()
+    topk_t = z_t.topk(k_eff, dim=1).indices.cpu().numpy()
+    jaccards = []
+    for g in range(topk_i.shape[0]):
+        a = set(topk_i[g].tolist())
+        b = set(topk_t[g].tolist())
+        union = len(a | b)
+        jaccards.append(len(a & b) / union if union > 0 else 0.0)
+    topk_jaccard = float(np.mean(jaccards))
+
+    return {
+        "probe_top1_agree": float(valid_agree),
+        "probe_vec_cos": float(vec_cos),
+        "probe_topk_jaccard": topk_jaccard,
+        "probe_top1_both_valid": float(both_valid_rate),
+    }
+
+
+def _compute_posthoc_joint_mgt(
+    sae_i: TopKSAE,
+    sae_t: TopKSAE,
+    train_img: torch.Tensor,
+    train_txt: torch.Tensor,
+    phi_S: np.ndarray,
+    psi_S: np.ndarray,
+    same_model: bool,
+    batch_size: int,
+    device: torch.device,
+    taus: tuple[float, ...],
+) -> dict[str, float]:
+    """Joint MGT after Hungarian-optimal post-hoc reindexing of txt features.
+
+    Computes the L×L cross-modal correlation matrix `C` on the training set,
+    finds the optimal 1-to-1 column permutation π via Hungarian on `-|C|`,
+    reorders the txt-decoder rows so that row i = original row π(i), and
+    recomputes joint MGT. This is the "post-hoc baseline" for assessing whether
+    training-time alignment (ours) gives anything beyond simple reindexing.
+
+    For single-SAE methods (`same_model=True`), no permutation is meaningful
+    (img and txt halves of a single decoder are tied to the same row), so we
+    simply return the raw joint MGT.
+    """
+    w_img = sae_i.W_dec.detach().cpu().numpy()
+    w_txt = sae_t.W_dec.detach().cpu().numpy()
+    if same_model:
+        return _compute_joint_mgt(w_img, w_txt, phi_S, psi_S, taus)
+    C = _compute_latent_correlation(
+        sae_i, sae_t, train_img, train_txt, batch_size, device,
+    )
+    _, col_ind = linear_sum_assignment(-np.abs(C))
+    w_txt_aligned = w_txt[col_ind]
+    return _compute_joint_mgt(w_img, w_txt_aligned, phi_S, psi_S, taus)
 
 
 def _eval_pair_latent_cosine(
@@ -794,6 +978,8 @@ def _evaluate_method(
     method: str,
     sae_i: TopKSAE,
     sae_t: TopKSAE,
+    train_img: torch.Tensor,
+    train_txt: torch.Tensor,
     eval_img: torch.Tensor,
     eval_txt: torch.Tensor,
     phi_S: np.ndarray,
@@ -873,6 +1059,41 @@ def _evaluate_method(
         sae_i, sae_t, eval_img, eval_txt, args.batch_size, device,
     )
 
+    # v8: joint cross-modal MGT — for each GT shared atom g, the best feature
+    # i must approximate phi_g (via img decoder row) AND psi_g (via txt decoder
+    # row) simultaneously. Reported in two flavors:
+    #   joint_mgt_raw_*: at the original feature indices
+    #   joint_mgt_posthoc_*: after Hungarian-optimal txt-column reindexing
+    # For single-SAE methods the two are identical by construction.
+    _joint_taus = (0.9, 0.95, 0.99)
+    joint_raw = _compute_joint_mgt(w_dec_img, w_dec_txt, phi_S, psi_S, _joint_taus)
+    joint_posthoc = _compute_posthoc_joint_mgt(
+        sae_i, sae_t, train_img, train_txt, phi_S, psi_S,
+        same_model=same_model, batch_size=args.batch_size,
+        device=device, taus=_joint_taus,
+    )
+
+    # v8: GT-probe encoder test — synthetic pure-atom samples, measure whether
+    # both SAEs fire at the same latent slot. This directly tests functional
+    # alignment (as opposed to decoder structural alignment from joint_mgt).
+    merged_frac = _compute_merged_fraction(w_dec_img, w_dec_txt, phi_S, psi_S)
+
+    probe = _probe_gt_pair_activation(sae_i, sae_t, phi_S, psi_S, device)
+    # Post-hoc Hungarian re-indexed version: apply the optimal txt-SAE
+    # permutation (same Hungarian assignment used for joint_mgt_posthoc) and
+    # recompute the probe. For single-SAE methods the permutation is identity.
+    if same_model:
+        probe_ph = probe
+    else:
+        C_ph = _compute_latent_correlation(
+            sae_i, sae_t, train_img, train_txt, args.batch_size, device,
+        )
+        _, col_ind_ph = linear_sum_assignment(-np.abs(C_ph))
+        probe_ph = _probe_gt_pair_activation(
+            sae_i, sae_t, phi_S, psi_S, device,
+            txt_permutation=col_ind_ph,
+        )
+
     return {
         "img_eval_loss": img_eval,
         "txt_eval_loss": txt_eval,
@@ -909,11 +1130,30 @@ def _evaluate_method(
         "txt_uniqueness_full_raw": txt_mcc_full["uniqueness_raw"],
         "img_uniqueness_full_norm": img_mcc_full["uniqueness_norm"],
         "txt_uniqueness_full_norm": txt_mcc_full["uniqueness_norm"],
+        "merged_fraction": merged_frac,
         "pair_cos_mean": pair_cos,
         "cross_cos_top_mS_mean": top_diag,
         "cross_cos_rest_mean": rest_diag,
         "cross_cos_gt_mean": cross["cross_cos_mean"],
         "alpha_proxy_mean": cross["alpha_proxy_mean"],
+        # v8: joint cross-modal MGT (raw + post-hoc Hungarian re-index).
+        "joint_match_mean_raw": joint_raw["joint_match_mean"],
+        "joint_mgt_raw_tau0.9": joint_raw["joint_mgt_tau0.9"],
+        "joint_mgt_raw_tau0.95": joint_raw["joint_mgt_tau0.95"],
+        "joint_mgt_raw_tau0.99": joint_raw["joint_mgt_tau0.99"],
+        "joint_match_mean_posthoc": joint_posthoc["joint_match_mean"],
+        "joint_mgt_posthoc_tau0.9": joint_posthoc["joint_mgt_tau0.9"],
+        "joint_mgt_posthoc_tau0.95": joint_posthoc["joint_mgt_tau0.95"],
+        "joint_mgt_posthoc_tau0.99": joint_posthoc["joint_mgt_tau0.99"],
+        # v8: encoder-side GT probe metrics (raw + post-hoc Hungarian)
+        "probe_top1_agree": probe["probe_top1_agree"],
+        "probe_vec_cos": probe["probe_vec_cos"],
+        "probe_topk_jaccard": probe["probe_topk_jaccard"],
+        "probe_top1_both_valid": probe["probe_top1_both_valid"],
+        "probe_top1_agree_posthoc": probe_ph["probe_top1_agree"],
+        "probe_vec_cos_posthoc": probe_ph["probe_vec_cos"],
+        "probe_topk_jaccard_posthoc": probe_ph["probe_topk_jaccard"],
+        "probe_top1_both_valid_posthoc": probe_ph["probe_top1_both_valid"],
         "same_model": bool(same_model),
     }
 
@@ -1006,6 +1246,7 @@ def _run_single(
         metrics = _evaluate_method(
             method=method_id.split("::")[0],
             sae_i=sae_i, sae_t=sae_t,
+            train_img=train_img, train_txt=train_txt,
             eval_img=eval_img, eval_txt=eval_txt,
             phi_S=builder.phi_S, psi_S=builder.psi_S,
             phi_I=builder.phi_I, psi_T=builder.psi_T,
@@ -1067,6 +1308,26 @@ def _run_single(
         )
         _finish("iso_align", model, model)
         loss_histories["iso_align"] = lh
+
+    if "single_paired_align" in methods:
+        m_S_sp = (
+            args.single_paired_align_mS
+            if args.single_paired_align_mS > 0
+            else args.n_shared
+        )
+        norm_sp = args.single_paired_align_norm
+
+        def _single_paired_aux_fn(z_i: torch.Tensor, z_t: torch.Tensor) -> torch.Tensor:
+            return _auxiliary_alignment_loss(z_i, z_t, m_S=m_S_sp, norm=norm_sp)
+
+        model, lh = _train_single_paired_aux(
+            train_img, train_txt, args, latent_size, seed, device,
+            aux_fn=_single_paired_aux_fn,
+            aux_weight=args.single_paired_align_lambda,
+            desc=f"single_paired_align(lam={args.single_paired_align_lambda},mS={m_S_sp},norm={norm_sp})",
+        )
+        _finish("single_paired_align", model, model)
+        loss_histories["single_paired_align"] = lh
 
     if "ours" in methods:
         for cfg in ours_configs:
@@ -1136,6 +1397,24 @@ METRIC_SUFFIXES = [
     "cross_cos_rest_mean",
     "cross_cos_gt_mean",
     "alpha_proxy_mean",
+    # v8: joint cross-modal MGT (raw + post-hoc Hungarian re-index)
+    "joint_match_mean_raw",
+    "joint_mgt_raw_tau0.9",
+    "joint_mgt_raw_tau0.95",
+    "joint_mgt_raw_tau0.99",
+    "joint_match_mean_posthoc",
+    "joint_mgt_posthoc_tau0.9",
+    "joint_mgt_posthoc_tau0.95",
+    "joint_mgt_posthoc_tau0.99",
+    # v8: encoder-side GT probe metrics
+    "probe_top1_agree",
+    "probe_vec_cos",
+    "probe_topk_jaccard",
+    "probe_top1_both_valid",
+    "probe_top1_agree_posthoc",
+    "probe_vec_cos_posthoc",
+    "probe_topk_jaccard_posthoc",
+    "probe_top1_both_valid_posthoc",
 ]
 
 
@@ -1356,6 +1635,21 @@ def parse_args() -> argparse.Namespace:
     # Baseline lambdas (from their papers)
     parser.add_argument("--group-sparse-lambda", type=float, default=0.05)
     parser.add_argument("--trace-beta", type=float, default=1e-4)
+    parser.add_argument(
+        "--single-paired-align-lambda", type=float, default=1.0,
+        help="Lambda for the `single_paired_align` method: applies the "
+             "paper's auxiliary alignment loss (same as ours) on top of a "
+             "single shared decoder, without masking/matching.",
+    )
+    parser.add_argument(
+        "--single-paired-align-mS", type=int, default=-1,
+        help="m_S for single_paired_align's aux loss. Default -1 uses n_shared.",
+    )
+    parser.add_argument(
+        "--single-paired-align-norm", type=str, default="global",
+        choices=["group", "global"],
+        help="Normalization variant of the aux loss for single_paired_align.",
+    )
     parser.add_argument(
         "--iso-align-beta", type=float, default=0.03,
         help="Penalty coefficient for the IsoEnergy code-variant alignment "
