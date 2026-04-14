@@ -30,7 +30,7 @@ PANELS = [
     # (metric_key,                 ylabel,               title,                                    ylim,     yticks_step)
     ("merged_fraction",            "MR",                  "(a) Merge Rate (MR)",                    (-0.05, 1.05), None),
     ("img_mgt_shared_tau0.95",     r"GRR at $\tau=0.95$", "(b) Ground-truth Recovery Rate (GRR)",   (-0.05, 1.05), None),
-    ("avg_eval_loss",              "Recon Error",          "(c) Reconstruction Error",               None,          0.01),
+    ("avg_eval_loss",              "RE",                   "(c) Reconstruction Error (RE)",          None,          0.01),
 ]
 
 
