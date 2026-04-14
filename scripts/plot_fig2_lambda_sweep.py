@@ -121,8 +121,7 @@ def make_fig2(root: str, out_path: str):
 
     fig, axes = plt.subplots(1, 3, figsize=(14.5, 2.16))
     for ax, (metric, ylab, title, ylim, ystep, ylog) in zip(axes, PANELS):
-        ax.axhline(v_1R[metric], color=C_1R, ls=":", lw=1.3, alpha=0.85)
-        ax.axhline(v_2R[metric], color=C_2R, ls=":", lw=1.3, alpha=0.85)
+        ax.axhline(v_1R[metric], color=C_1R, ls=(0, (6, 6)), lw=1.3, alpha=0.85)
         ax.plot([m for m, _ in ia_m],   [r[metric] for _, r in ia_m],   "-s", color=C_IA,   lw=1.8, ms=6)
         ax.plot([m for m, _ in gs_m],   [r[metric] for _, r in gs_m],   "-D", color=C_GS,   lw=1.8, ms=6)
         ax.plot([m for m, _ in ours_m], [r[metric] for _, r in ours_m], "-*", color=C_OURS, lw=2.0, ms=9)
@@ -157,8 +156,7 @@ def make_fig2(root: str, out_path: str):
         ax.tick_params(labelsize=8, pad=1)
 
     handles = [
-        Line2D([0], [0], color=C_1R,   ls=":",     lw=1.3, label="w/o modality masking"),
-        Line2D([0], [0], color=C_2R,   ls=":",     lw=1.3, label="w/ modality masking"),
+        Line2D([0], [0], color=C_1R,   ls=(0, (6, 6)), lw=1.3, label="Conventional SAE"),
         Line2D([0], [0], color=C_IA,   marker="s", lw=1.8, ms=6, label="Iso-Energy"),
         Line2D([0], [0], color=C_GS,   marker="D", lw=1.8, ms=6, label="Group-Sparse"),
         Line2D([0], [0], color=C_OURS, marker="*", lw=2.0, ms=9, label="Ours"),
@@ -166,8 +164,8 @@ def make_fig2(root: str, out_path: str):
     fig.legend(
         handles=handles, loc="upper center",
         bbox_to_anchor=(0.5, 1.005),
-        ncol=5, frameon=False, fontsize=9.5,
-        handlelength=1.6, columnspacing=1.6, handletextpad=0.35,
+        ncol=4, frameon=False, fontsize=9.5,
+        handlelength=1.8, columnspacing=1.8, handletextpad=0.35,
     )
     plt.subplots_adjust(top=0.77, bottom=0.21, left=0.05, right=0.99, wspace=0.22)
 
