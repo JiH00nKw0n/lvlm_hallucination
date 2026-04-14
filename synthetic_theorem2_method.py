@@ -1267,6 +1267,42 @@ def _run_single(
                 else:
                     metrics_any[f"diag_{k}"] = v
         result[method_id] = metrics_any
+
+        # Save full SAE parameters (encoder + decoder) + GT atoms, for later
+        # offline metric computation without re-training.
+        if getattr(args, "save_decoders", False):
+            run_dir = getattr(args, "_run_dir", None)
+            if run_dir is not None:
+                dump_dir = run_dir / "params"
+                dump_dir.mkdir(parents=True, exist_ok=True)
+                mid_safe = method_id.replace("::", "__").replace("/", "_")
+                fn = dump_dir / f"alpha{alpha:.2f}_seed{seed}_{mid_safe}.npz"
+                payload = dict(
+                    # Decoder side
+                    w_dec_img=sae_i.W_dec.detach().cpu().numpy().astype(np.float32),
+                    w_dec_txt=sae_t.W_dec.detach().cpu().numpy().astype(np.float32),
+                    b_dec_img=sae_i.b_dec.detach().cpu().numpy().astype(np.float32),
+                    b_dec_txt=sae_t.b_dec.detach().cpu().numpy().astype(np.float32),
+                    # Encoder side
+                    w_enc_img=sae_i.encoder.weight.detach().cpu().numpy().astype(np.float32),
+                    w_enc_txt=sae_t.encoder.weight.detach().cpu().numpy().astype(np.float32),
+                    b_enc_img=sae_i.encoder.bias.detach().cpu().numpy().astype(np.float32),
+                    b_enc_txt=sae_t.encoder.bias.detach().cpu().numpy().astype(np.float32),
+                    # Ground-truth atom matrices
+                    phi_S=builder.phi_S.astype(np.float32),
+                    psi_S=builder.psi_S.astype(np.float32),
+                    phi_I=(builder.phi_I.astype(np.float32)
+                           if builder.phi_I is not None else np.zeros((0,0), dtype=np.float32)),
+                    psi_T=(builder.psi_T.astype(np.float32)
+                           if builder.psi_T is not None else np.zeros((0,0), dtype=np.float32)),
+                    # Metadata
+                    alpha_target=np.array(alpha, dtype=np.float32),
+                    seed=np.array(seed, dtype=np.int32),
+                    latent_size_img=np.array(sae_i.latent_size, dtype=np.int32),
+                    latent_size_txt=np.array(sae_t.latent_size, dtype=np.int32),
+                    same_model_flag=np.array(int(sae_i is sae_t), dtype=np.int32),
+                )
+                np.savez_compressed(fn, **payload)
         if sae_i is not None and sae_i is not sae_t:
             del sae_i
         if sae_t is not None:
@@ -1620,7 +1656,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--dictionary-strategy",
-        type=str, choices=["gradient", "random"], default="gradient",
+        type=str, choices=["gradient", "random", "sdp"], default="gradient",
     )
 
     # Alpha calibration
@@ -1639,6 +1675,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, choices=["auto", "cuda", "mps", "cpu"], default="auto")
     parser.add_argument("--log-every", type=int, default=0)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--save-decoders", action="store_true",
+        help="If set, save per-method decoder matrices (and GT atoms) as "
+             ".npz files under {run_dir}/decoders/ for offline metric computation.",
+    )
 
     # Baseline lambdas (from their papers)
     parser.add_argument("--group-sparse-lambda", type=float, default=0.05)
@@ -1724,6 +1765,7 @@ def main() -> None:
     output_root = Path(args.output_root)
     run_dir = output_root / "runs" / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
+    args._run_dir = run_dir  # used by _finish if --save-decoders is set
 
     logger.info("Theorem 2 / Algorithm 1 experiment")
     logger.info("Output dir: %s", run_dir)
