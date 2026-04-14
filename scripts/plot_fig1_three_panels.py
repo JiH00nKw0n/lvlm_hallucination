@@ -17,7 +17,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MultipleLocator
+from matplotlib.ticker import FixedLocator, FuncFormatter, MultipleLocator, NullFormatter
 
 
 # ---------------- style constants ----------------
@@ -70,6 +70,11 @@ def make_fig1(json_path: str, out_path: str, alphas_target=(0.2, 0.3, 0.4, 0.5, 
             ax.yaxis.set_major_locator(MultipleLocator(ystep))
         if metric == "avg_eval_loss":
             ax.set_yscale("log")
+            y_ticks = [0.15, 0.2, 0.25, 0.3, 0.4]
+            ax.yaxis.set_major_locator(FixedLocator(y_ticks))
+            ax.yaxis.set_minor_locator(FixedLocator([]))
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+            ax.yaxis.set_minor_formatter(NullFormatter())
         ax.grid(alpha=0.3, which="both")
 
     fig.legend(
