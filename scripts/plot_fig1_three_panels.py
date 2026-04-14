@@ -29,7 +29,7 @@ LBL_YES = "w/  modality masking"
 PANELS = [
     # (metric_key,                 ylabel,               title,                                    ylim,     yticks_step)
     ("merged_fraction",            "MR",                  "(a) Merge Rate (MR)",                    (-0.05, 1.05), None),
-    ("img_mgt_shared_tau0.95",     r"GRR at $\tau=0.95$", "(b) Ground-truth Recovery Rate (GRR)",   (-0.05, 1.05), None),
+    ("img_mgt_shared_tau0.95",     r"GRR at $\tau=0.95$", "(b) Ground-truth Recovery Rate (GRR)",   None,          None),
     ("avg_eval_loss",              "RE (log scale)",       "(c) Reconstruction Error (RE)",          None,          None),
 ]
 

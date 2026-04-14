@@ -36,7 +36,7 @@ DEFAULTS = {"IA": 0.03, "GS": 0.05, "ours": 2.0}
 PANELS = [
     # (metric_key,              ylabel,                title,                                     ylim,          yticks_step, ylog)
     ("MR_geom",                 "MR",                   "(a) Merge Rate (MR)",                    None,          None,        False),
-    ("img_mgt_shared_tau0.95",  r"GRR at $\tau=0.95$",  "(b) Ground-truth Recovery Rate (GRR)",   (-0.05, 1.05), None,        False),
+    ("img_mgt_shared_tau0.95",  r"GRR at $\tau=0.95$",  "(b) Ground-truth Recovery Rate (GRR)",   None,          None,        False),
     ("avg_eval_loss",           "RE (log scale)",       "(c) Reconstruction Error (RE)",          None,          None,        True),
 ]
 
