@@ -157,8 +157,8 @@ def make_fig2(root: str, out_path: str):
         ax.tick_params(labelsize=8, pad=1)
 
     handles = [
-        Line2D([0], [0], color=C_1R,   ls=":",     lw=1.3, label="w/o modality masking baseline"),
-        Line2D([0], [0], color=C_2R,   ls=":",     lw=1.3, label="w/ modality masking baseline"),
+        Line2D([0], [0], color=C_1R,   ls=":",     lw=1.3, label="w/o modality masking"),
+        Line2D([0], [0], color=C_2R,   ls=":",     lw=1.3, label="w/ modality masking"),
         Line2D([0], [0], color=C_IA,   marker="s", lw=1.8, ms=6, label="Iso-Energy"),
         Line2D([0], [0], color=C_GS,   marker="D", lw=1.8, ms=6, label="Group-Sparse"),
         Line2D([0], [0], color=C_OURS, marker="*", lw=2.0, ms=9, label="Ours"),
