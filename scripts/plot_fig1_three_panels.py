@@ -72,7 +72,7 @@ def make_fig1(json_path: str, out_path: str, alphas_target=(0.2, 0.3, 0.4, 0.5, 
             ax.set_yscale("log")
             y_all = [v for v in y_no + y_yes if v is not None]
             lo, hi = min(y_all), max(y_all)
-            ax.set_ylim(lo * 0.97, hi * 1.04)
+            ax.set_ylim(lo * 0.96, hi * 1.15)
             y_ticks = [0.17, 0.18, 0.19, 0.20, 0.21, 0.22]
             ax.yaxis.set_major_locator(FixedLocator(y_ticks))
             ax.yaxis.set_minor_locator(FixedLocator([]))

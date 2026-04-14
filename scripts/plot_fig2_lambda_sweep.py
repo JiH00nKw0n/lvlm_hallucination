@@ -147,7 +147,7 @@ def make_fig2(root: str, out_path: str):
             )
             y_all = [v for v in y_all if v is not None]
             lo, hi = min(y_all), max(y_all)
-            ax.set_ylim(lo * 0.97, hi * 1.04)
+            ax.set_ylim(lo * 0.96, hi * 1.15)
             y_ticks = [0.2, 0.3, 0.5, 0.7, 1.0]
             ax.yaxis.set_major_locator(FixedLocator(y_ticks))
             ax.yaxis.set_minor_locator(FixedLocator([]))
