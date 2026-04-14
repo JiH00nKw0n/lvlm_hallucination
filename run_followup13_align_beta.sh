@@ -27,7 +27,7 @@ BASIC="\
 --k 16 --latent-size-sweep 8192 \
 --device cuda --output-root outputs/theorem2_followup_13 \
 --save-decoders \
---alpha-sweep 0.2,0.3,0.4,0.5,0.6,0.7,0.8 \
+--alpha-sweep 0.5 \
 --group-sparse-lambda 0.05"
 
 run () {
