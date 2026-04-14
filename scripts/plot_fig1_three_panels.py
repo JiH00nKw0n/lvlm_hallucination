@@ -30,7 +30,7 @@ PANELS = [
     # (metric_key,                 ylabel,               title,                                    ylim,     yticks_step)
     ("merged_fraction",            "MR",                  "(a) Merge Rate (MR)",                    (-0.05, 1.05), None),
     ("img_mgt_shared_tau0.95",     r"GRR at $\tau=0.95$", "(b) Ground-truth Recovery Rate (GRR)",   (-0.05, 1.05), None),
-    ("avg_eval_loss",              "RE",                   "(c) Reconstruction Error (RE)",          None,          0.01),
+    ("avg_eval_loss",              "RE (log scale)",       "(c) Reconstruction Error (RE)",          None,          None),
 ]
 
 
@@ -68,7 +68,9 @@ def make_fig1(json_path: str, out_path: str, alphas_target=(0.2, 0.3, 0.4, 0.5, 
             ax.set_ylim(*ylim)
         if ystep is not None:
             ax.yaxis.set_major_locator(MultipleLocator(ystep))
-        ax.grid(alpha=0.3)
+        if metric == "avg_eval_loss":
+            ax.set_yscale("log")
+        ax.grid(alpha=0.3, which="both")
 
     fig.legend(
         handles=handles, loc="upper center",
