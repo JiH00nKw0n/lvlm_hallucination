@@ -34,10 +34,10 @@ C_1R, C_2R = "#c53030", "#2b6cb0"
 DEFAULTS = {"IA": 0.03, "GS": 0.05, "ours": 2.0}
 
 PANELS = [
-    # (metric_key,              ylabel,                title,                                     ylim,          yticks_step, ylog)
-    ("avg_eval_loss",           "RE (log scale)",       "(a) Reconstruction Error (RE)",          None,          None,        True),
-    ("img_mgt_shared_tau0.95",  r"GRR at $\tau=0.95$",  "(b) Ground-truth Recovery Rate (GRR)",   None,          None,        False),
-    ("MR_geom",                 "MR",                   "(c) Merge Rate (MR)",                    None,          None,        False),
+    # (metric_key,              ylabel,                title,                                                  ylim,          yticks_step, ylog)
+    ("avg_eval_loss",           "RE (log scale)",       r"(a) Reconstruction Error (RE) $\downarrow$",         None,          None,        True),
+    ("img_mgt_shared_tau0.95",  r"GRR at $\tau=0.95$",  r"(b) Ground-truth Recovery Rate (GRR) $\uparrow$",    None,          None,        False),
+    ("MR_geom",                 "MR",                   r"(c) Merge Rate (MR) $\downarrow$",                   None,          None,        False),
 ]
 
 
