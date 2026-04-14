@@ -37,9 +37,9 @@ run () {
   echo "----- ${TAG} DONE $(date -u +%H:%M:%SZ) -----" >> "$LOG"
 }
 
-# 1R baseline (reference)
-run "fu13_1R_baseline" \
-    --methods "single_recon" \
+# 1R + 2R baselines (single-decoder-no-aux + masked-no-matching)
+run "fu13_1R_2R_baseline" \
+    --methods "single_recon,two_recon" \
     --trace-beta 1e-4 --iso-align-beta 0.03
 
 # TA β sweep — 5 values centered at paper default (1e-4)
