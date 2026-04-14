@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot Figure 1 (3-panel: MR, GRR(τ=0.95), Recon Loss).
+"""Plot Figure 1 (3-panel: MR, GRR(τ=0.95), Recon Error).
 
 Compares w/o vs w/ modality masking (1R vs 2R) across α.
 
@@ -30,7 +30,7 @@ PANELS = [
     # (metric_key,                 ylabel,               title,                                    ylim,     yticks_step)
     ("merged_fraction",            "MR",                  "(a) Merge Rate (MR)",                    (-0.05, 1.05), None),
     ("img_mgt_shared_tau0.95",     r"GRR at $\tau=0.95$", "(b) Ground-truth Recovery Rate (GRR)",   (-0.05, 1.05), None),
-    ("avg_eval_loss",              "Recon Loss",          "(c) Reconstruction Loss",                None,          0.01),
+    ("avg_eval_loss",              "Recon Error",          "(c) Reconstruction Loss",                None,          0.01),
 ]
 
 
