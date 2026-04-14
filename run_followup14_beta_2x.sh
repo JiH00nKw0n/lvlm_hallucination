@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# theorem2_followup_14: TA/IA/GS/ours β/λ sweep at 4× intervals.
+# theorem2_followup_14: TA/IA/GS/ours β/λ sweep at 2× intervals.
 # Centered at paper defaults, α=0.5 only, σ=0.05.
 
 set -uo pipefail
@@ -33,29 +33,29 @@ run "fu14_1R_2R_baseline" \
     --methods "single_recon,two_recon" \
     --group-sparse-lambda 0.05 --trace-beta 1e-4 --iso-align-beta 0.03
 
-# TA β sweep — 4× intervals around 1e-4
-for B in 6.25e-6 2.5e-5 1e-4 4e-4 1.6e-3; do
+# TA β sweep — 2× intervals around 1e-4
+for B in 2.5e-5 5e-5 1e-4 2e-4 4e-4; do
   run "fu14_TA_beta${B}" \
       --methods "trace_align" \
       --group-sparse-lambda 0.05 --trace-beta $B --iso-align-beta 0.03
 done
 
-# IA β sweep — 4× intervals around 0.03
-for B in 0.0019 0.0075 0.03 0.12 0.48; do
+# IA β sweep — 2× intervals around 0.03
+for B in 0.0075 0.015 0.03 0.06 0.12; do
   run "fu14_IA_beta${B}" \
       --methods "iso_align" \
       --group-sparse-lambda 0.05 --trace-beta 1e-4 --iso-align-beta $B
 done
 
-# GS λ sweep — 4× intervals around 0.05
-for L in 0.003 0.0125 0.05 0.2 0.8; do
+# GS λ sweep — 2× intervals around 0.05
+for L in 0.0125 0.025 0.05 0.1 0.2; do
   run "fu14_GS_lam${L}" \
       --methods "group_sparse" \
       --group-sparse-lambda $L --trace-beta 1e-4 --iso-align-beta 0.03
 done
 
-# ours λ_aux sweep — 4× intervals around 2.0
-for L in 0.125 0.5 2.0 8.0 32.0; do
+# ours λ_aux sweep — 2× intervals around 2.0
+for L in 0.5 1.0 2.0 4.0 8.0; do
   run "fu14_ours_lam${L}" \
       --methods "ours" \
       --group-sparse-lambda 0.05 --trace-beta 1e-4 --iso-align-beta 0.03 \
