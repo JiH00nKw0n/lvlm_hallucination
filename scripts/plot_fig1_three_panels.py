@@ -75,7 +75,7 @@ def make_fig1(json_path: str, out_path: str, alphas_target=(0.2, 0.3, 0.4, 0.5, 
             ax.yaxis.set_minor_locator(FixedLocator([]))
             ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
             ax.yaxis.set_minor_formatter(NullFormatter())
-            ax.set_ylim(0.14, 0.55)
+            ax.set_ylim(0.15, 0.5)
         ax.grid(alpha=0.3, which="both")
 
     fig.legend(
