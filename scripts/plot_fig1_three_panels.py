@@ -72,11 +72,11 @@ def make_fig1(json_path: str, out_path: str, alphas_target=(0.2, 0.3, 0.4, 0.5, 
 
     fig.legend(
         handles=handles, loc="upper center",
-        bbox_to_anchor=(0.5, 0.99),
+        bbox_to_anchor=(0.5, 1.005),
         ncol=2, frameon=False, fontsize=10,
         handlelength=1.8, columnspacing=2.2, handletextpad=0.4,
     )
-    plt.subplots_adjust(top=0.80, bottom=0.21, left=0.05, right=0.99, wspace=0.22)
+    plt.subplots_adjust(top=0.77, bottom=0.21, left=0.05, right=0.99, wspace=0.22)
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_path, dpi=170, bbox_inches="tight", facecolor="white", pad_inches=0.04)
