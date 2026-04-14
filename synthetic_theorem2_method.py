@@ -702,7 +702,11 @@ def _compute_merged_fraction(
     psi_S: np.ndarray,
 ) -> float:
     """Fraction of shared GT atoms i whose best-matching image slot equals
-    the best-matching text slot: argmax_j|cos(V_j, phi_i)| == argmax_j|cos(W_j, psi_i)|.
+    the best-matching text slot: argmax_j cos(V_j, phi_i) == argmax_j cos(W_j, psi_i).
+
+    Uses signed cosine (not |cos|) because the SAE encoder is a top-k ReLU:
+    a column anti-aligned with an atom (cos < 0) cannot fire on that atom
+    and therefore cannot "represent" it regardless of magnitude.
 
     1.0 = every shared pair is merged into one shared column (single-decoder
     bisector collapse), 0.0 = the two sides use completely different slots.
@@ -713,8 +717,8 @@ def _compute_merged_fraction(
     w = _normalize_rows(w_dec_txt.astype(np.float64))
     phi = _normalize_rows(phi_S.T.astype(np.float64))
     psi = _normalize_rows(psi_S.T.astype(np.float64))
-    sim_i = np.abs(v @ phi.T)  # (L, n_S)
-    sim_t = np.abs(w @ psi.T)  # (L, n_S)
+    sim_i = v @ phi.T  # (L, n_S), signed cosine
+    sim_t = w @ psi.T  # (L, n_S), signed cosine
     top_i = sim_i.argmax(axis=0)
     top_t = sim_t.argmax(axis=0)
     return float((top_i == top_t).mean())
