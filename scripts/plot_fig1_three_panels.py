@@ -28,9 +28,9 @@ LBL_YES = "w/  modality masking"
 
 PANELS = [
     # (metric_key,                 ylabel,               title,                                    ylim,     yticks_step)
-    ("merged_fraction",            "MR",                  "(a) Merge Rate (MR)",                    (-0.05, 1.05), None),
+    ("avg_eval_loss",              "RE (log scale)",       "(a) Reconstruction Error (RE)",          None,          None),
     ("img_mgt_shared_tau0.95",     r"GRR at $\tau=0.95$", "(b) Ground-truth Recovery Rate (GRR)",   None,          None),
-    ("avg_eval_loss",              "RE (log scale)",       "(c) Reconstruction Error (RE)",          None,          None),
+    ("merged_fraction",            "MR",                  "(c) Merge Rate (MR)",                    (-0.05, 1.05), None),
 ]
 
 
@@ -70,12 +70,14 @@ def make_fig1(json_path: str, out_path: str, alphas_target=(0.2, 0.3, 0.4, 0.5, 
             ax.yaxis.set_major_locator(MultipleLocator(ystep))
         if metric == "avg_eval_loss":
             ax.set_yscale("log")
-            y_ticks = [0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
+            y_all = [v for v in y_no + y_yes if v is not None]
+            lo, hi = min(y_all), max(y_all)
+            ax.set_ylim(lo * 0.97, hi * 1.04)
+            y_ticks = [0.17, 0.18, 0.19, 0.20, 0.21, 0.22]
             ax.yaxis.set_major_locator(FixedLocator(y_ticks))
             ax.yaxis.set_minor_locator(FixedLocator([]))
             ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
             ax.yaxis.set_minor_formatter(NullFormatter())
-            ax.set_ylim(0.15, 0.5)
         ax.grid(alpha=0.3, which="both")
 
     fig.legend(

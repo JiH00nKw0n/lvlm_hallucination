@@ -35,9 +35,9 @@ DEFAULTS = {"IA": 0.03, "GS": 0.05, "ours": 2.0}
 
 PANELS = [
     # (metric_key,              ylabel,                title,                                     ylim,          yticks_step, ylog)
-    ("MR_geom",                 "MR",                   "(a) Merge Rate (MR)",                    None,          None,        False),
+    ("avg_eval_loss",           "RE (log scale)",       "(a) Reconstruction Error (RE)",          None,          None,        True),
     ("img_mgt_shared_tau0.95",  r"GRR at $\tau=0.95$",  "(b) Ground-truth Recovery Rate (GRR)",   None,          None,        False),
-    ("avg_eval_loss",           "RE (log scale)",       "(c) Reconstruction Error (RE)",          None,          None,        True),
+    ("MR_geom",                 "MR",                   "(c) Merge Rate (MR)",                    None,          None,        False),
 ]
 
 
@@ -139,12 +139,20 @@ def make_fig2(root: str, out_path: str):
             ax.yaxis.set_major_locator(MultipleLocator(ystep))
         if ylog:
             ax.set_yscale("log")
-            y_ticks = [0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
+            y_all = (
+                [r[metric] for _, r in ia_m]
+                + [r[metric] for _, r in gs_m]
+                + [r[metric] for _, r in ours_m]
+                + [v_1R[metric], v_2R[metric]]
+            )
+            y_all = [v for v in y_all if v is not None]
+            lo, hi = min(y_all), max(y_all)
+            ax.set_ylim(lo * 0.97, hi * 1.04)
+            y_ticks = [0.2, 0.3, 0.5, 0.7, 1.0]
             ax.yaxis.set_major_locator(FixedLocator(y_ticks))
             ax.yaxis.set_minor_locator(FixedLocator([]))
             ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
             ax.yaxis.set_minor_formatter(NullFormatter())
-            ax.set_ylim(0.15, 0.5)
         ax.grid(alpha=0.3, which="both")
         ax.tick_params(labelsize=8, pad=1)
 
