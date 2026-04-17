@@ -156,7 +156,32 @@ where $\supp\vz:=\{j\in[m]\,:\,[\vz]_j\neq 0\}$ and $|\supp\tilde\vz_{\mathrm I}
 
 These three answer the functional question: *when an isolated shared concept is presented to both modalities, do the two SAEs agree on which latent slot represents it?*. Unlike $\mathrm{JGRR}$ and $\overline{\mathrm{JM}}$, $\mathrm{XMA}$ depends only on *actively firing* slots under the GT stimulus, so it is insensitive to dead latents or idle shared-block slots.
 
-### 8. Merge Rate $\mathrm{MR}$ (shared-pair partition indicator)
+### 8. Latent-similarity metrics $\mathrm{FLC}$, $\mathrm{ELC}$
+
+Both metrics measure cross-modal agreement of the *encoder* responses by directly comparing the two modality-side dense latent vectors. They share the same functional form — mean cosine of paired latent codes — and differ only in the input distribution that generates the pair.
+
+**Feature Latent Cosine $\mathrm{FLC}$.** Input to each modality SAE is the corresponding ground-truth shared atom (an idealised single-concept stimulus):
+```latex
+\mathrm{FLC}
+\;:=\;
+\frac{1}{n_{\mathrm S}}\sum_{i\in[n_{\mathrm S}]}
+\cos\!\big(\sigma(\vV^{\!\top}[\vPhi_{\mathrm S}]_{[:,i]}),\;\sigma(\vW^{\!\top}[\vPsi_{\mathrm S}]_{[:,i]})\big).
+```
+This coincides with $\overline{\mathrm{XMA}}^{\cos}$ in §7 and is reported as `probe_vec_cos` in `result.json`. It asks: *when a pure shared atom is fed to each side, do the two encoders produce sparse codes that point in the same direction*.
+
+**Embedding Latent Cosine $\mathrm{ELC}$.** Input is a real paired eval sample $(\vx,\vy)\sim\sD_{\mathrm{eval}}$ drawn from the empirical joint distribution:
+```latex
+\mathrm{ELC}
+\;:=\;
+\E_{(\vx,\vy)\sim\sD_{\mathrm{eval}}}\!\left[\,
+\cos\!\big(\sigma(\vV^{\!\top}\vx),\;\sigma(\vW^{\!\top}\vy)\big)
+\,\right].
+```
+Reported as `pair_cos_mean` in `result.json`. It asks: *for a realistic paired sample (which activates many atoms at once, with modality-specific components present), how well do the two modality codes agree*.
+
+The two metrics are complementary: $\mathrm{FLC}$ isolates the **encoder routing quality** on shared concepts with no distractors, while $\mathrm{ELC}$ measures routing agreement under realistic superposition. For post-hoc Hungarian variants we write $\mathrm{FLC}^{\mathrm{Hung}}$, $\mathrm{ELC}^{\mathrm{Hung}}$, where $\vW$ is replaced by its Hungarian-permuted copy $\vW^{\pi^\star}$ (cf.\ §5).
+
+### 9. Merge Rate $\mathrm{MR}$ (shared-pair partition indicator)
 
 $\mathrm{MR}$ directly measures whether the learned dictionary uses a single column to reconstruct *both* modality directions of a shared atom (i.e., collapses the pair $([\vPhi_{\mathrm S}]_{[:,i]},[\vPsi_{\mathrm S}]_{[:,i]})$ onto one latent), as opposed to allocating two distinct columns at the two endpoints. For each shared GT index $i\in[n_{\mathrm S}]$, define the decoder-side best-match indices using signed cosine (consistent with the top-$k$ ReLU encoder, under which a column anti-aligned with an atom cannot fire on it):
 ```latex
