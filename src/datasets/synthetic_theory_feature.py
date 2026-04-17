@@ -105,7 +105,7 @@ class SyntheticTheoryFeatureBuilder(BaseBuilder):
 
     # Dictionary generation
     max_interference: float = 0.3
-    strategy: Literal["gradient", "random"] = "gradient"
+    strategy: Literal["gradient", "random", "sdp"] = "gradient"
     eps_margin: float = 1e-3
     lambda_neg: float = 1e-3
     dict_lr: float = 0.05
@@ -376,7 +376,7 @@ class SyntheticTheoryFeatureBuilder(BaseBuilder):
             sparsity=0.99,
             min_active=0,
             max_interference=self.max_interference,
-            strategy="gradient",
+            strategy=self.strategy,
             eps_margin=self.eps_margin,
             lambda_neg=self.lambda_neg,
             lr=self.dict_lr,

@@ -292,6 +292,41 @@ class VLMatryoshkaSAEConfig(MatryoshkaSAEConfig):
         self.vl_split_ratio = vl_split_ratio or [1, 2, 1]
 
 
+class TwoSidedTopKSAEConfig(PretrainedConfig):
+    """
+    Configuration for TwoSidedTopKSAE.
+
+    Holds two independent TopKSAE stacks (image side + text side), each with
+    ``latent_size // 2`` latents. Used for the real-data α-diagnostic
+    experiment (Diagnostic A/B) where image and text CLIP embeddings are
+    encoded by disjoint decoders so per-modality atoms are preserved.
+    """
+
+    model_type = "two_sided_topk_sae"
+
+    def __init__(
+        self,
+        hidden_size: int = 512,
+        latent_size: int = 8192,
+        k: int = 8,
+        normalize_decoder: bool = True,
+        multi_topk: bool = False,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        if latent_size % 2 != 0:
+            raise ValueError(f"latent_size must be even, got {latent_size}")
+        self.hidden_size = hidden_size
+        self.latent_size = latent_size
+        self.k = k
+        self.normalize_decoder = normalize_decoder
+        self.multi_topk = multi_topk
+
+    @property
+    def latent_size_per_side(self) -> int:
+        return self.latent_size // 2
+
+
 __all__ = [
     "TopKSAEConfig",
     "BatchTopKSAEConfig",
@@ -299,4 +334,5 @@ __all__ = [
     "VLTopKSAEConfig",
     "VLBatchTopKSAEConfig",
     "VLMatryoshkaSAEConfig",
+    "TwoSidedTopKSAEConfig",
 ]

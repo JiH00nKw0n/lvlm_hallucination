@@ -24,6 +24,8 @@ __all__ = [
     "CustomDPOTrainer",
     "SAETrainer",
     "CLIPSAETrainer",
+    "OneSidedSAETrainer",
+    "TwoSidedSAETrainer",
 ]
 
 
@@ -418,4 +420,116 @@ class CLIPSAETrainer(Trainer):
                 setattr(self.state, key, torch.tensor(0.0, device=self.args.device))
 
         self.state.sae_last_logged = self.state.global_step
+        super().log(logs, start_time=start_time)
+
+
+@registry.register_trainer("OneSidedSAETrainer")
+class OneSidedSAETrainer(Trainer):
+    """
+    Trainer for a single (shared-decoder) TopKSAE on pre-cached CLIP image/text
+    embeddings. Forwards the model twice per batch (once for image, once for
+    text) and uses the mean of the two reconstruction losses as the optimized
+    objective.
+
+    Unlike `CLIPSAETrainer`, this trainer is intentionally minimal: no AuxK,
+    no group-sparse, no dead-feature tracking — matching the real-α-diagnostic
+    experiment design.
+    """
+
+    supports_sae_weights = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.model_accepts_loss_kwargs = False
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        image_embeds = inputs["image_embeds"]
+        text_embeds = inputs["text_embeds"]
+        hs_i = image_embeds.unsqueeze(1)
+        hs_t = text_embeds.unsqueeze(1)
+        out_i = model(hidden_states=hs_i)
+        out_t = model(hidden_states=hs_t)
+        loss = (out_i.recon_loss + out_t.recon_loss) / 2
+
+        for key, val in (
+            ("recon_loss", loss),
+            ("recon_loss_image", out_i.recon_loss),
+            ("recon_loss_text", out_t.recon_loss),
+        ):
+            attr = f"_os_{key}"
+            current = getattr(self.state, attr, torch.tensor(0.0, device=val.device))
+            setattr(self.state, attr, current + val.detach())
+
+        return (loss, (out_i, out_t)) if return_outputs else loss
+
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        with torch.no_grad():
+            loss = self.compute_loss(model, inputs, return_outputs=False)
+        return (loss.detach(), None, None)
+
+    def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
+        steps = self.state.global_step - getattr(self.state, "_os_last_logged", 0)
+        if steps <= 0:
+            steps = 1
+        for key in ("recon_loss", "recon_loss_image", "recon_loss_text"):
+            attr = f"_os_{key}"
+            if hasattr(self.state, attr):
+                tensor = getattr(self.state, attr)
+                val = float(tensor.detach().mean().item())
+                logs[key] = round(val / steps, 6)
+                setattr(self.state, attr, torch.tensor(0.0, device=self.args.device))
+        self.state._os_last_logged = self.state.global_step
+        super().log(logs, start_time=start_time)
+
+
+@registry.register_trainer("TwoSidedSAETrainer")
+class TwoSidedSAETrainer(Trainer):
+    """
+    Thin Trainer for `TwoSidedTopKSAE` on pre-cached image/text embeddings.
+
+    The model's `forward(image_embeds, text_embeds)` returns an output with a
+    `loss` attribute (sum of per-side recon losses). This subclass forwards
+    the batch dict's `image_embeds` / `text_embeds` to the model and logs
+    per-side recon losses alongside the total.
+    """
+
+    supports_sae_weights = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.model_accepts_loss_kwargs = False
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        image_embeds = inputs["image_embeds"]
+        text_embeds = inputs["text_embeds"]
+        outputs = model(image_embeds=image_embeds, text_embeds=text_embeds)
+        loss = outputs.loss
+
+        for key in ("recon_loss", "recon_loss_image", "recon_loss_text"):
+            val = getattr(outputs, key, None)
+            if val is None:
+                continue
+            attr = f"_ts_{key}"
+            current = getattr(self.state, attr, torch.tensor(0.0, device=val.device))
+            setattr(self.state, attr, current + val.detach())
+
+        return (loss, outputs) if return_outputs else loss
+
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        with torch.no_grad():
+            loss = self.compute_loss(model, inputs, return_outputs=False)
+        return (loss.detach(), None, None)
+
+    def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
+        steps = self.state.global_step - getattr(self.state, "_ts_last_logged", 0)
+        if steps <= 0:
+            steps = 1
+        for key in ("recon_loss", "recon_loss_image", "recon_loss_text"):
+            attr = f"_ts_{key}"
+            if hasattr(self.state, attr):
+                tensor = getattr(self.state, attr)
+                val = float(tensor.detach().mean().item())
+                logs[key] = round(val / steps, 6)
+                setattr(self.state, attr, torch.tensor(0.0, device=self.args.device))
+        self.state._ts_last_logged = self.state.global_step
         super().log(logs, start_time=start_time)

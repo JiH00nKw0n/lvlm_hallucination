@@ -14,6 +14,7 @@ from .configuration_sae import (
     BatchTopKSAEConfig,
     MatryoshkaSAEConfig,
     TopKSAEConfig,
+    TwoSidedTopKSAEConfig,
     VLBatchTopKSAEConfig,
     VLMatryoshkaSAEConfig,
     VLTopKSAEConfig,
@@ -2087,6 +2088,80 @@ class VLMatryoshkaSAE(PreTrainedModel):
         )
 
 
+@dataclass
+class TwoSidedSAEOutput(ModelOutput):
+    """Output container for TwoSidedTopKSAE forward pass."""
+
+    loss: Optional[Tensor] = None
+    recon_loss: Optional[Tensor] = None
+    recon_loss_image: Optional[Tensor] = None
+    recon_loss_text: Optional[Tensor] = None
+    image_output: Optional[Tensor] = None
+    text_output: Optional[Tensor] = None
+
+
+class TwoSidedTopKSAE(PreTrainedModel):
+    """
+    Two disjoint TopKSAE stacks sharing no parameters: one for the image side,
+    one for the text side. Total latent budget is ``config.latent_size``;
+    each side gets half.
+
+    Used for the real-data α-diagnostic experiment (Diagnostic A/B). Forward
+    takes per-sample image/text embeddings; returns summed reconstruction
+    loss so a plain Hugging Face Trainer can optimize it.
+    """
+
+    config_class = TwoSidedTopKSAEConfig
+    base_model_prefix = "two_sided_topk_sae"
+
+    def __init__(self, config: TwoSidedTopKSAEConfig):
+        super().__init__(config)
+        self.cfg = config
+        per_side = config.latent_size_per_side
+        sub_config = TopKSAEConfig(
+            hidden_size=config.hidden_size,
+            latent_size=per_side,
+            expansion_factor=1,
+            normalize_decoder=config.normalize_decoder,
+            k=config.k,
+            multi_topk=config.multi_topk,
+            weight_tie=False,
+        )
+        self.image_sae = TopKSAE(sub_config)
+        self.text_sae = TopKSAE(TopKSAEConfig(**sub_config.to_dict()))
+        self.post_init()
+
+    def _init_weights(self, module: nn.Module):
+        return
+
+    def forward(
+        self,
+        image_embeds: Tensor,
+        text_embeds: Tensor,
+        **_: dict,
+    ) -> TwoSidedSAEOutput:
+        hs_i = image_embeds.unsqueeze(1) if image_embeds.dim() == 2 else image_embeds
+        hs_t = text_embeds.unsqueeze(1) if text_embeds.dim() == 2 else text_embeds
+
+        out_i = self.image_sae(hidden_states=hs_i)
+        out_t = self.text_sae(hidden_states=hs_t)
+
+        recon = (out_i.recon_loss + out_t.recon_loss) / 2
+        return TwoSidedSAEOutput(
+            loss=recon,
+            recon_loss=recon,
+            recon_loss_image=out_i.recon_loss,
+            recon_loss_text=out_t.recon_loss,
+            image_output=out_i.output,
+            text_output=out_t.output,
+        )
+
+    @torch.no_grad()
+    def set_decoder_norm_to_unit_norm(self):
+        self.image_sae.set_decoder_norm_to_unit_norm()
+        self.text_sae.set_decoder_norm_to_unit_norm()
+
+
 __all__ = [
     "TopKSAE",
     "BatchTopKSAE",
@@ -2094,9 +2169,11 @@ __all__ = [
     "VLTopKSAE",
     "VLBatchTopKSAE",
     "VLMatryoshkaSAE",
+    "TwoSidedTopKSAE",
     "SAEOutput",
     "MatryoshkaSAEOutput",
     "VLSAEOutput",
     "VLMatryoshkaSAEOutput",
+    "TwoSidedSAEOutput",
 ]
 logger = logging.getLogger(__name__)
