@@ -1,0 +1,19 @@
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{shared_vs_modality_specific.pdf}
+  \caption{
+    \textbf{Comparison of Shared \textcolor{cShared}{(red)} and Separated SAE \textcolor{cSeparated}{(blue)} trained on synthetic paired embeddings across cross-modal alignment ($\alpha$) of ground-truth (GT) features.} 
+    %
+    \textbf{(a)}~The collapse rate (CR) of shared SAE stays near zero for $\alpha \leq 0.2$, then monotonically increases.
+    The Separated SAE is not affected to this collapse.
+    %
+    \textbf{(b)}~This collapse directly translates to higher reconstruction error (RE): the RE of Shared SAE in the $\alpha$ from $0.4$ to $0.8$ range where collapse accelerates.
+    At $\alpha{=}1$, however, identical shared features make collapsing lossless, thereby the Shared SAE outperforms the Separated SAE by avoiding redundant capacity use.
+    %
+    \textbf{(c)}~GT recovery rate (GRR) mirrors this pattern: the GRR of Shared SAE degrades as collapse grows, reaching a minimum at $\alpha{=}0.8$, then recovers at $\alpha{=}1$.
+    Meanwhile, the Separated SAE maintains stable recovery across all $\alpha$.
+    %
+    These results indicate that the collapse degrades both reconstruction and GT feature recovery when $\alpha < 1$.
+  }
+  \label{fig:shared-vs-separated}
+\end{figure}

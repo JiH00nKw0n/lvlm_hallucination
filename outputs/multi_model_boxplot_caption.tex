@@ -1,0 +1,13 @@
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{multi_model_boxplot.pdf}
+  \caption{
+    \textbf{Cosine similarity between matched image and text decoder columns of a Separated SAE, across five VLMs, binned by co-activation correlation $r$.}
+    For each model, a Separated SAE is trained on COCO image-caption pair embeddings.
+    Latent pairs are obtained by Hungarian assignment on the image--text activation correlation matrix after filtering dead latents.
+    For each matched pair $(i, \pi(i))$, where $\pi$ denotes the Hungarian assignment, we report the cosine similarity $\cos(\mathbf{W}_I[:,i],\, \mathbf{W}_T[:,\pi(i)])$.
+    Since the true cross-modal alignment $\alpha$ is unobservable in real VLMs, this cosine serves as a proxy for how closely the two modalities represent the same concept.
+    Even among strongly co-activating pairs ($r \geq 0.6$), the cosine concentrates around ${\sim}0.5$ across all five models, providing indirect evidence that shared features in real VLMs are only partially aligned across modalities.
+  }
+  \label{fig:multi-model-boxplot}
+\end{figure}
