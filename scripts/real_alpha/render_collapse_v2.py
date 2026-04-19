@@ -73,6 +73,13 @@ two_model=TwoSidedTopKSAE.from_pretrained(two_dir).to(dev).eval()
 # one_model still on GPU from phase 1
 top_k=50
 oh={i:[] for i in self_idx};th={i:[] for i in two_c02}
+# single SAE: image-only / text-only
+s_ioh={i:[] for i in self_idx}
+s_toh={i:[] for i in self_idx}
+# two SAE: image-only / text-only
+t_ioh={i:[] for i in two_c02}
+t_toh={i:[] for i in two_c02}
+fire_thr=0.01
 print("streaming...",flush=True)
 with torch.no_grad():
     for s in range(0,N,1024):
@@ -82,15 +89,32 @@ with torch.no_grad():
         z2i=two_model.image_sae(hidden_states=hi,return_dense_latents=True).dense_latents.squeeze(1).cpu().numpy()
         z2t=two_model.text_sae(hidden_states=ht,return_dense_latents=True).dense_latents.squeeze(1).cpu().numpy()
         for pi in self_idx:
-            li=int(oi1[pi]);sc=np.minimum(z1i[:,li],z1t[:,li])
+            li=int(oi1[pi]);ai=z1i[:,li];at=z1t[:,li]
+            sc=np.minimum(ai,at)
             for bi in range(len(sc)):
-                if len(oh[pi])<top_k:heapq.heappush(oh[pi],(sc[bi],s+bi))
-                elif sc[bi]>oh[pi][0][0]:heapq.heapreplace(oh[pi],(sc[bi],s+bi))
+                sid=s+bi
+                if len(oh[pi])<top_k:heapq.heappush(oh[pi],(sc[bi],sid))
+                elif sc[bi]>oh[pi][0][0]:heapq.heapreplace(oh[pi],(sc[bi],sid))
+                if at[bi]<fire_thr and ai[bi]>0:
+                    if len(s_ioh[pi])<top_k:heapq.heappush(s_ioh[pi],(ai[bi],sid))
+                    elif ai[bi]>s_ioh[pi][0][0]:heapq.heapreplace(s_ioh[pi],(ai[bi],sid))
+                if ai[bi]<fire_thr and at[bi]>0:
+                    if len(s_toh[pi])<top_k:heapq.heappush(s_toh[pi],(at[bi],sid))
+                    elif at[bi]>s_toh[pi][0][0]:heapq.heapreplace(s_toh[pi],(at[bi],sid))
         for pi in two_c02:
-            li=int(oi2[pi]);lj=int(oj2[pi]);sc=np.minimum(z2i[:,li],z2t[:,lj])
+            li=int(oi2[pi]);lj=int(oj2[pi])
+            ai=z2i[:,li];at=z2t[:,lj]
+            sc=np.minimum(ai,at)
             for bi in range(len(sc)):
-                if len(th[pi])<top_k:heapq.heappush(th[pi],(sc[bi],s+bi))
-                elif sc[bi]>th[pi][0][0]:heapq.heapreplace(th[pi],(sc[bi],s+bi))
+                sid=s+bi
+                if len(th[pi])<top_k:heapq.heappush(th[pi],(sc[bi],sid))
+                elif sc[bi]>th[pi][0][0]:heapq.heapreplace(th[pi],(sc[bi],sid))
+                if at[bi]<fire_thr and ai[bi]>0:
+                    if len(t_ioh[pi])<top_k:heapq.heappush(t_ioh[pi],(ai[bi],sid))
+                    elif ai[bi]>t_ioh[pi][0][0]:heapq.heapreplace(t_ioh[pi],(ai[bi],sid))
+                if ai[bi]<fire_thr and at[bi]>0:
+                    if len(t_toh[pi])<top_k:heapq.heappush(t_toh[pi],(at[bi],sid))
+                    elif at[bi]>t_toh[pi][0][0]:heapq.heapreplace(t_toh[pi],(at[bi],sid))
         if (s//1024)%100==0:print(f"  batch {s//1024}/{(N+1023)//1024}",flush=True)
 
 del one_model,two_model,img,txt; gc.collect(); torch.cuda.empty_cache()
@@ -98,6 +122,10 @@ print("streaming done",flush=True)
 
 os_={pi:set(sid for _,sid in oh[pi]) for pi in self_idx}
 ts_={pi:set(sid for _,sid in th[pi]) for pi in two_c02}
+s_ios_={pi:set(sid for _,sid in s_ioh[pi]) for pi in self_idx}
+s_tos_={pi:set(sid for _,sid in s_toh[pi]) for pi in self_idx}
+t_ios_={pi:set(sid for _,sid in t_ioh[pi]) for pi in two_c02}
+t_tos_={pi:set(sid for _,sid in t_toh[pi]) for pi in two_c02}
 
 def uimgs(sids,n=9):
     seen=set();out=[]
@@ -122,7 +150,10 @@ for pi in self_idx:
         two_pair=[int(oi2[best_p2]),int(oj2[best_p2])] if best_p2 else None,
         C_two=float(Cm2[best_p2]) if best_p2 else 0,cos_two=float(cos2[best_p2]) if best_p2 else 0,
         jaccard=best_j,n_shared=len(shared),
-        imgs_shared=uimgs(shared),imgs_single=uimgs(s_only),imgs_two=uimgs(t_only)))
+        imgs_shared=uimgs(shared),
+        imgs_s_imgonly=uimgs(s_ios_[pi]),imgs_s_txtonly=uimgs(s_tos_[pi]),
+        imgs_t_imgonly=uimgs(t_ios_[best_p2]) if best_p2 is not None else [],
+        imgs_t_txtonly=uimgs(t_tos_[best_p2]) if best_p2 is not None else []))
 
 # ===== PHASE 4: Render HTML =====
 print("loading COCO images...",flush=True)
@@ -167,9 +198,11 @@ for i,c in enumerate(matched):
     html.append(f"<p class='meta'><b>Single</b>: latent #{c['single_lat']}, C={c['C_one']:.3f}, cos={c['cos_one']:.4f} (merged)</p>")
     if c["two_pair"]:
         html.append(f"<p class='meta'><b>Two</b>: Img #{c['two_pair'][0]} / Txt #{c['two_pair'][1]}, C={c['C_two']:.3f}, cos={c['cos_two']:.4f}</p>")
-    html.append(grid(c["imgs_shared"],"Shared"))
-    html.append(grid(c["imgs_single"],"Single-only"))
-    html.append(grid(c["imgs_two"],"Two-only"))
+    html.append(grid(c["imgs_shared"],"Both SAEs co-fire"))
+    html.append(grid(c["imgs_s_imgonly"],"Single SAE: image-only"))
+    html.append(grid(c["imgs_s_txtonly"],"Single SAE: text-only"))
+    html.append(grid(c["imgs_t_imgonly"],"Two SAE: image-only"))
+    html.append(grid(c["imgs_t_txtonly"],"Two SAE: text-only"))
     html.append("</div>")
 html.append("</body></html>")
 Path(out_path).write_text("\n".join(html),encoding="utf-8")
