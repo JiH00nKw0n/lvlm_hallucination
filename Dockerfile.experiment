@@ -1,0 +1,26 @@
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV HF_TOKEN=${HF_TOKEN}
+ENV HF_HOME=/workspace/.cache
+
+RUN pip install --no-cache-dir \
+    transformers==5.5.3 \
+    datasets==4.8.4 \
+    open_clip_torch==3.3.0 \
+    safetensors==0.7.0 \
+    scipy==1.15.3 \
+    pillow==12.2.0 \
+    tqdm==4.67.3 \
+    huggingface_hub==1.10.1 \
+    matplotlib
+
+WORKDIR /workspace
+COPY src/ src/
+COPY scripts/real_alpha/ scripts/real_alpha/
+COPY scripts/palette.py scripts/palette.py
+COPY experiment.sh experiment.sh
+
+RUN chmod +x experiment.sh
+
+CMD ["bash", "experiment.sh"]
