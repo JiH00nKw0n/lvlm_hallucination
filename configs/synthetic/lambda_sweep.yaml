@@ -1,0 +1,62 @@
+data:
+  n_shared: 1024
+  n_image: 512
+  n_text: 512
+  representation_dim: 256
+  sparsity: 0.99
+  beta: 1.0
+  obs_noise_std: 0.05
+  max_interference: 0.3
+  num_train: 50000
+  num_eval: 10000
+
+training:
+  lr: 0.0005
+  num_epochs: 10
+  batch_size: 256
+  k: 16
+  weight_decay: 0.0
+  max_grad_norm: 0.0
+  device: cuda
+
+methods:
+  # Baselines (fixed)
+  - name: single_recon
+  - name: two_recon
+  # iso_align: 5 lambda multipliers (base 0.03)
+  - name: iso_align
+    aux_weight: 0.001875    # 0.03 x 1/16
+  - name: iso_align
+    aux_weight: 0.0075      # 0.03 x 1/4
+  - name: iso_align
+    aux_weight: 0.03        # 0.03 x 1
+  - name: iso_align
+    aux_weight: 0.12        # 0.03 x 4
+  - name: iso_align
+    aux_weight: 0.48        # 0.03 x 16
+  # group_sparse: 5 lambda multipliers (base 0.05)
+  - name: group_sparse
+    aux_weight: 0.003125    # 0.05 x 1/16
+  - name: group_sparse
+    aux_weight: 0.0125      # 0.05 x 1/4
+  - name: group_sparse
+    aux_weight: 0.05        # 0.05 x 1
+  - name: group_sparse
+    aux_weight: 0.2         # 0.05 x 4
+  - name: group_sparse
+    aux_weight: 0.8         # 0.05 x 16
+  # ours: disabled for now (OOM on 2-stage)
+  # - name: ours
+  #   lambda_aux: 0.0625      # 1.0 x 1/16
+  #   m_S: 512
+  #   k_align: 6
+
+sweep:
+  alpha: [0.5]
+  latent_size: [8192]
+  num_seeds: 5
+  seed_base: 1
+
+output:
+  root: outputs/theorem2_v2_lambda_sweep
+  save_decoders: true

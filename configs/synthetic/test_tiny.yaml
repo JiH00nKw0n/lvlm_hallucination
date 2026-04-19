@@ -1,0 +1,46 @@
+data:
+  n_shared: 16
+  n_image: 8
+  n_text: 8
+  representation_dim: 32
+  sparsity: 0.9
+  beta: 1.0
+  obs_noise_std: 0.05
+  max_interference: 0.1
+  num_train: 500
+  num_eval: 100
+
+training:
+  lr: 0.0005
+  num_epochs: 2
+  batch_size: 64
+  k: 4
+  weight_decay: 0.0
+  max_grad_norm: 0.0
+  device: cpu
+
+methods:
+  - name: single_recon
+  - name: two_recon
+  - name: group_sparse
+    aux_weight: 0.05
+  - name: iso_align
+    aux_weight: 0.03
+  - name: ours
+    lambda_aux: 1.0
+    m_S: 16
+    k_align: 1
+    aux_norm: group
+
+sweep:
+  alpha: [0.5]
+  latent_size: [64]
+  num_seeds: 1
+  seed_base: 42
+
+output:
+  root: /tmp/synth_v2_test
+  save_decoders: true
+
+diagnostic:
+  rho: 0.3
