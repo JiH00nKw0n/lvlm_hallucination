@@ -1,0 +1,49 @@
+# InfoNCE-only low-lambda sweep. lambda in {0.01, 0.03, 0.1}.
+# +revive skipped (identical to no-revive in synthetic due to no-dead).
+# Single (alpha=0.5, seed=1) point. Per-side latent = 4096.
+
+data:
+  n_shared: 1024
+  n_image: 512
+  n_text: 512
+  representation_dim: 256
+  sparsity: 0.99
+  beta: 1.0
+  obs_noise_std: 0.05
+  max_interference: 0.1
+  num_train: 50000
+  num_eval: 10000
+
+training:
+  lr: 0.0005
+  num_epochs: 10
+  batch_size: 256
+  k: 16
+  weight_decay: 0.0
+  max_grad_norm: 0.0
+  device: cuda
+
+methods:
+  # InfoNCE once x {0.01, 0.03, 0.1}
+  - {name: paired_aux_alignment, variant_name: infonce_once__l0.01, aux_loss: infonce, hungarian_schedule: once,                  revive_dead: false, lambda_aux: 0.01, rho0: 0.2, k_align: 6}
+  - {name: paired_aux_alignment, variant_name: infonce_once__l0.03, aux_loss: infonce, hungarian_schedule: once,                  revive_dead: false, lambda_aux: 0.03, rho0: 0.2, k_align: 6}
+  - {name: paired_aux_alignment, variant_name: infonce_once__l0.1,  aux_loss: infonce, hungarian_schedule: once,                  revive_dead: false, lambda_aux: 0.1,  rho0: 0.2, k_align: 6}
+
+  # InfoNCE per_epoch x {0.01, 0.03, 0.1}
+  - {name: paired_aux_alignment, variant_name: infonce_perepoch__l0.01, aux_loss: infonce, hungarian_schedule: per_epoch_partitioned, revive_dead: false, lambda_aux: 0.01, rho0: 0.2}
+  - {name: paired_aux_alignment, variant_name: infonce_perepoch__l0.03, aux_loss: infonce, hungarian_schedule: per_epoch_partitioned, revive_dead: false, lambda_aux: 0.03, rho0: 0.2}
+  - {name: paired_aux_alignment, variant_name: infonce_perepoch__l0.1,  aux_loss: infonce, hungarian_schedule: per_epoch_partitioned, revive_dead: false, lambda_aux: 0.1,  rho0: 0.2}
+
+sweep:
+  alpha: [0.5]
+  latent_size: [8192]
+  num_seeds: 1
+  seed_base: 1
+
+output:
+  root: outputs/aux_alignment_synthetic_infonce_lowlam
+  run_tag: alpha05_seed1
+  save_decoders: true
+
+diagnostic:
+  rho: 0.2

@@ -1,0 +1,49 @@
+# Tiny smoke-test config for the aux-alignment ablation.
+# Runs all 9 variants quickly to verify code paths.
+# Per-side latent = 128 (latent_size 256), 2 epochs, 500 train pairs.
+
+data:
+  n_shared: 64
+  n_image: 32
+  n_text: 32
+  representation_dim: 32
+  sparsity: 0.95
+  beta: 1.0
+  obs_noise_std: 0.05
+  max_interference: 0.1
+  num_train: 500
+  num_eval: 200
+
+training:
+  lr: 0.001
+  num_epochs: 2
+  batch_size: 64
+  k: 8
+  weight_decay: 0.0
+  max_grad_norm: 0.0
+  device: cuda
+
+methods:
+  - {name: two_recon, variant_name: recon_only}
+  - {name: paired_aux_alignment, variant_name: naive_once,                aux_loss: naive_diag, hungarian_schedule: once,                  revive_dead: false, lambda_aux: 1.0, rho0: 0.2, k_align: 1}
+  - {name: paired_aux_alignment, variant_name: barlow_once,               aux_loss: barlow,     hungarian_schedule: once,                  revive_dead: false, lambda_aux: 1.0, rho0: 0.2, k_align: 1, barlow_lambda_off: 0.005}
+  - {name: paired_aux_alignment, variant_name: infonce_once,              aux_loss: infonce,    hungarian_schedule: once,                  revive_dead: false, lambda_aux: 1.0, rho0: 0.2, k_align: 1}
+  - {name: paired_aux_alignment, variant_name: infonce_once+revive,       aux_loss: infonce,    hungarian_schedule: once,                  revive_dead: true,  lambda_aux: 1.0, rho0: 0.2, k_align: 1}
+  - {name: paired_aux_alignment, variant_name: naive_perepoch+revive,     aux_loss: naive_diag, hungarian_schedule: per_epoch_partitioned, revive_dead: true,  lambda_aux: 1.0, rho0: 0.2}
+  - {name: paired_aux_alignment, variant_name: barlow_perepoch+revive,    aux_loss: barlow,     hungarian_schedule: per_epoch_partitioned, revive_dead: true,  lambda_aux: 1.0, rho0: 0.2, barlow_lambda_off: 0.005}
+  - {name: paired_aux_alignment, variant_name: infonce_perepoch,          aux_loss: infonce,    hungarian_schedule: per_epoch_partitioned, revive_dead: false, lambda_aux: 1.0, rho0: 0.2}
+  - {name: paired_aux_alignment, variant_name: infonce_perepoch+revive,   aux_loss: infonce,    hungarian_schedule: per_epoch_partitioned, revive_dead: true,  lambda_aux: 1.0, rho0: 0.2}
+
+sweep:
+  alpha: [0.5]
+  latent_size: [256]
+  num_seeds: 1
+  seed_base: 1
+
+output:
+  root: outputs/aux_alignment_synthetic_tiny
+  run_tag: smoke
+  save_decoders: false
+
+diagnostic:
+  rho: 0.2

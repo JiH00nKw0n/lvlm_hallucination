@@ -45,6 +45,47 @@ def greedy_permutation_match_full(
     return P_I, P_T, ordered
 
 
+def partitioned_hungarian_on_unsettled(
+    C: np.ndarray,
+    unsettled_idx: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Hungarian assignment restricted to the ``unsettled_idx`` submatrix.
+
+    Returns a full-length permutation array of length ``C.shape[0]`` for both
+    the row (image) side and the column (text) side. Indices not in
+    ``unsettled_idx`` are mapped to themselves (identity), so applying this
+    permutation never disturbs frozen slots.
+
+    Args:
+        C: ``(n, n)`` cross-correlation matrix. Hungarian maximises
+            ``sum_i C[i, pi(i)]`` on the U x U submatrix.
+        unsettled_idx: 1-D array of indices currently unsettled. Hungarian
+            picks a 1-to-1 matching across these only.
+
+    Returns:
+        ``(P_I_full, P_T_full)`` of length ``n``. ``P_T_full`` is the
+        permutation to apply to the text side; ``P_I_full`` is the identity
+        currently (image side untouched), kept for symmetry with
+        ``greedy_permutation_match_full``.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    n = C.shape[0]
+    P_I_full = np.arange(n, dtype=np.int64)
+    P_T_full = np.arange(n, dtype=np.int64)
+
+    if unsettled_idx.size == 0:
+        return P_I_full, P_T_full
+
+    sub = C[np.ix_(unsettled_idx, unsettled_idx)]
+    # Maximise correlation on the diagonal -> minimise negative.
+    # `row_ind` is just arange; `col_ind` is the matched text index per image.
+    _, col_ind = linear_sum_assignment(-sub)
+    new_text_for_img = unsettled_idx[col_ind]
+    P_T_full[unsettled_idx] = new_text_for_img
+    return P_I_full, P_T_full
+
+
 def apply_latent_permutation(
     sae,
     perm_idx: np.ndarray,

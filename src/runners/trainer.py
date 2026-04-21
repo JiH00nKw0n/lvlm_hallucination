@@ -10,6 +10,7 @@ from transformers import (
     FeatureExtractionMixin,
     ProcessorMixin,
     Trainer,
+    TrainerCallback,
 )
 from trl import DPOConfig, maybe_extract_prompt, maybe_apply_chat_template, is_conversational, \
     prepare_multimodal_messages
@@ -26,6 +27,8 @@ __all__ = [
     "CLIPSAETrainer",
     "OneSidedSAETrainer",
     "TwoSidedSAETrainer",
+    "DeadReviveCallback",
+    "RealAuxAlignmentTrainer",
 ]
 
 
@@ -487,25 +490,95 @@ class TwoSidedSAETrainer(Trainer):
     """
     Thin Trainer for `TwoSidedTopKSAE` on pre-cached image/text embeddings.
 
-    The model's `forward(image_embeds, text_embeds)` returns an output with a
-    `loss` attribute (sum of per-side recon losses). This subclass forwards
-    the batch dict's `image_embeds` / `text_embeds` to the model and logs
-    per-side recon losses alongside the total.
+    When ``auxk_weight > 0``, per-side dead latents are tracked via
+    ``num_tokens_since_fired_{i,t}`` (threshold ``dead_feature_threshold``),
+    and ``dead_mask`` is forwarded into each side's TopKSAE so its internal
+    AuxK branch fires. The per-side AuxK losses are summed and added to the
+    main recon with weight ``auxk_weight``.
     """
 
     supports_sae_weights = True
 
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        *args,
+        auxk_weight: float = 0.0,
+        dead_feature_threshold: int = 10_000_000,
+        revive_every_epoch: bool = False,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.model_accepts_loss_kwargs = False
+        self.auxk_weight = float(auxk_weight)
+        self.dead_feature_threshold = int(dead_feature_threshold)
+        self.revive_every_epoch = bool(revive_every_epoch)
+        self.num_tokens_since_fired_i: Optional[torch.Tensor] = None
+        self.num_tokens_since_fired_t: Optional[torch.Tensor] = None
+        # Per-epoch fire counters used by DeadReviveCallback.
+        self.fire_count_epoch_i: Optional[torch.Tensor] = None
+        self.fire_count_epoch_t: Optional[torch.Tensor] = None
+
+    def _init_dead_mask_state(self, model, device):
+        n = int(model.image_sae.latent_size)
+        self.num_tokens_since_fired_i = torch.zeros(n, dtype=torch.long, device=device)
+        self.num_tokens_since_fired_t = torch.zeros(n, dtype=torch.long, device=device)
+
+    def _init_epoch_fire_state(self, model, device):
+        n = int(model.image_sae.latent_size)
+        self.fire_count_epoch_i = torch.zeros(n, dtype=torch.long, device=device)
+        self.fire_count_epoch_t = torch.zeros(n, dtype=torch.long, device=device)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         image_embeds = inputs["image_embeds"]
         text_embeds = inputs["text_embeds"]
-        outputs = model(image_embeds=image_embeds, text_embeds=text_embeds)
-        loss = outputs.loss
 
-        for key in ("recon_loss", "recon_loss_image", "recon_loss_text"):
+        use_direct_forward = self.auxk_weight > 0.0 or self.revive_every_epoch
+        if use_direct_forward:
+            # Lazy init of trackers
+            if self.auxk_weight > 0.0 and self.num_tokens_since_fired_i is None:
+                self._init_dead_mask_state(model, image_embeds.device)
+            if self.revive_every_epoch and self.fire_count_epoch_i is None:
+                self._init_epoch_fire_state(model, image_embeds.device)
+
+            dead_i = None
+            dead_t = None
+            if self.auxk_weight > 0.0:
+                dead_i = self.num_tokens_since_fired_i > self.dead_feature_threshold
+                dead_t = self.num_tokens_since_fired_t > self.dead_feature_threshold
+
+            hs_i = image_embeds.unsqueeze(1) if image_embeds.dim() == 2 else image_embeds
+            hs_t = text_embeds.unsqueeze(1) if text_embeds.dim() == 2 else text_embeds
+            out_i = model.image_sae(hidden_states=hs_i, dead_mask=dead_i)
+            out_t = model.text_sae(hidden_states=hs_t, dead_mask=dead_t)
+            recon = (out_i.recon_loss + out_t.recon_loss) / 2
+            auxk = (out_i.auxk_loss + out_t.auxk_loss) / 2
+            loss = recon + self.auxk_weight * auxk
+
+            # Update trackers
+            batch_size = image_embeds.shape[0]
+            fired_i = torch.unique(out_i.latent_indices.flatten())
+            fired_t = torch.unique(out_t.latent_indices.flatten())
+            if self.auxk_weight > 0.0:
+                self.num_tokens_since_fired_i += batch_size
+                self.num_tokens_since_fired_t += batch_size
+                self.num_tokens_since_fired_i[fired_i] = 0
+                self.num_tokens_since_fired_t[fired_t] = 0
+            if self.revive_every_epoch:
+                self.fire_count_epoch_i[fired_i] += 1
+                self.fire_count_epoch_t[fired_t] += 1
+
+            # Build an output shim that matches the vanilla TwoSided API
+            outputs = type("Out", (), {
+                "loss": loss, "recon_loss": recon,
+                "recon_loss_image": out_i.recon_loss,
+                "recon_loss_text": out_t.recon_loss,
+                "auxk_loss": auxk,
+            })()
+        else:
+            outputs = model(image_embeds=image_embeds, text_embeds=text_embeds)
+            loss = outputs.loss
+
+        for key in ("recon_loss", "recon_loss_image", "recon_loss_text", "auxk_loss"):
             val = getattr(outputs, key, None)
             if val is None:
                 continue
@@ -533,3 +606,196 @@ class TwoSidedSAETrainer(Trainer):
                 setattr(self.state, attr, torch.tensor(0.0, device=self.args.device))
         self.state._ts_last_logged = self.state.global_step
         super().log(logs, start_time=start_time)
+
+
+# ------------------------------------------------------------------
+# DeadReviveCallback — per-epoch random re-init of dead slots
+# ------------------------------------------------------------------
+#
+# At the end of each epoch, finds per-side slots with zero fires during
+# that epoch and re-inits (encoder row, bias, decoder row) to small random
+# vectors. This is the "revive (random init)" axis — a cheaper alternative
+# to AuxK for rescuing dead latents in real data.
+#
+# Resets ``trainer.fire_count_epoch_{i,t}`` after revive.
+
+
+def _reinit_two_sided_slots(sae, idx) -> None:
+    """Re-init (W_enc row, bias, W_dec row) at ``idx`` to small random vectors."""
+    import numpy as np  # noqa: F401 — kept for future typing consistency
+    if hasattr(idx, "numel"):
+        if idx.numel() == 0:
+            return
+    elif getattr(idx, "size", 0) == 0:
+        return
+    device = sae.W_dec.device
+    dtype = sae.W_dec.dtype
+    d = sae.W_dec.shape[1]
+    n = int(idx.shape[0]) if hasattr(idx, "shape") else int(len(idx))
+    with torch.no_grad():
+        new_dec = torch.randn(n, d, device=device, dtype=dtype)
+        new_dec = new_dec / new_dec.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        sae.W_dec.data[idx] = new_dec
+        new_enc = torch.randn(n, d, device=device, dtype=dtype) * 0.01
+        sae.encoder.weight.data[idx] = new_enc
+        sae.encoder.bias.data[idx] = 0.0
+
+
+class DeadReviveCallback(TrainerCallback):
+    """Revive per-side dead slots (random init) every epoch.
+
+    Reads the trainer's per-epoch fire counters (``fire_count_epoch_i``,
+    ``fire_count_epoch_t``), re-inits slots that fired zero times during the
+    epoch, and resets the counters. Use with ``TwoSidedSAETrainer(
+    revive_every_epoch=True)``.
+    """
+
+    def __init__(self, trainer: Optional["TwoSidedSAETrainer"] = None) -> None:
+        super().__init__()
+        self.trainer = trainer
+
+    def on_epoch_end(self, args, state, control, model=None, optimizer=None, **kwargs):
+        trainer = kwargs.get("trainer", None) or self.trainer
+        if trainer is None:
+            logger.warning("DeadReviveCallback: no trainer handle, skipping revive.")
+            return
+        if not getattr(trainer, "revive_every_epoch", False):
+            return
+        fc_i = getattr(trainer, "fire_count_epoch_i", None)
+        fc_t = getattr(trainer, "fire_count_epoch_t", None)
+        if fc_i is None or fc_t is None:
+            return
+
+        dead_i = torch.nonzero(fc_i == 0, as_tuple=False).flatten()
+        dead_t = torch.nonzero(fc_t == 0, as_tuple=False).flatten()
+        _reinit_two_sided_slots(model.image_sae, dead_i)
+        _reinit_two_sided_slots(model.text_sae, dead_t)
+        logger.info(
+            "DeadReviveCallback@epoch%s: revived img=%d / txt=%d dead slots",
+            int(round(state.epoch)) if state.epoch is not None else "?",
+            int(dead_i.numel()), int(dead_t.numel()),
+        )
+        fc_i.zero_()
+        fc_t.zero_()
+
+
+# ------------------------------------------------------------------
+# RealAuxAlignmentTrainer (method ablation on real CLIP embeddings)
+# ------------------------------------------------------------------
+#
+# Mirrors `src/runners/synthetic_trainers.py:AuxAlignmentTrainer` but feeds
+# data via the real CLIP embedding cache (image_embeds / text_embeds keys).
+#
+# Same `variant_cfg` interface (loss form x hungarian schedule x revive).
+# `AuxAlignmentCallback` from synthetic_trainers can be reused with a thin
+# adapter that forwards the same `train_img` / `train_txt` tensors.
+
+import numpy as np
+
+from src.configs.experiment import MethodConfig
+from src.training.losses import (
+    barlow_twins_aux_loss_masked,
+    naive_diag_aux_loss_masked,
+    slot_infonce_loss,
+)
+
+
+class RealAuxAlignmentTrainer(TwoSidedSAETrainer):
+    """Real-data variant-aware trainer.
+
+    Adds variant-aware aux loss + frozen_mask + fire counters on top of the
+    standard TwoSidedSAETrainer recon path. Schedule + revive logic lives in
+    `AuxAlignmentCallback` (from synthetic_trainers).
+    """
+
+    def __init__(
+        self,
+        *args,
+        variant_cfg: MethodConfig,
+        train_img: Optional[torch.Tensor] = None,
+        train_txt: Optional[torch.Tensor] = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.variant = variant_cfg
+        self.train_img = train_img
+        self.train_txt = train_txt
+        self.diagnostics: dict = {}
+
+        device = next(self.model.parameters()).device
+        n = int(self.model.image_sae.latent_size)
+        self.frozen_mask: torch.Tensor = torch.zeros(n, dtype=torch.bool, device=device)
+        self.fire_count_i: torch.Tensor = torch.zeros(n, dtype=torch.long, device=device)
+        self.fire_count_t: torch.Tensor = torch.zeros(n, dtype=torch.long, device=device)
+        self.alive_mask_i: torch.Tensor = torch.ones(n, dtype=torch.bool, device=device)
+        self.alive_mask_t: torch.Tensor = torch.ones(n, dtype=torch.bool, device=device)
+        # EMA of batch cross-correlation for on_epoch_end gate/Hungarian.
+        self.ema_C: Optional[torch.Tensor] = None
+        self.ema_momentum: float = 0.99
+
+        if variant_cfg.aux_loss == "infonce":
+            init_log_tau = float(np.log(1.0 / 0.07))
+            self.model.log_tau = torch.nn.Parameter(
+                torch.tensor(init_log_tau, dtype=torch.float32, device=device)
+            )
+
+    def _aux_loss_value(self, z_i: torch.Tensor, z_t: torch.Tensor) -> torch.Tensor:
+        loss_kind = self.variant.aux_loss
+        if loss_kind == "none":
+            return z_i.new_tensor(0.0)
+        if not bool(self.frozen_mask.any()):
+            return z_i.new_tensor(0.0)
+        if loss_kind == "naive_diag":
+            return naive_diag_aux_loss_masked(z_i, z_t, self.frozen_mask)
+        if loss_kind == "barlow":
+            return barlow_twins_aux_loss_masked(
+                z_i, z_t, self.frozen_mask,
+                lambda_off=float(self.variant.barlow_lambda_off),
+            )
+        if loss_kind == "infonce":
+            return slot_infonce_loss(
+                z_i, z_t, self.frozen_mask, self.model.log_tau,
+                alive_mask_i=self.alive_mask_i,
+                alive_mask_t=self.alive_mask_t,
+            )
+        raise ValueError(f"Unknown aux_loss '{loss_kind}'")
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        image_embeds = inputs["image_embeds"]
+        text_embeds = inputs["text_embeds"]
+        # Need dense latents for both aux loss and fire-count tracking.
+        out_i = model.image_sae(hidden_states=image_embeds.unsqueeze(1), return_dense_latents=True)
+        out_t = model.text_sae(hidden_states=text_embeds.unsqueeze(1), return_dense_latents=True)
+        z_i = out_i.dense_latents.squeeze(1)
+        z_t = out_t.dense_latents.squeeze(1)
+
+        recon = out_i.recon_loss + out_t.recon_loss
+        aux = self._aux_loss_value(z_i, z_t)
+        loss = recon + float(self.variant.lambda_aux) * aux
+
+        # Per-side recon logging (matches TwoSidedSAETrainer.log)
+        for key, val in (
+            ("recon_loss", recon),
+            ("recon_loss_image", out_i.recon_loss),
+            ("recon_loss_text", out_t.recon_loss),
+        ):
+            attr = f"_ts_{key}"
+            current = getattr(self.state, attr, torch.tensor(0.0, device=val.device))
+            setattr(self.state, attr, current + val.detach())
+
+        with torch.no_grad():
+            self.fire_count_i += (z_i > 0).sum(dim=0).to(self.fire_count_i.dtype)
+            self.fire_count_t += (z_t > 0).sum(dim=0).to(self.fire_count_t.dtype)
+            # EMA batch cross-correlation -- eliminates the full-data forward
+            # pass previously performed at on_epoch_end for schedule=per_epoch.
+            if self.variant.hungarian_schedule == "per_epoch_partitioned":
+                from src.runners.synthetic_trainers import _batch_cross_corr_detached
+                batch_C = _batch_cross_corr_detached(z_i, z_t)
+                if self.ema_C is None:
+                    self.ema_C = batch_C
+                else:
+                    m = self.ema_momentum
+                    self.ema_C.mul_(m).add_(batch_C, alpha=1.0 - m)
+
+        outputs = type("Out", (), {"loss": loss, "recon_loss": recon})()
+        return (loss, outputs) if return_outputs else loss

@@ -48,6 +48,7 @@ class TrainingConfig:
     max_grad_norm: float = 1.0
     k: int = 16
     device: str = "cuda"
+    weight_tie: bool = False
 
 
 @dataclass
@@ -58,6 +59,13 @@ class MethodConfig:
     m_S: int = 512
     k_align: int = 6
     aux_norm: str = "group"
+    # --- aux-alignment variant fields (used by `paired_aux_alignment` method) ---
+    variant_name: str = ""               # informative tag, e.g. "naive_once"
+    aux_loss: str = "naive_diag"          # "none"|"naive_diag"|"barlow"|"infonce"
+    hungarian_schedule: str = "once"      # "none"|"once"|"per_epoch_partitioned"
+    revive_dead: bool = False
+    rho0: float = 0.2
+    barlow_lambda_off: float = 0.005
 
 
 @dataclass

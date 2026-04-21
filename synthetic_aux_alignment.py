@@ -1,15 +1,25 @@
-"""Synthetic Theorem 2 experiment runner (v2, HF Trainer-based).
+"""Synthetic-data entry script for the aux-alignment ablation.
+
+Trains 9 method variants on the synthetic Theorem-2 generator (Figure 1
+setup) for a single (alpha, seed) point. Variants vary on three axes:
+
+  - aux_loss        : naive_diag | barlow | infonce  (or 'none' baseline)
+  - hungarian_schedule : once | per_epoch_partitioned
+  - revive_dead     : true | false
+
+Driven by `configs/synthetic/aux_alignment_compare.yaml`.
+
+Reuses the bootstrap pattern of `run_synthetic_v2.py`. This file is a
+thin variant-aware extension and does NOT modify the existing v2 script.
 
 Usage:
-    python run_synthetic_v2.py --config configs/synthetic/alpha_1R_2R.yaml
-    python run_synthetic_v2.py --config configs/synthetic/lambda_sweep.yaml
+    python synthetic_aux_alignment.py \\
+        --config configs/synthetic/aux_alignment_compare.yaml
 """
 
 from __future__ import annotations
 
-# Bootstrap: stub broken __init__.py chains before any src.* imports.
-# This is required on the server where src.integrations.flex_attention
-# fails with newer transformers.  Idempotent on local dev machines.
+# --- Bootstrap (mirrors run_synthetic_v2.py) ---------------------------------
 import importlib.util
 import sys
 import types
@@ -47,11 +57,11 @@ _stub("src.configs", _REPO / "src" / "configs")
 _load("src.common.registry", _REPO / "src" / "common" / "registry.py")
 _load("src.models.configuration_sae", _REPO / "src" / "models" / "configuration_sae.py")
 _load("src.models.modeling_sae", _REPO / "src" / "models" / "modeling_sae.py")
-
-# --- end bootstrap ---
+# --- end bootstrap -----------------------------------------------------------
 
 import json
 import logging
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -65,29 +75,17 @@ from src.configs.experiment import ExperimentConfig, MethodConfig
 from src.datasets.synthetic_paired_builder import SyntheticPairedBuilder
 from src.datasets.synthetic_pairs import SyntheticPairedDataset
 from src.metrics.evaluate import aggregate, evaluate_method
-from src.models.configuration_sae import TopKSAEConfig, TwoSidedTopKSAEConfig
-from src.models.modeling_sae import TopKSAE, TwoSidedTopKSAE
+from src.models.configuration_sae import TwoSidedTopKSAEConfig
+from src.models.modeling_sae import TwoSidedTopKSAE
 from src.runners.synthetic_trainers import (
-    OursTrainer,
-    PairedAuxTrainer,
-    PermutationCallback,
-    SingleReconTrainer,
+    AuxAlignmentCallback,
+    AuxAlignmentTrainer,
     TwoReconTrainer,
 )
 from src.training.callbacks import SAENormCallback
-from src.training.losses import (
-    group_sparse_loss,
-    iso_alignment_penalty,
-    trace_alignment_loss,
-)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
-
-
-# ------------------------------------------------------------------
-# Utilities
-# ------------------------------------------------------------------
 
 
 def _seed_everything(seed: int) -> None:
@@ -109,11 +107,7 @@ def _resolve_device(device_arg: str) -> torch.device:
     return torch.device(device_arg)
 
 
-def _make_training_args(
-    cfg: ExperimentConfig,
-    output_dir: str,
-    seed: int,
-) -> TrainingArguments:
+def _make_training_args(cfg: ExperimentConfig, output_dir: str, seed: int) -> TrainingArguments:
     t = cfg.training
     return TrainingArguments(
         output_dir=output_dir,
@@ -139,14 +133,9 @@ def _make_training_args(
     )
 
 
-# ------------------------------------------------------------------
-# Per-method train+eval
-# ------------------------------------------------------------------
-
-
 def _save_params(
-    sae_i: TopKSAE,
-    sae_t: TopKSAE,
+    sae_i,
+    sae_t,
     builder: SyntheticPairedBuilder,
     alpha: float,
     seed: int,
@@ -155,7 +144,7 @@ def _save_params(
 ) -> None:
     dump_dir = run_dir / "params"
     dump_dir.mkdir(parents=True, exist_ok=True)
-    mid_safe = method_id.replace("::", "__").replace("/", "_")
+    mid_safe = method_id.replace("::", "__").replace("/", "_").replace("+", "__")
     fn = dump_dir / f"alpha{alpha:.2f}_seed{seed}_{mid_safe}.npz"
     np.savez_compressed(
         fn,
@@ -179,110 +168,62 @@ def _save_params(
     )
 
 
-_AUX_FN_MAP = {
-    "group_sparse": group_sparse_loss,
-    "trace_align": trace_alignment_loss,
-    "iso_align": iso_alignment_penalty,
-}
-
-
 def _train_method(
     method: MethodConfig,
     cfg: ExperimentConfig,
     train_ds: SyntheticPairedDataset,
-    eval_ds: SyntheticPairedDataset,
     train_img: torch.Tensor,
     train_txt: torch.Tensor,
     latent_size: int,
     seed: int,
     run_dir: Path,
     device: torch.device,
-) -> tuple[TopKSAE, TopKSAE, str]:
-    """Train one method. Returns ``(sae_i, sae_t, method_id)``."""
+) -> tuple[Any, Any, str, dict]:
+    """Train one variant. Returns ``(sae_i, sae_t, method_id, diagnostics)``."""
     d = cfg.data
     t = cfg.training
-    method_id = method.name
+    method_id = method.variant_name or method.name
 
-    tmp_dir = str(run_dir / "tmp" / method_id)
+    tmp_dir = str(run_dir / "tmp" / method_id.replace("/", "_").replace("+", "__"))
     training_args = _make_training_args(cfg, tmp_dir, seed)
-    callbacks = [SAENormCallback()]
 
-    if method.name == "single_recon":
-        _seed_everything(seed)
-        model_cfg = TopKSAEConfig(
-            hidden_size=d.representation_dim, latent_size=latent_size,
-            k=t.k, normalize_decoder=True, weight_tie=t.weight_tie,
-        )
-        model = TopKSAE(model_cfg).to(device)
-        trainer = SingleReconTrainer(
-            model=model, args=training_args,
-            train_dataset=train_ds, data_collator=default_data_collator,
-            callbacks=callbacks,
-        )
-        trainer.train()
-        return model, model, method_id
-
-    elif method.name == "two_recon":
+    if method.name == "two_recon":
         _seed_everything(seed)
         model_cfg = TwoSidedTopKSAEConfig(
             hidden_size=d.representation_dim, latent_size=latent_size,
-            k=t.k, normalize_decoder=True, weight_tie=t.weight_tie,
+            k=t.k, normalize_decoder=True,
         )
         model = TwoSidedTopKSAE(model_cfg).to(device)
         trainer = TwoReconTrainer(
             model=model, args=training_args,
             train_dataset=train_ds, data_collator=default_data_collator,
-            callbacks=callbacks,
+            callbacks=[SAENormCallback()],
         )
         trainer.train()
-        return model.image_sae, model.text_sae, method_id
+        return model.image_sae, model.text_sae, method_id, {}
 
-    elif method.name in _AUX_FN_MAP:
-        _seed_everything(seed)
-        model_cfg = TopKSAEConfig(
-            hidden_size=d.representation_dim, latent_size=latent_size,
-            k=t.k, normalize_decoder=True, weight_tie=t.weight_tie,
-        )
-        model = TopKSAE(model_cfg).to(device)
-        aux_fn = _AUX_FN_MAP[method.name]
-        method_id = f"{method.name}_w{method.aux_weight}"
-        trainer = PairedAuxTrainer(
-            model=model, args=training_args,
-            train_dataset=train_ds, data_collator=default_data_collator,
-            callbacks=callbacks,
-            aux_fn=aux_fn, aux_weight=method.aux_weight,
-        )
-        trainer.train()
-        return model, model, method_id
-
-    elif method.name == "ours":
+    if method.name == "paired_aux_alignment":
         _seed_everything(seed)
         model_cfg = TwoSidedTopKSAEConfig(
             hidden_size=d.representation_dim, latent_size=latent_size,
-            k=t.k, normalize_decoder=True, weight_tie=t.weight_tie,
+            k=t.k, normalize_decoder=True,
         )
         model = TwoSidedTopKSAE(model_cfg).to(device)
-        method_id = f"ours_l{method.lambda_aux}_m{method.m_S}"
-        trainer = OursTrainer(
+        trainer = AuxAlignmentTrainer(
             model=model, args=training_args,
             train_dataset=train_ds, data_collator=default_data_collator,
-            k_align=method.k_align, lambda_aux=method.lambda_aux,
-            m_S=method.m_S, aux_norm=method.aux_norm,
-            train_img=train_img, train_txt=train_txt, rho=cfg.diagnostic.rho,
+            variant_cfg=method,
+            train_img=train_img, train_txt=train_txt,
         )
-        perm_cb = PermutationCallback(trainer)
-        trainer.add_callback(perm_cb)
+        trainer.add_callback(AuxAlignmentCallback(trainer))
         trainer.add_callback(SAENormCallback())
         trainer.train()
-        return model.image_sae, model.text_sae, method_id
+        return model.image_sae, model.text_sae, method_id, dict(trainer.diagnostics)
 
-    else:
-        raise ValueError(f"Unknown method: {method.name}")
-
-
-# ------------------------------------------------------------------
-# Run one (alpha, latent_size, seed)
-# ------------------------------------------------------------------
+    raise ValueError(
+        f"Unknown method '{method.name}' for aux-alignment runner. "
+        f"Use 'two_recon' (recon baseline) or 'paired_aux_alignment'."
+    )
 
 
 def run_single(
@@ -305,7 +246,6 @@ def run_single(
     )
     ds = builder.build()
     train_ds = SyntheticPairedDataset(ds["train"]["image_representation"], ds["train"]["text_representation"])
-    eval_ds = SyntheticPairedDataset(ds["eval"]["image_representation"], ds["eval"]["text_representation"])
     train_img = torch.from_numpy(ds["train"]["image_representation"])
     train_txt = torch.from_numpy(ds["train"]["text_representation"])
     eval_img = torch.from_numpy(ds["eval"]["image_representation"])
@@ -320,16 +260,10 @@ def run_single(
     }
 
     for method in cfg.methods:
-        try:
-            sae_i, sae_t, method_id = _train_method(
-                method, cfg, train_ds, eval_ds,
-                train_img, train_txt,
-                latent_size, seed, run_dir, device,
-            )
-        except NotImplementedError as e:
-            logger.warning("Skipping %s: %s", method.name, e)
-            continue
-
+        sae_i, sae_t, method_id, diagnostics = _train_method(
+            method, cfg, train_ds, train_img, train_txt,
+            latent_size, seed, run_dir, device,
+        )
         metrics = evaluate_method(
             method=method.name,
             sae_i=sae_i, sae_t=sae_t,
@@ -340,6 +274,8 @@ def run_single(
             n_shared=d.n_shared, m_S=method.m_S,
             batch_size=cfg.training.batch_size, device=device,
         )
+        if diagnostics:
+            metrics["aux_alignment_diagnostics"] = diagnostics
         result[method_id] = metrics
 
         if cfg.output.save_decoders:
@@ -354,9 +290,15 @@ def run_single(
     return result
 
 
-# ------------------------------------------------------------------
-# Sweep
-# ------------------------------------------------------------------
+def _cfg_to_dict(cfg: ExperimentConfig) -> dict:
+    return {
+        "data": asdict(cfg.data),
+        "training": asdict(cfg.training),
+        "methods": [asdict(m) for m in cfg.methods],
+        "sweep": asdict(cfg.sweep),
+        "output": asdict(cfg.output),
+        "diagnostic": asdict(cfg.diagnostic),
+    }
 
 
 def run_experiment(cfg: ExperimentConfig) -> None:
@@ -365,7 +307,6 @@ def run_experiment(cfg: ExperimentConfig) -> None:
     run_name = f"run_{timestamp}{tag}"
     run_dir = Path(cfg.output.root) / "runs" / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
-
     logger.info("Output: %s", run_dir)
 
     all_results: list[dict[str, Any]] = []
@@ -379,7 +320,6 @@ def run_experiment(cfg: ExperimentConfig) -> None:
                 logger.info("alpha=%.2f L=%d seed=%d", alpha, latent_size, seed)
                 r = run_single(cfg, alpha, latent_size, seed, run_dir)
                 seed_results.append(r)
-
                 for k in r:
                     if k not in ("seed", "alpha_target", "latent_size",
                                  "alpha_actual_mean", "alpha_actual_std"):
@@ -387,40 +327,22 @@ def run_experiment(cfg: ExperimentConfig) -> None:
                             method_ids.append(k)
 
             agg = aggregate(seed_results, method_ids)
-            entry = {
+            all_results.append({
                 "alpha_target": alpha,
                 "latent_size": latent_size,
                 "aggregate": agg,
                 "per_seed": seed_results,
-            }
-            all_results.append(entry)
+            })
 
-    out = {"sweep_results": all_results, "config": _cfg_to_dict(cfg)}
     with open(run_dir / "result.json", "w") as f:
-        json.dump(out, f, indent=2, default=str)
+        json.dump({"sweep_results": all_results, "config": _cfg_to_dict(cfg)},
+                  f, indent=2, default=str)
     logger.info("Saved result.json to %s", run_dir / "result.json")
-
-
-def _cfg_to_dict(cfg: ExperimentConfig) -> dict:
-    from dataclasses import asdict
-    return {
-        "data": asdict(cfg.data),
-        "training": asdict(cfg.training),
-        "methods": [asdict(m) for m in cfg.methods],
-        "sweep": asdict(cfg.sweep),
-        "output": asdict(cfg.output),
-        "diagnostic": asdict(cfg.diagnostic),
-    }
-
-
-# ------------------------------------------------------------------
-# CLI
-# ------------------------------------------------------------------
 
 
 def main() -> None:
     import argparse
-    parser = argparse.ArgumentParser(description="Synthetic Theorem 2 experiment (v2)")
+    parser = argparse.ArgumentParser(description="Synthetic aux-alignment ablation runner")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config")
     args = parser.parse_args()
 

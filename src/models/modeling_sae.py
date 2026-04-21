@@ -420,9 +420,10 @@ class TopKSAE(PreTrainedModel):
 
         # 6) Optional AuxK loss to revive dead features.
         if dead_mask is not None and (num_dead := int(dead_mask.sum())) > 0:
-            # Heuristic from Appendix B.1 of the SAE paper.
-            # k_aux: auxiliary top-k for dead latents (scalar)
-            k_aux = x.shape[-1] // 2
+            # k_aux: auxiliary top-k for dead latents. Honour config override,
+            # else fall back to Gao et al. 2024 heuristic (hidden_size // 2).
+            cfg_k_aux = getattr(self.cfg, "k_aux", None)
+            k_aux = int(cfg_k_aux) if cfg_k_aux is not None else x.shape[-1] // 2
 
             # Scale down the aux loss if only a few dead features exist.
             # scale: down-weight aux loss when few dead features exist
@@ -2125,7 +2126,8 @@ class TwoSidedTopKSAE(PreTrainedModel):
             normalize_decoder=config.normalize_decoder,
             k=config.k,
             multi_topk=config.multi_topk,
-            weight_tie=False,
+            weight_tie=getattr(config, "weight_tie", False),
+            k_aux=getattr(config, "k_aux", None),
         )
         self.image_sae = TopKSAE(sub_config)
         self.text_sae = TopKSAE(TopKSAEConfig(**sub_config.to_dict()))

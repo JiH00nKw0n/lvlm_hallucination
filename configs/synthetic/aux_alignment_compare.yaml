@@ -1,0 +1,119 @@
+# Aux-alignment ablation: 9 variants on synthetic Theorem-2 data.
+# Single (alpha, seed) point. Per-side latent = 4096 (latent_size 8192).
+
+data:
+  n_shared: 1024
+  n_image: 512
+  n_text: 512
+  representation_dim: 256
+  sparsity: 0.99
+  beta: 1.0
+  obs_noise_std: 0.05
+  max_interference: 0.1
+  num_train: 50000
+  num_eval: 10000
+
+training:
+  lr: 0.0005
+  num_epochs: 10
+  batch_size: 256
+  k: 16
+  weight_decay: 0.0
+  max_grad_norm: 0.0
+  device: cuda
+
+methods:
+  # V0: recon-only baseline (uses TwoReconTrainer)
+  - {name: two_recon, variant_name: recon_only}
+
+  # V1: paper Algorithm 1 (naive diag, Hungarian once, no revive)
+  - name: paired_aux_alignment
+    variant_name: naive_once
+    aux_loss: naive_diag
+    hungarian_schedule: once
+    revive_dead: false
+    lambda_aux: 1.0
+    rho0: 0.2
+    k_align: 6
+
+  # V2: barlow + once
+  - name: paired_aux_alignment
+    variant_name: barlow_once
+    aux_loss: barlow
+    hungarian_schedule: once
+    revive_dead: false
+    lambda_aux: 1.0
+    rho0: 0.2
+    k_align: 6
+    barlow_lambda_off: 0.005
+
+  # V3: infonce + once
+  - name: paired_aux_alignment
+    variant_name: infonce_once
+    aux_loss: infonce
+    hungarian_schedule: once
+    revive_dead: false
+    lambda_aux: 1.0
+    rho0: 0.2
+    k_align: 6
+
+  # V3r: infonce + once + revive
+  - name: paired_aux_alignment
+    variant_name: infonce_once+revive
+    aux_loss: infonce
+    hungarian_schedule: once
+    revive_dead: true
+    lambda_aux: 1.0
+    rho0: 0.2
+    k_align: 6
+
+  # V4: naive + per_epoch + revive
+  - name: paired_aux_alignment
+    variant_name: naive_perepoch+revive
+    aux_loss: naive_diag
+    hungarian_schedule: per_epoch_partitioned
+    revive_dead: true
+    lambda_aux: 1.0
+    rho0: 0.2
+
+  # V5: barlow + per_epoch + revive
+  - name: paired_aux_alignment
+    variant_name: barlow_perepoch+revive
+    aux_loss: barlow
+    hungarian_schedule: per_epoch_partitioned
+    revive_dead: true
+    lambda_aux: 1.0
+    rho0: 0.2
+    barlow_lambda_off: 0.005
+
+  # V6n: infonce + per_epoch (no revive)
+  - name: paired_aux_alignment
+    variant_name: infonce_perepoch
+    aux_loss: infonce
+    hungarian_schedule: per_epoch_partitioned
+    revive_dead: false
+    lambda_aux: 1.0
+    rho0: 0.2
+
+  # V6 (Ours): infonce + per_epoch + revive
+  - name: paired_aux_alignment
+    variant_name: infonce_perepoch+revive
+    aux_loss: infonce
+    hungarian_schedule: per_epoch_partitioned
+    revive_dead: true
+    lambda_aux: 1.0
+    rho0: 0.2
+
+sweep:
+  alpha: [0.5]
+  latent_size: [8192]      # -> per-side 4096 in TwoSidedTopKSAE
+  num_seeds: 1
+  seed_base: 1
+
+output:
+  root: outputs/aux_alignment_synthetic
+  run_tag: alpha05_seed1
+  save_decoders: true
+
+diagnostic:
+  rho: 0.2

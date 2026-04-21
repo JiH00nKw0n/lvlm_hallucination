@@ -1,0 +1,82 @@
+# Lambda sweep for the aux-alignment ablation.
+# 8 aux variants x 3 lambdas + 1 recon baseline = 25 methods.
+# Single (alpha=0.5, seed=1) point. Per-side latent = 4096.
+
+data:
+  n_shared: 1024
+  n_image: 512
+  n_text: 512
+  representation_dim: 256
+  sparsity: 0.99
+  beta: 1.0
+  obs_noise_std: 0.05
+  max_interference: 0.1
+  num_train: 50000
+  num_eval: 10000
+
+training:
+  lr: 0.0005
+  num_epochs: 10
+  batch_size: 256
+  k: 16
+  weight_decay: 0.0
+  max_grad_norm: 0.0
+  device: cuda
+
+methods:
+  # V0 baseline (no aux -> no lambda)
+  - {name: two_recon, variant_name: recon_only}
+
+  # naive_once  x  {0.25, 0.5, 1.0}
+  - {name: paired_aux_alignment, variant_name: naive_once__l0.25,            aux_loss: naive_diag, hungarian_schedule: once,                  revive_dead: false, lambda_aux: 0.25, rho0: 0.2, k_align: 6}
+  - {name: paired_aux_alignment, variant_name: naive_once__l0.5,             aux_loss: naive_diag, hungarian_schedule: once,                  revive_dead: false, lambda_aux: 0.5,  rho0: 0.2, k_align: 6}
+  - {name: paired_aux_alignment, variant_name: naive_once__l1.0,             aux_loss: naive_diag, hungarian_schedule: once,                  revive_dead: false, lambda_aux: 1.0,  rho0: 0.2, k_align: 6}
+
+  # barlow_once  x  {0.25, 0.5, 1.0}
+  - {name: paired_aux_alignment, variant_name: barlow_once__l0.25,           aux_loss: barlow,     hungarian_schedule: once,                  revive_dead: false, lambda_aux: 0.25, rho0: 0.2, k_align: 6, barlow_lambda_off: 0.005}
+  - {name: paired_aux_alignment, variant_name: barlow_once__l0.5,            aux_loss: barlow,     hungarian_schedule: once,                  revive_dead: false, lambda_aux: 0.5,  rho0: 0.2, k_align: 6, barlow_lambda_off: 0.005}
+  - {name: paired_aux_alignment, variant_name: barlow_once__l1.0,            aux_loss: barlow,     hungarian_schedule: once,                  revive_dead: false, lambda_aux: 1.0,  rho0: 0.2, k_align: 6, barlow_lambda_off: 0.005}
+
+  # infonce_once  x  {0.25, 0.5, 1.0}
+  - {name: paired_aux_alignment, variant_name: infonce_once__l0.25,          aux_loss: infonce,    hungarian_schedule: once,                  revive_dead: false, lambda_aux: 0.25, rho0: 0.2, k_align: 6}
+  - {name: paired_aux_alignment, variant_name: infonce_once__l0.5,           aux_loss: infonce,    hungarian_schedule: once,                  revive_dead: false, lambda_aux: 0.5,  rho0: 0.2, k_align: 6}
+  - {name: paired_aux_alignment, variant_name: infonce_once__l1.0,           aux_loss: infonce,    hungarian_schedule: once,                  revive_dead: false, lambda_aux: 1.0,  rho0: 0.2, k_align: 6}
+
+  # infonce_once+revive  x  {0.25, 0.5, 1.0}
+  - {name: paired_aux_alignment, variant_name: infonce_once+revive__l0.25,   aux_loss: infonce,    hungarian_schedule: once,                  revive_dead: true,  lambda_aux: 0.25, rho0: 0.2, k_align: 6}
+  - {name: paired_aux_alignment, variant_name: infonce_once+revive__l0.5,    aux_loss: infonce,    hungarian_schedule: once,                  revive_dead: true,  lambda_aux: 0.5,  rho0: 0.2, k_align: 6}
+  - {name: paired_aux_alignment, variant_name: infonce_once+revive__l1.0,    aux_loss: infonce,    hungarian_schedule: once,                  revive_dead: true,  lambda_aux: 1.0,  rho0: 0.2, k_align: 6}
+
+  # naive_perepoch+revive  x  {0.25, 0.5, 1.0}
+  - {name: paired_aux_alignment, variant_name: naive_perepoch+revive__l0.25, aux_loss: naive_diag, hungarian_schedule: per_epoch_partitioned, revive_dead: true,  lambda_aux: 0.25, rho0: 0.2}
+  - {name: paired_aux_alignment, variant_name: naive_perepoch+revive__l0.5,  aux_loss: naive_diag, hungarian_schedule: per_epoch_partitioned, revive_dead: true,  lambda_aux: 0.5,  rho0: 0.2}
+  - {name: paired_aux_alignment, variant_name: naive_perepoch+revive__l1.0,  aux_loss: naive_diag, hungarian_schedule: per_epoch_partitioned, revive_dead: true,  lambda_aux: 1.0,  rho0: 0.2}
+
+  # barlow_perepoch+revive  x  {0.25, 0.5, 1.0}
+  - {name: paired_aux_alignment, variant_name: barlow_perepoch+revive__l0.25, aux_loss: barlow,    hungarian_schedule: per_epoch_partitioned, revive_dead: true,  lambda_aux: 0.25, rho0: 0.2, barlow_lambda_off: 0.005}
+  - {name: paired_aux_alignment, variant_name: barlow_perepoch+revive__l0.5,  aux_loss: barlow,    hungarian_schedule: per_epoch_partitioned, revive_dead: true,  lambda_aux: 0.5,  rho0: 0.2, barlow_lambda_off: 0.005}
+  - {name: paired_aux_alignment, variant_name: barlow_perepoch+revive__l1.0,  aux_loss: barlow,    hungarian_schedule: per_epoch_partitioned, revive_dead: true,  lambda_aux: 1.0,  rho0: 0.2, barlow_lambda_off: 0.005}
+
+  # infonce_perepoch  x  {0.25, 0.5, 1.0}
+  - {name: paired_aux_alignment, variant_name: infonce_perepoch__l0.25,       aux_loss: infonce,   hungarian_schedule: per_epoch_partitioned, revive_dead: false, lambda_aux: 0.25, rho0: 0.2}
+  - {name: paired_aux_alignment, variant_name: infonce_perepoch__l0.5,        aux_loss: infonce,   hungarian_schedule: per_epoch_partitioned, revive_dead: false, lambda_aux: 0.5,  rho0: 0.2}
+  - {name: paired_aux_alignment, variant_name: infonce_perepoch__l1.0,        aux_loss: infonce,   hungarian_schedule: per_epoch_partitioned, revive_dead: false, lambda_aux: 1.0,  rho0: 0.2}
+
+  # infonce_perepoch+revive  x  {0.25, 0.5, 1.0}  (Ours)
+  - {name: paired_aux_alignment, variant_name: infonce_perepoch+revive__l0.25, aux_loss: infonce,  hungarian_schedule: per_epoch_partitioned, revive_dead: true,  lambda_aux: 0.25, rho0: 0.2}
+  - {name: paired_aux_alignment, variant_name: infonce_perepoch+revive__l0.5,  aux_loss: infonce,  hungarian_schedule: per_epoch_partitioned, revive_dead: true,  lambda_aux: 0.5,  rho0: 0.2}
+  - {name: paired_aux_alignment, variant_name: infonce_perepoch+revive__l1.0,  aux_loss: infonce,  hungarian_schedule: per_epoch_partitioned, revive_dead: true,  lambda_aux: 1.0,  rho0: 0.2}
+
+sweep:
+  alpha: [0.5]
+  latent_size: [8192]
+  num_seeds: 1
+  seed_base: 1
+
+output:
+  root: outputs/aux_alignment_synthetic_lambda
+  run_tag: alpha05_seed1_lambda3
+  save_decoders: true
+
+diagnostic:
+  rho: 0.2

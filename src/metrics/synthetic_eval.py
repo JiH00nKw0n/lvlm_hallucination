@@ -61,17 +61,68 @@ def compute_merged_fraction(
     w_dec_txt: np.ndarray,
     phi_S: np.ndarray,
     psi_S: np.ndarray,
+    tau: float = 0.95,
 ) -> float:
-    """Fraction of shared GT atoms whose best image/text slots coincide."""
+    """Fraction of GT shared atoms whose best image-slot column is nearly
+    parallel (cos > ``tau``) to its best text-slot column.
+
+    For each shared GT concept g:
+      - best_i_idx = argmax_k cos(V[:,k], phi_S[:,g])
+      - best_t_idx = argmax_k cos(W[:,k], psi_S[:,g])
+    Then count g where ``cos(V[:, best_i_idx], W[:, best_t_idx]) > tau``.
+
+    Captures Theorem-2-style "soft merge" of decoder columns: if aux pressure
+    is too strong and pushes the two decoders to point at the same direction
+    (typically the bisector of phi_S and psi_S), this metric trips. For a
+    correctly trained two-sided SAE preserving alpha < 1, the matched columns
+    stay roughly alpha-apart and CR stays near zero.
+    """
     if phi_S.size == 0 or psi_S.size == 0:
         return float("nan")
     v = normalize_rows(w_dec_img.astype(np.float64))
     w = normalize_rows(w_dec_txt.astype(np.float64))
     phi = normalize_rows(phi_S.T.astype(np.float64))
     psi = normalize_rows(psi_S.T.astype(np.float64))
-    top_i = (v @ phi.T).argmax(axis=0)
-    top_t = (w @ psi.T).argmax(axis=0)
-    return float((top_i == top_t).mean())
+    best_i = (v @ phi.T).argmax(axis=0)        # (n_S,)
+    best_t = (w @ psi.T).argmax(axis=0)        # (n_S,)
+    pair_cos = (v[best_i] * w[best_t]).sum(axis=-1)   # (n_S,)
+    return float((pair_cos > tau).mean())
+
+
+def compute_gre_top1(
+    learned_vectors: np.ndarray,
+    gt_matrix: np.ndarray,
+) -> float:
+    """Ground-truth Recovery Error with top-1 activation (per-modality).
+
+    For each GT atom ``g_i`` (column of ``gt_matrix``) and decoder ``V`` whose
+    rows are unit atoms in ``d``-space, define ``sigma`` as top-1 activation
+    (keep only the single largest entry of the pre-activations, zero the rest):
+
+        GRE := mean_i || g_i - V @ sigma(V.T @ g_i) ||_2^2 .
+
+    Concretely, ``pre = V @ g_i`` has shape ``(L,)``; ``j* = argmax_j pre[j]``;
+    ``recon = pre[j*] * V[j*, :]``. Decoder rows and atoms are expected unit
+    norm (the function does not renormalize).
+
+    Args:
+        learned_vectors: ``(L, d)`` decoder rows.
+        gt_matrix: ``(d, n_gt)`` GT atoms as columns.
+
+    Returns:
+        Mean per-atom squared reconstruction error, or ``nan`` when empty.
+    """
+    if gt_matrix.shape[1] == 0 or learned_vectors.shape[0] == 0:
+        return float("nan")
+    V = learned_vectors.astype(np.float64)
+    G = gt_matrix.astype(np.float64)
+    pre = V @ G  # (L, n_gt)
+    idx = pre.argmax(axis=0)  # (n_gt,)
+    n = G.shape[1]
+    top_vals = pre[idx, np.arange(n)]  # (n_gt,)
+    recon = (V[idx] * top_vals[:, None]).T  # (d, n_gt)
+    err = np.sum((G - recon) ** 2, axis=0)
+    return float(err.mean())
 
 
 def compute_recovery_metrics_multi_tau(

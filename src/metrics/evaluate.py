@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from src.metrics.alignment import compute_latent_correlation
 from src.metrics.normalize import normalize_rows
 from src.metrics.synthetic_eval import (
+    compute_gre_top1,
     compute_joint_mgt,
     compute_mcc_and_uniqueness,
     compute_merged_fraction,
@@ -121,6 +122,9 @@ def evaluate_method(
     img_mgt = compute_recovery_metrics_multi_tau(w_dec_img, phi_S, _JOINT_TAUS)
     txt_mgt = compute_recovery_metrics_multi_tau(w_dec_txt, psi_S, _JOINT_TAUS)
 
+    img_gre = compute_gre_top1(w_dec_img, phi_S)
+    txt_gre = compute_gre_top1(w_dec_txt, psi_S)
+
     phi_full = np.concatenate([phi_I, phi_S], axis=1) if phi_I is not None and phi_I.size > 0 else phi_S
     psi_full = np.concatenate([psi_S, psi_T], axis=1) if psi_T is not None and psi_T.size > 0 else psi_S
 
@@ -169,6 +173,9 @@ def evaluate_method(
         "txt_mgt_shared_tau0.9": txt_mgt["mgt_tau0.9"],
         "txt_mgt_shared_tau0.95": txt_mgt["mgt_tau0.95"],
         "txt_mgt_shared_tau0.99": txt_mgt["mgt_tau0.99"],
+        "img_gre_shared": img_gre,
+        "txt_gre_shared": txt_gre,
+        "gre_avg_shared": (img_gre + txt_gre) / 2,
         "img_mip_full": img_mgt_full["mip"],
         "txt_mip_full": txt_mgt_full["mip"],
         "img_mgt_full_tau0.9": img_mgt_full["mgt_tau0.9"],
@@ -223,6 +230,7 @@ METRIC_SUFFIXES = [
     "img_mip_shared", "txt_mip_shared",
     "img_mgt_shared_tau0.9", "img_mgt_shared_tau0.95", "img_mgt_shared_tau0.99",
     "txt_mgt_shared_tau0.9", "txt_mgt_shared_tau0.95", "txt_mgt_shared_tau0.99",
+    "img_gre_shared", "txt_gre_shared", "gre_avg_shared",
     "img_mip_full", "txt_mip_full",
     "img_mgt_full_tau0.9", "img_mgt_full_tau0.95", "img_mgt_full_tau0.99",
     "txt_mgt_full_tau0.9", "txt_mgt_full_tau0.95", "txt_mgt_full_tau0.99",

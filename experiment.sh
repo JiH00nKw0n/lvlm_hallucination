@@ -7,7 +7,8 @@
 #
 # Or without docker:
 #   pip install transformers==5.5.3 datasets==4.8.4 open_clip_torch==3.3.0 safetensors==0.7.0 scipy pillow tqdm matplotlib
-#   export HF_TOKEN=${HF_TOKEN:?\"Set HF_TOKEN environment variable\"}
+#   # export HF_TOKEN=hf_xxxxx  # HuggingFace token 넣기
+export HF_TOKEN=${HF_TOKEN:?"Set HF_TOKEN environment variable"}
 #   bash experiment.sh
 
 set -euo pipefail

@@ -66,5 +66,6 @@ _load_module("src.models.modeling_sae", REPO_ROOT / "src" / "models" / "modeling
 # 4) Load the (new) trainer module.
 _load_module("src.runners.trainer", REPO_ROOT / "src" / "runners" / "trainer.py")
 
-# 5) Load the cached-pair dataset module.
+# 5) Load the cached-pair dataset modules.
 _load_module("src.datasets.cached_clip_pairs", REPO_ROOT / "src" / "datasets" / "cached_clip_pairs.py")
+_load_module("src.datasets.cached_imagenet_pairs", REPO_ROOT / "src" / "datasets" / "cached_imagenet_pairs.py")

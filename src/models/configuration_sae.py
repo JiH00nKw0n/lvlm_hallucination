@@ -23,6 +23,7 @@ class TopKSAEConfig(PretrainedConfig):
         k: int = 256,
         multi_topk: bool = False,
         weight_tie: bool = False,
+        k_aux: int | None = None,
         **kwargs,
     ):
         """
@@ -34,6 +35,8 @@ class TopKSAEConfig(PretrainedConfig):
             k: Number of non-zero latent activations (top-k) to keep per sample.
             multi_topk: Whether to compute Multi-TopK FVU in the forward pass.
             weight_tie: Whether to tie encoder and decoder weights (W_dec = W_enc).
+            k_aux: AuxK top-k for dead-feature revival. If None, defaults to
+                ``hidden_size // 2`` (Gao et al. 2024 heuristic).
             **kwargs: Additional config args passed to PretrainedConfig.
         """
         super().__init__(**kwargs)
@@ -44,6 +47,7 @@ class TopKSAEConfig(PretrainedConfig):
         self.k = k
         self.multi_topk = multi_topk
         self.weight_tie = weight_tie
+        self.k_aux = k_aux
 
 
 class BatchTopKSAEConfig(TopKSAEConfig):
@@ -311,6 +315,8 @@ class TwoSidedTopKSAEConfig(PretrainedConfig):
         k: int = 8,
         normalize_decoder: bool = True,
         multi_topk: bool = False,
+        k_aux: int | None = None,
+        weight_tie: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -321,6 +327,8 @@ class TwoSidedTopKSAEConfig(PretrainedConfig):
         self.k = k
         self.normalize_decoder = normalize_decoder
         self.multi_topk = multi_topk
+        self.k_aux = k_aux
+        self.weight_tie = weight_tie
 
     @property
     def latent_size_per_side(self) -> int:

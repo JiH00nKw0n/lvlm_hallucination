@@ -31,7 +31,11 @@ from transformers.data.data_collator import default_data_collator  # noqa: E402
 from src.datasets.cached_clip_pairs import CachedClipPairsDataset  # type: ignore  # noqa: E402
 from src.models.configuration_sae import TopKSAEConfig, TwoSidedTopKSAEConfig  # type: ignore  # noqa: E402
 from src.models.modeling_sae import TopKSAE, TwoSidedTopKSAE  # type: ignore  # noqa: E402
-from src.runners.trainer import OneSidedSAETrainer, TwoSidedSAETrainer  # type: ignore  # noqa: E402
+from src.runners.trainer import (  # type: ignore  # noqa: E402
+    DeadReviveCallback,
+    OneSidedSAETrainer,
+    TwoSidedSAETrainer,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -55,6 +59,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-grad-norm", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--dataloader-num-workers", type=int, default=2)
+    p.add_argument("--auxk-weight", type=float, default=0.0,
+                   help="AuxK loss weight (Gao et al. 2024). 0 disables AuxK.")
+    p.add_argument("--k-aux", type=int, default=None,
+                   help="AuxK top-k (default: hidden_size // 2 = 256 for h=512).")
+    p.add_argument("--dead-feature-threshold", type=int, default=10_000_000,
+                   help="Feature tokens-since-fired threshold to classify dead.")
+    p.add_argument("--revive-every-epoch", action="store_true",
+                   help="Re-init per-side slots that fired 0 times in the epoch (random init).")
     return p.parse_args()
 
 
@@ -94,6 +106,7 @@ def build_two_sae_trainer(
         latent_size=args.latent,
         k=args.k,
         normalize_decoder=True,
+        k_aux=args.k_aux,
     )
     model = TwoSidedTopKSAE(cfg)
     trainer = TwoSidedSAETrainer(
@@ -102,7 +115,12 @@ def build_two_sae_trainer(
         train_dataset=train_ds,  # type: ignore[arg-type]
         eval_dataset=eval_ds,  # type: ignore[arg-type]
         data_collator=default_data_collator,
+        auxk_weight=args.auxk_weight,
+        dead_feature_threshold=args.dead_feature_threshold,
+        revive_every_epoch=args.revive_every_epoch,
     )
+    if args.revive_every_epoch:
+        trainer.add_callback(DeadReviveCallback(trainer))
     return trainer
 
 

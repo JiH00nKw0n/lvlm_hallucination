@@ -13,7 +13,7 @@ This project asks a specific structural question about Sparse Autoencoders (SAEs
 Two legs:
 
 1. **Synthetic leg (current).** Prove Theorems 1 and 2 in a controlled generative setup, then measure how existing SAE baselines and our method behave on synthetic paired embeddings. Ground truth — $\alpha$, shared atoms, private atoms — is known, so we can verify recovery directly.
-2. **Real-data leg (planned, not yet run).** Use the synthetic findings to design *indirect* diagnostics for $\alpha$ that can be applied to real VLM encoders (CLIP, SigLIP, etc.), where $\alpha$ is not observable. The outcome is an estimate $\hat{\alpha}$ for real CLIP-like spaces.
+2. **Real-data leg.** Use the synthetic findings to design *indirect* diagnostics for $\alpha$ that can be applied to real VLM encoders (CLIP, SigLIP, etc.), where $\alpha$ is not observable. The outcome is an estimate $\hat{\alpha}$ for real CLIP-like spaces. **Status**: COCO Diagnostic A+B done for CLIP ViT-B/32 (§5); Multi-VLM Diagnostic B done for 5 Base models (§5.11); ImageNet-1K controlled experiment in progress (§5.12).
 
 "Done" for the synthetic leg: Figures 1–2, the bridge-matrix diagnostic, and the three-panel CR / GRR / RE story all agree that **Ours uniquely combines slot-level sharing with modality-specific atoms**. "Done" for the real-data leg: a calibrated $\hat{\alpha}$ for at least one real VLM with an honest sensitivity analysis.
 
@@ -415,6 +415,42 @@ Script: `scripts/real_alpha/monosemanticity_experiment.py` (`--emb-type clip` fo
 | `src/models/configuration_sae.py` | `TwoSidedTopKSAEConfig` added |
 | `src/models/modeling_sae.py` | `TwoSidedTopKSAE(PreTrainedModel)` added |
 | `src/runners/trainer.py` | `OneSidedSAETrainer`, `TwoSidedSAETrainer` added |
+| `scripts/real_alpha/extract_imagenet_cache.py` | ImageNet-1K embedding extraction (HF streaming) → `cache/clip_b32_imagenet/` |
+| `src/datasets/cached_imagenet_pairs.py` | `CachedImageNetPairsDataset` — class-based pairing, random template, `max_per_class` balanced subsample |
+| `scripts/real_alpha/plot_multi_model_boxplot.py` | Multi-VLM Diagnostic B boxplot (5 Base models) |
+| `scripts/real_alpha/run_multi_model_pipeline.sh` | Multi-model pipeline: extract → train two-SAE → Diagnostic B |
+| `experiment.sh` | Reproducible 10-model experiment (5 Base + 5 Large), Docker-compatible |
+| `Dockerfile.experiment` | Docker image for `experiment.sh` |
+
+### 5.11 Multi-VLM Diagnostic B (5 Base Models)
+
+Ran Diagnostic B on 5 VLMs (all ViT-B/32 or Base scale) using COCO Karpathy embeddings. Each model: extract → train two-SAE ($L=8192$) → Hungarian-alive matching → decoder cosine by $C$ bin.
+
+Models: CLIP ViT-B/32, MetaCLIP B/32, DataComp B/32, MobileCLIP2-B, SigLIP2 Base.
+
+All 5 models show consistent $C \uparrow \Rightarrow \rho \uparrow$ trend. Even for strongly co-firing pairs ($C \ge 0.6$), decoder cosine concentrates around $\sim 0.5$ across all models — indirect evidence that shared features in real VLMs are only partially aligned.
+
+Embedding caches on server: `cache/{clip_b32,metaclip_b32,datacomp_b32,mobileclip2b,siglip2_base}_coco/`.
+Boxplot: `outputs/multi_model_boxplot.pdf`. Script: `scripts/real_alpha/plot_multi_model_boxplot.py`.
+
+### 5.12 ImageNet-1K Controlled Experiment (in progress)
+
+Uses ImageNet-1K as a more structured test case than COCO: class-label pairing (not free-form captions), 80 OpenAI prompt templates per class.
+
+**Embedding cache completed** (2026-04-19):
+
+| Component | Count | Key scheme |
+|---|---:|---|
+| Train images | 1,281,167 | `0` ~ `1281166` |
+| Val images | 50,000 | `2000000` ~ `2049999` (offset) |
+| Text templates | 80,000 (1000 classes × 80) | `"{class_idx}_{template_idx}"` |
+
+Cache: `cache/clip_b32_imagenet/` (~3.1 GB). Model: `openai/clip-vit-base-patch32`, dim=512.
+Class names and templates from `open_clip.zero_shot_metadata`.
+
+**Dataset class**: `CachedImageNetPairsDataset` picks a random template per `__getitem__` call. `max_per_class` parameter enables balanced subsampling (e.g., 1000/class for 1M total).
+
+**Next steps**: train two-SAE on ImageNet, run Diagnostic B, compare with COCO results.
 
 ### 5.7 Scope and Limits
 
@@ -435,7 +471,8 @@ Script: `scripts/real_alpha/monosemanticity_experiment.py` (`--emb-type clip` fo
 - Working directory on server: `/mnt/working/lvlm_hallucination`. This is a **separate checkout** from the local repo — edits need to be copied over explicitly.
 - GPU: 10 GB class (despite the alias name `elice-40g`). Batch 1024 fits for $L \le 16384$ without gradient accumulation. `nvidia-smi` requires `--no-permissions` or returns "Insufficient Permissions"; `torch.cuda` works fine.
 - Python env: `.venv/` in `/mnt/working/lvlm_hallucination`, activated by `source .venv/bin/activate`. **transformers 5.5.3** — `CLIPModel.get_image_features` returns `BaseModelOutputWithPooling`, not a Tensor. Use `model.vision_model(...)` + `model.visual_projection(...)` explicitly.
-- Embedding cache: `cache/clip_b32_coco/` on server (1.6 GB). Both server and local have a copy. rsync `cache/` when doing offline analysis locally.
+- Embedding caches on server (`cache/`): `clip_b32_coco/` (1.7G), `metaclip_b32_coco/` (1.7G), `datacomp_b32_coco/` (1.7G), `mobileclip2b_coco/` (1.7G), `siglip2_base_coco/` (2.4G), `clip_b32_imagenet/` (3.1G). Total ~12.3G. rsync individual dirs when doing offline analysis locally.
+- Server disk: 128G total, ~86G used (as of 2026-04-20). Major consumers: HF model cache (~8.5G in `~/.cache/huggingface/hub/`), HF dataset cache (~19G in `~/.cache/huggingface/datasets/` — COCO Karpathy raw images), `.venv/` (7.7G). Run `pip cache purge` periodically.
 
 ### 6.2 Canonical Experiment Loop (proven, use this)
 
@@ -477,7 +514,8 @@ Per-method-per-$\alpha$ training takes roughly 3 minutes on the A100 at the curr
 - **Synthetic calibration for Diagnostic A + B.** Apply the same Hungarian-alive protocol to synthetic $\alpha \in \{0.2, 0.5, 0.7, 0.9, 1.0\}$ and build a $(\alpha, \rho_\mathrm{median})$ lookup table. This is the most load-bearing validation step — without it, real decoder cosine cannot be mapped to a calibrated $\hat\alpha$.
 - **Mean-centering control.** Subtract per-modality training-set mean from embeddings before ℓ2-normalizing, retrain, redo Diagnostic B. Tests whether the observed $\rho$ is driven by real shared structure or by the CLIP modality gap (Liang et al. 2022).
 - **Dead-latent mitigation.** Add AuxK loss ($\text{weight} = 2^{-5}$) or reduce $L$ to raise alive fraction from ~14% to $\ge 50\%$. Check whether newly alive atoms land in the $\rho > 0$ regime.
-- **Multi-VLM cross-check.** Repeat on SigLIP / BLIP / AIMv2 to test whether $\hat{\alpha}$ is model-specific.
+- ~~Multi-VLM cross-check~~ — **Done** for 5 Base models (CLIP/MetaCLIP/DataComp/MobileCLIP2/SigLIP2) on COCO. See §5.11. Large models (L-14) available via `experiment.sh`.
+- **ImageNet-1K controlled experiment.** Embeddings cached (§5.12). Train two-SAE, run Diagnostic B, compare with COCO. More structured than COCO (class labels, template texts).
 - **Seed sweep for variance bars.** All real runs and followup15/16 numbers are single-seed. Three seeds before putting error bars on a figure.
 
 ### 7.2 Writing / Figure Gaps
