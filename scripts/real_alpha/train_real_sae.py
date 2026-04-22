@@ -1,14 +1,25 @@
-"""Train one-SAE or two-SAE on cached CLIP ViT-B/32 Karpathy COCO embeddings.
+"""Train one-SAE / two-SAE / aux-SAE on cached CLIP embeddings.
 
-Uses HF Trainer for cosine LR + warmup + grad clip + per-epoch eval + ckpt.
-Dumps `loss_history.json` (from trainer.state.log_history) at end of run.
+Supports both COCO pair cache and ImageNet class-template cache via
+`--dataset {coco, imagenet}`. Uses HF Trainer for cosine LR + warmup +
+grad clip + per-epoch eval + ckpt. Dumps `loss_history.json` at end.
 
 Usage:
+    # COCO top-8 Shared SAE
     python scripts/real_alpha/train_real_sae.py \
-        --variant one_sae --cache-dir cache/clip_b32_coco \
-        --output-dir outputs/real_alpha_followup_1/one_sae \
+        --variant one_sae --dataset coco --cache-dir cache/clip_b32_coco \
+        --output-dir outputs/real_exp_v1/shared/coco \
         --latent 8192 --k 8 --epochs 30 --batch-size 1024 \
         --lr 5e-4 --warmup-ratio 0.05 --weight-decay 1e-5 --seed 0
+
+    # ImageNet top-1 aux-SAE (iso_align)
+    python scripts/real_alpha/train_real_sae.py \
+        --variant aux_sae --aux-loss iso_align --aux-lambda 1e-4 \
+        --dataset imagenet --cache-dir cache/clip_b32_imagenet \
+        --max-per-class 1000 \
+        --output-dir outputs/real_exp_v1/iso_align/imagenet \
+        --latent 8192 --k 1 --epochs 30 --batch-size 1024 \
+        --lr 5e-4 --seed 0
 """
 
 from __future__ import annotations
@@ -29,10 +40,12 @@ from transformers import Trainer, TrainingArguments  # noqa: E402
 from transformers.data.data_collator import default_data_collator  # noqa: E402
 
 from src.datasets.cached_clip_pairs import CachedClipPairsDataset  # type: ignore  # noqa: E402
+from src.datasets.cached_imagenet_pairs import CachedImageNetPairsDataset  # type: ignore  # noqa: E402
 from src.models.configuration_sae import TopKSAEConfig, TwoSidedTopKSAEConfig  # type: ignore  # noqa: E402
 from src.models.modeling_sae import TopKSAE, TwoSidedTopKSAE  # type: ignore  # noqa: E402
 from src.runners.trainer import (  # type: ignore  # noqa: E402
     DeadReviveCallback,
+    OneSidedAuxSAETrainer,
     OneSidedSAETrainer,
     TwoSidedSAETrainer,
 )
@@ -43,7 +56,8 @@ logger = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--variant", choices=["one_sae", "two_sae"], required=True)
+    p.add_argument("--variant", choices=["one_sae", "two_sae", "aux_sae"], required=True)
+    p.add_argument("--dataset", choices=["coco", "imagenet"], default="coco")
     p.add_argument("--cache-dir", type=str, required=True)
     p.add_argument("--output-dir", type=str, required=True)
     p.add_argument("--latent", type=int, default=8192)
@@ -67,15 +81,18 @@ def parse_args() -> argparse.Namespace:
                    help="Feature tokens-since-fired threshold to classify dead.")
     p.add_argument("--revive-every-epoch", action="store_true",
                    help="Re-init per-side slots that fired 0 times in the epoch (random init).")
+    # aux_sae (Iso-Energy / Group-Sparse)
+    p.add_argument("--aux-loss", choices=["iso_align", "group_sparse"], default=None,
+                   help="Required when --variant aux_sae.")
+    p.add_argument("--aux-lambda", type=float, default=None,
+                   help="Aux loss weight (β or λ). Defaults: iso 1e-4, gs 0.05.")
+    # imagenet subset
+    p.add_argument("--max-per-class", type=int, default=1000,
+                   help="ImageNet-only: cap per class for balanced subsample.")
     return p.parse_args()
 
 
-def build_one_sae_trainer(
-    args: argparse.Namespace,
-    train_ds: CachedClipPairsDataset,
-    eval_ds: CachedClipPairsDataset,
-    training_args: TrainingArguments,
-) -> Trainer:
+def _build_topksae(args: argparse.Namespace) -> TopKSAE:
     cfg = TopKSAEConfig(
         hidden_size=args.hidden_size,
         latent_size=args.latent,
@@ -84,7 +101,16 @@ def build_one_sae_trainer(
         k=args.k,
         weight_tie=False,
     )
-    model = TopKSAE(cfg)
+    return TopKSAE(cfg)
+
+
+def build_one_sae_trainer(
+    args: argparse.Namespace,
+    train_ds,
+    eval_ds,
+    training_args: TrainingArguments,
+) -> Trainer:
+    model = _build_topksae(args)
     trainer = OneSidedSAETrainer(
         model=model,
         args=training_args,
@@ -95,10 +121,34 @@ def build_one_sae_trainer(
     return trainer
 
 
+def build_aux_sae_trainer(
+    args: argparse.Namespace,
+    train_ds,
+    eval_ds,
+    training_args: TrainingArguments,
+) -> Trainer:
+    if args.aux_loss is None:
+        raise SystemExit("--aux-loss required for --variant aux_sae")
+    aux_weight = args.aux_lambda
+    if aux_weight is None:
+        aux_weight = 1e-4 if args.aux_loss == "iso_align" else 0.05
+    model = _build_topksae(args)
+    trainer = OneSidedAuxSAETrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_ds,  # type: ignore[arg-type]
+        eval_dataset=eval_ds,  # type: ignore[arg-type]
+        data_collator=default_data_collator,
+        aux_loss=args.aux_loss,
+        aux_weight=aux_weight,
+    )
+    return trainer
+
+
 def build_two_sae_trainer(
     args: argparse.Namespace,
-    train_ds: CachedClipPairsDataset,
-    eval_ds: CachedClipPairsDataset,
+    train_ds,
+    eval_ds,
     training_args: TrainingArguments,
 ) -> Trainer:
     cfg = TwoSidedTopKSAEConfig(
@@ -133,9 +183,18 @@ def main() -> None:
     with open(output_dir / "config.json", "w") as f:
         json.dump(vars(args), f, indent=2)
 
-    logger.info("Loading cached embeddings from %s", args.cache_dir)
-    train_ds = CachedClipPairsDataset(args.cache_dir, split="train", l2_normalize=True)
-    eval_ds = CachedClipPairsDataset(args.cache_dir, split="test", l2_normalize=True)
+    logger.info("Loading cached embeddings from %s (dataset=%s)", args.cache_dir, args.dataset)
+    if args.dataset == "coco":
+        train_ds = CachedClipPairsDataset(args.cache_dir, split="train", l2_normalize=True)
+        eval_ds = CachedClipPairsDataset(args.cache_dir, split="test", l2_normalize=True)
+    else:  # imagenet
+        train_ds = CachedImageNetPairsDataset(
+            args.cache_dir, split="train",
+            max_per_class=args.max_per_class, l2_normalize=True,
+        )
+        eval_ds = CachedImageNetPairsDataset(
+            args.cache_dir, split="val", l2_normalize=True,
+        )
     logger.info("train=%d eval=%d", len(train_ds), len(eval_ds))
 
     training_args = TrainingArguments(
@@ -165,8 +224,10 @@ def main() -> None:
 
     if args.variant == "one_sae":
         trainer = build_one_sae_trainer(args, train_ds, eval_ds, training_args)
-    else:
+    elif args.variant == "two_sae":
         trainer = build_two_sae_trainer(args, train_ds, eval_ds, training_args)
+    else:
+        trainer = build_aux_sae_trainer(args, train_ds, eval_ds, training_args)
 
     trainer.train()
 

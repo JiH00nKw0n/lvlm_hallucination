@@ -26,6 +26,7 @@ __all__ = [
     "SAETrainer",
     "CLIPSAETrainer",
     "OneSidedSAETrainer",
+    "OneSidedAuxSAETrainer",
     "TwoSidedSAETrainer",
     "DeadReviveCallback",
     "RealAuxAlignmentTrainer",
@@ -483,6 +484,104 @@ class OneSidedSAETrainer(Trainer):
                 setattr(self.state, attr, torch.tensor(0.0, device=self.args.device))
         self.state._os_last_logged = self.state.global_step
         super().log(logs, start_time=start_time)
+
+
+def _iso_alignment_penalty(z_img: torch.Tensor, z_txt: torch.Tensor) -> torch.Tensor:
+    """Top-1 masked cosine alignment (Parabrele/IsoEnergy paper baseline).
+
+    Ported from `synthetic_theorem2_method._iso_alignment_penalty`. Masks each
+    sample's top-1 latent in BOTH halves before computing cosine similarity,
+    so the "modality-specific" top-1 slot does not dominate the alignment
+    signal. Returns a scalar in [-1, 1]; the caller scales by aux_weight.
+    """
+    import torch.nn.functional as F
+    n = z_img.shape[0]
+    top_1_img = torch.topk(z_img, k=1, dim=1).indices.squeeze(1)
+    top_1_txt = torch.topk(z_txt, k=1, dim=1).indices.squeeze(1)
+    arange = torch.arange(n, device=z_img.device)
+    mask_i = torch.ones_like(z_img)
+    mask_t = torch.ones_like(z_txt)
+    mask_i[arange, top_1_img] = 0.0
+    mask_i[arange, top_1_txt] = 0.0
+    mask_t[arange, top_1_img] = 0.0
+    mask_t[arange, top_1_txt] = 0.0
+    cos = F.cosine_similarity(z_img * mask_i, z_txt * mask_t, dim=1).mean()
+    return -cos
+
+
+def _group_sparse_penalty(z_img: torch.Tensor, z_txt: torch.Tensor) -> torch.Tensor:
+    """Group-L_{2,1} penalty sum_j sqrt(z_I_j^2 + z_T_j^2), averaged over batch.
+
+    Ported from `synthetic_theory_simplified.group_sparse_loss`.
+    """
+    return torch.sqrt(z_img.pow(2) + z_txt.pow(2) + 1e-12).sum(dim=-1).mean()
+
+
+_AUX_LOSS_REGISTRY = {
+    "iso_align": _iso_alignment_penalty,
+    "group_sparse": _group_sparse_penalty,
+}
+
+
+@registry.register_trainer("OneSidedAuxSAETrainer")
+class OneSidedAuxSAETrainer(OneSidedSAETrainer):
+    """OneSidedSAETrainer + paired aux loss (iso_align or group_sparse).
+
+    Runs a single shared TopKSAE through both modalities, computes per-modality
+    reconstruction loss, and adds an aux term that couples the two dense
+    latent vectors. Used for Iso-Energy Align and Group-Sparse baselines in
+    the real-data downstream table.
+    """
+
+    def __init__(self, *args, aux_loss: str = "iso_align", aux_weight: float = 1e-4, **kwargs):
+        super().__init__(*args, **kwargs)
+        if aux_loss not in _AUX_LOSS_REGISTRY:
+            raise ValueError(f"aux_loss must be one of {list(_AUX_LOSS_REGISTRY)}, got {aux_loss}")
+        self.aux_loss_name = aux_loss
+        self.aux_fn = _AUX_LOSS_REGISTRY[aux_loss]
+        self.aux_weight = float(aux_weight)
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        image_embeds = inputs["image_embeds"]
+        text_embeds = inputs["text_embeds"]
+        hs_i = image_embeds.unsqueeze(1)
+        hs_t = text_embeds.unsqueeze(1)
+        out_i = model(hidden_states=hs_i, return_dense_latents=True)
+        out_t = model(hidden_states=hs_t, return_dense_latents=True)
+        # Squeeze the seq_len=1 dim on dense latents to get (B, L)
+        z_i = out_i.dense_latents.squeeze(1)
+        z_t = out_t.dense_latents.squeeze(1)
+
+        recon = (out_i.recon_loss + out_t.recon_loss) / 2
+        aux = self.aux_fn(z_i, z_t)
+        loss = recon + self.aux_weight * aux
+
+        for key, val in (
+            ("recon_loss", recon),
+            ("recon_loss_image", out_i.recon_loss),
+            ("recon_loss_text", out_t.recon_loss),
+            ("aux_loss", aux),
+        ):
+            attr = f"_os_{key}"
+            current = getattr(self.state, attr, torch.tensor(0.0, device=val.device))
+            setattr(self.state, attr, current + val.detach())
+
+        return (loss, (out_i, out_t)) if return_outputs else loss
+
+    def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
+        steps = self.state.global_step - getattr(self.state, "_os_last_logged", 0)
+        if steps <= 0:
+            steps = 1
+        for key in ("recon_loss", "recon_loss_image", "recon_loss_text", "aux_loss"):
+            attr = f"_os_{key}"
+            if hasattr(self.state, attr):
+                tensor = getattr(self.state, attr)
+                val = float(tensor.detach().mean().item())
+                logs[key] = round(val / steps, 6)
+                setattr(self.state, attr, torch.tensor(0.0, device=self.args.device))
+        self.state._os_last_logged = self.state.global_step
+        # Skip OneSidedSAETrainer.log (would double-reset); go straight to Trainer.log
+        Trainer.log(self, logs, start_time=start_time)
 
 
 @registry.register_trainer("TwoSidedSAETrainer")
