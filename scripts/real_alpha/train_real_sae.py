@@ -43,11 +43,14 @@ from src.datasets.cached_clip_pairs import CachedClipPairsDataset  # type: ignor
 from src.datasets.cached_imagenet_pairs import CachedImageNetPairsDataset  # type: ignore  # noqa: E402
 from src.models.configuration_sae import TopKSAEConfig, TwoSidedTopKSAEConfig  # type: ignore  # noqa: E402
 from src.models.modeling_sae import TopKSAE, TwoSidedTopKSAE  # type: ignore  # noqa: E402
+from src.models.vl_sae import VLSAE, VLSAEConfig  # type: ignore  # noqa: E402
+from src.models.shared_enc_sae import SharedEncSAE, SharedEncSAEConfig  # type: ignore  # noqa: E402
 from src.runners.trainer import (  # type: ignore  # noqa: E402
     DeadReviveCallback,
     OneSidedAuxSAETrainer,
     OneSidedSAETrainer,
     TwoSidedSAETrainer,
+    VLSAETrainer,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -56,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--variant", choices=["one_sae", "two_sae", "aux_sae"], required=True)
+    p.add_argument("--variant", choices=["one_sae", "two_sae", "aux_sae", "vl_sae", "shared_enc"], required=True)
     p.add_argument("--dataset", choices=["coco", "imagenet"], default="coco")
     p.add_argument("--cache-dir", type=str, required=True)
     p.add_argument("--output-dir", type=str, required=True)
@@ -145,6 +148,50 @@ def build_aux_sae_trainer(
     return trainer
 
 
+def build_vl_sae_trainer(
+    args: argparse.Namespace,
+    train_ds,
+    eval_ds,
+    training_args: TrainingArguments,
+) -> Trainer:
+    cfg = VLSAEConfig(
+        hidden_size=args.hidden_size,
+        latent_size=args.latent,
+        k=args.k,
+    )
+    model = VLSAE(cfg)
+    trainer = VLSAETrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_ds,  # type: ignore[arg-type]
+        eval_dataset=eval_ds,  # type: ignore[arg-type]
+        data_collator=default_data_collator,
+    )
+    return trainer
+
+
+def build_shared_enc_trainer(
+    args: argparse.Namespace,
+    train_ds,
+    eval_ds,
+    training_args: TrainingArguments,
+) -> Trainer:
+    cfg = SharedEncSAEConfig(
+        hidden_size=args.hidden_size,
+        latent_size=args.latent,
+        k=args.k,
+    )
+    model = SharedEncSAE(cfg)
+    trainer = VLSAETrainer(  # same interface: image_embeds/text_embeds → loss
+        model=model,
+        args=training_args,
+        train_dataset=train_ds,  # type: ignore[arg-type]
+        eval_dataset=eval_ds,  # type: ignore[arg-type]
+        data_collator=default_data_collator,
+    )
+    return trainer
+
+
 def build_two_sae_trainer(
     args: argparse.Namespace,
     train_ds,
@@ -226,6 +273,10 @@ def main() -> None:
         trainer = build_one_sae_trainer(args, train_ds, eval_ds, training_args)
     elif args.variant == "two_sae":
         trainer = build_two_sae_trainer(args, train_ds, eval_ds, training_args)
+    elif args.variant == "vl_sae":
+        trainer = build_vl_sae_trainer(args, train_ds, eval_ds, training_args)
+    elif args.variant == "shared_enc":
+        trainer = build_shared_enc_trainer(args, train_ds, eval_ds, training_args)
     else:
         trainer = build_aux_sae_trainer(args, train_ds, eval_ds, training_args)
 

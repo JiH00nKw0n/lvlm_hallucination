@@ -66,11 +66,19 @@ def main() -> None:
     )
     logger.info("paired dataset: %d samples", len(ds))
 
-    perm = eval_utils.build_perm(
+    result = eval_utils.build_perm(
         model, ds, device, max_samples=args.max_samples, batch_size=args.batch_size,
     )
+    perm = result["perm"]
     logger.info("saved perm len=%d → %s", perm.shape[0], out_path)
-    np.savez(out_path, perm=perm)
+    np.savez(
+        out_path,
+        perm=perm,
+        alive_image=result["alive_image"],
+        alive_text=result["alive_text"],
+        fire_count_image=result["fire_count_image"],
+        fire_count_text=result["fire_count_text"],
+    )
 
 
 if __name__ == "__main__":

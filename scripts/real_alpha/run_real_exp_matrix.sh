@@ -29,14 +29,40 @@ EPOCHS="${EPOCHS:-30}"
 BATCH="${BATCH:-1024}"
 LR="${LR:-5e-4}"
 LATENT="${LATENT:-8192}"
+# VL-SAE has TWO full-size decoders (2 × L×H), so at L=LATENT it has ~1.5×
+# the params of TopKSAE variants. To keep capacity comparable we default
+# VL_LATENT=4096 so VL-SAE's total ≈ Ours' total param count.
+VL_LATENT="${VL_LATENT:-4096}"
 SEED="${SEED:-0}"
 MAX_PER_CLASS="${MAX_PER_CLASS:-1000}"
+
+# Dataset subset filter: "coco", "imagenet", or "imagenet coco" (default both).
+DATASETS="${DATASETS:-imagenet coco}"
+
+# Methods filter.
+METHODS="${METHODS:-shared separated iso_align group_sparse ours vl_sae shared_enc}"
+
+# Top-k sparsity for training. Default 8 (both COCO and ImageNet).
+K="${K:-8}"
+
+# ImageNet linear probe: inference-time top-k on SAE latents. Train k is
+# fixed by K below; default eval_topk=1 emulates "linear probe with top-1".
+LP_EVAL_TOPK="${LP_EVAL_TOPK:-1}"
 
 # iso/group default hyperparameters (from synthetic followup15 baselines).
 ISO_LAMBDA="${ISO_LAMBDA:-1e-4}"
 GS_LAMBDA="${GS_LAMBDA:-0.05}"
 
-COMMON_TRAIN="--epochs $EPOCHS --batch-size $BATCH --lr $LR --latent $LATENT --seed $SEED"
+COMMON_TRAIN_BASE="--epochs $EPOCHS --batch-size $BATCH --lr $LR --seed $SEED"
+
+# Per-method latent size (VL-SAE and shared_enc get smaller L for fair param comparison:
+# single encoder + 2 decoders → 3 weight matrices, matching Ours' 2 encoders + 2 decoders).
+latent_for_method() {
+  case "$1" in
+    vl_sae|shared_enc) echo "$VL_LATENT" ;;
+    *)                 echo "$LATENT" ;;
+  esac
+}
 
 echo "[$(date '+%F %T')] start real_exp_v1 matrix"
 
@@ -47,56 +73,85 @@ run_train() {
   local dataset="$1" k="$2" method="$3" extra="$4"
   local cache="$5"
   local out="$OUT/$method/$dataset"
+  local l
+  l="$(latent_for_method "$method")"
   if [ -d "$out/final" ]; then
     echo "[skip] $method/$dataset (final exists)"
     return
   fi
   mkdir -p "$out"
-  echo "[train] $method / $dataset (k=$k)"
+  echo "[train] $method / $dataset (k=$k, L=$l)"
   python scripts/real_alpha/train_real_sae.py \
       --dataset "$dataset" --cache-dir "$cache" \
       --output-dir "$out" \
-      --k "$k" $COMMON_TRAIN $extra
+      --k "$k" --latent "$l" $COMMON_TRAIN_BASE $extra
 }
 
-for dataset in imagenet coco; do
+# k=8 for both datasets — k=1 empirically gave ~90% unexplained variance
+# (see real_exp.md update); multi-feature regime keeps both ImageNet (single-
+# label per sample) and COCO (multi-concept captions) in the same setup.
+# Linear probe uses --eval-topk to optionally further sparsify at inference.
+for dataset in $DATASETS; do
   if [ "$dataset" = "imagenet" ]; then
-    K=1; CACHE="$CACHE_IN"
+    CACHE="$CACHE_IN"
     IN_EXTRA="--max-per-class $MAX_PER_CLASS"
   else
-    K=8; CACHE="$CACHE_COCO"
+    CACHE="$CACHE_COCO"
     IN_EXTRA=""
   fi
 
-  run_train "$dataset" "$K" "shared"     "--variant one_sae $IN_EXTRA" "$CACHE"
-  run_train "$dataset" "$K" "separated"  "--variant two_sae $IN_EXTRA" "$CACHE"
-  run_train "$dataset" "$K" "iso_align"  "--variant aux_sae --aux-loss iso_align    --aux-lambda $ISO_LAMBDA $IN_EXTRA" "$CACHE"
-  run_train "$dataset" "$K" "group_sparse" "--variant aux_sae --aux-loss group_sparse --aux-lambda $GS_LAMBDA $IN_EXTRA" "$CACHE"
+  for method in $METHODS; do
+    case "$method" in
+      shared)
+        run_train "$dataset" "$K" "shared" "--variant one_sae $IN_EXTRA" "$CACHE"
+        ;;
+      separated)
+        run_train "$dataset" "$K" "separated" "--variant two_sae $IN_EXTRA" "$CACHE"
+        ;;
+      iso_align)
+        run_train "$dataset" "$K" "iso_align" "--variant aux_sae --aux-loss iso_align --aux-lambda $ISO_LAMBDA $IN_EXTRA" "$CACHE"
+        ;;
+      group_sparse)
+        run_train "$dataset" "$K" "group_sparse" "--variant aux_sae --aux-loss group_sparse --aux-lambda $GS_LAMBDA $IN_EXTRA" "$CACHE"
+        ;;
+      vl_sae)
+        run_train "$dataset" "$K" "vl_sae" "--variant vl_sae $IN_EXTRA" "$CACHE"
+        ;;
+      shared_enc)
+        run_train "$dataset" "$K" "shared_enc" "--variant shared_enc $IN_EXTRA" "$CACHE"
+        ;;
+      ours)
+        # Ours reuses Separated — no independent training
+        ;;
+    esac
+  done
 done
 
 # ---------------------------------------------------------------------------
-# Section: build Hungarian perm for Ours
+# Section: build Hungarian perm for Ours (skip if Ours not in METHODS)
 # ---------------------------------------------------------------------------
-for dataset in imagenet coco; do
-  if [ "$dataset" = "imagenet" ]; then
-    CACHE="$CACHE_IN"
-    PERM_EXTRA="--max-per-class $MAX_PER_CLASS"
-  else
-    CACHE="$CACHE_COCO"
-    PERM_EXTRA=""
-  fi
-  out="$OUT/ours/$dataset"
-  mkdir -p "$out"
-  if [ -f "$out/perm.npz" ]; then
-    echo "[skip] perm $dataset (exists)"
-  else
-    echo "[perm] $dataset"
-    python scripts/real_alpha/build_hungarian_perm.py \
-        --ckpt "$OUT/separated/$dataset/final" \
-        --dataset "$dataset" --cache-dir "$CACHE" \
-        --output "$out/perm.npz" $PERM_EXTRA
-  fi
-done
+if echo "$METHODS" | grep -qw "ours"; then
+  for dataset in $DATASETS; do
+    if [ "$dataset" = "imagenet" ]; then
+      CACHE="$CACHE_IN"
+      PERM_EXTRA="--max-per-class $MAX_PER_CLASS"
+    else
+      CACHE="$CACHE_COCO"
+      PERM_EXTRA=""
+    fi
+    out="$OUT/ours/$dataset"
+    mkdir -p "$out"
+    if [ -f "$out/perm.npz" ]; then
+      echo "[skip] perm $dataset (exists)"
+    else
+      echo "[perm] $dataset"
+      python scripts/real_alpha/build_hungarian_perm.py \
+          --ckpt "$OUT/separated/$dataset/final" \
+          --dataset "$dataset" --cache-dir "$CACHE" \
+          --output "$out/perm.npz" $PERM_EXTRA
+    fi
+  done
+fi
 
 # ---------------------------------------------------------------------------
 # Section: evaluate every method × every applicable metric
@@ -106,6 +161,8 @@ method_for_eval() {
     shared|separated) echo "$1" ;;
     iso_align|group_sparse) echo "aux" ;;
     ours) echo "ours" ;;
+    vl_sae) echo "vl_sae" ;;
+    shared_enc) echo "shared_enc" ;;
   esac
 }
 
@@ -137,14 +194,24 @@ eval_one() {
         --cache-dir "$cache" --split "$split" --output "$out/recon.json"
   fi
 
+  # Dead latent counts (paired train subset)
+  if [ ! -f "$out/dead_latents.json" ]; then
+    echo "[eval dead] $method / $dataset"
+    if [ "$dataset" = "coco" ]; then cache="$CACHE_COCO"; dead_extra=""; else cache="$CACHE_IN"; dead_extra="--max-per-class $MAX_PER_CLASS"; fi
+    python scripts/real_alpha/eval_dead_latents.py \
+        --ckpt "$ckpt" --method "$eval_method" --dataset "$dataset" \
+        --cache-dir "$cache" --output "$out/dead_latents.json" $dead_extra
+  fi
+
   if [ "$dataset" = "imagenet" ]; then
-    # Linear probe
+    # Linear probe (torch GPU; emulate inference top-k via --eval-topk)
     if [ ! -f "$out/linprobe.json" ]; then
-      echo "[eval linprobe] $method / $dataset"
+      echo "[eval linprobe] $method / $dataset (eval_topk=$LP_EVAL_TOPK)"
       python scripts/real_alpha/eval_imagenet_linprobe.py \
           --ckpt "$ckpt" --method "$eval_method" \
           --cache-dir "$CACHE_IN" --output "$out/linprobe.json" \
-          --max-per-class "$MAX_PER_CLASS"
+          --max-per-class "$MAX_PER_CLASS" \
+          --eval-topk "$LP_EVAL_TOPK"
     fi
     # Zero-shot
     if [ ! -f "$out/zeroshot.json" ]; then
@@ -168,8 +235,8 @@ eval_one() {
   fi
 }
 
-for dataset in imagenet coco; do
-  for method in shared separated iso_align group_sparse ours; do
+for dataset in $DATASETS; do
+  for method in $METHODS; do
     eval_one "$method" "$dataset"
   done
 done

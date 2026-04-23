@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", type=str, required=True)
-    p.add_argument("--method", choices=["shared", "separated", "aux", "ours"], required=True)
+    p.add_argument("--method", choices=["shared", "separated", "aux", "ours", "vl_sae", "shared_enc"], required=True)
     p.add_argument("--cache-dir", type=str, required=True)
     p.add_argument("--perm", type=str, default=None,
                    help="Path to perm.npz (required for method='ours').")

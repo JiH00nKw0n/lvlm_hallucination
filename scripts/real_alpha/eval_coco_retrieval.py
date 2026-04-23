@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", type=str, required=True)
-    p.add_argument("--method", choices=["shared", "separated", "aux", "ours"], required=True)
+    p.add_argument("--method", choices=["shared", "separated", "aux", "ours", "vl_sae", "shared_enc"], required=True)
     p.add_argument("--cache-dir", type=str, required=True)
     p.add_argument("--split", type=str, default="test")
     p.add_argument("--perm", type=str, default=None)
@@ -95,38 +95,59 @@ def main() -> None:
     z_img = eval_utils.normalize_rows(z_img)
     z_txt = eval_utils.normalize_rows(z_txt)
 
-    # T → I: for each caption, rank unique images by cos sim
-    #   gt = pair_img_idx[p]; rank = number of images with higher score than gt.
+    # T → I: for each caption, rank unique images by cos sim.
+    # Use pessimistic tie handling: rank = (# items with score >= gt) - 1.
+    # Also record tie-size diagnostics so readers can tell when a method's
+    # cosines are uninformative (e.g., sparse latents tying at 0).
     t2i_ranks = np.empty(z_txt.shape[0], dtype=np.int64)
+    t2i_tie_size = np.empty(z_txt.shape[0], dtype=np.int64)  # items at gt score, incl. gt
     chunk = 1024
     for s in range(0, z_txt.shape[0], chunk):
         scores = z_txt[s:s + chunk] @ z_img.T  # (b, n_img)
         gt = pair_img_idx[s:s + chunk]
         gt_scores = scores[np.arange(len(gt)), gt]
-        # Rank = how many images score strictly higher than gt
-        t2i_ranks[s:s + chunk] = (scores > gt_scores[:, None]).sum(dim=1).cpu().numpy()
+        ge_count = (scores >= gt_scores[:, None]).sum(dim=1)
+        eq_count = (scores == gt_scores[:, None]).sum(dim=1)
+        t2i_ranks[s:s + chunk] = (ge_count - 1).cpu().numpy()
+        t2i_tie_size[s:s + chunk] = eq_count.cpu().numpy()
 
-    # I → T: for each image, rank all captions. Correct if any of 5 gt captions rank < k.
+    # I → T: for each image, rank is the best (lowest) pessimistic rank across
+    # its 5 gt captions — this matches the standard Karpathy I→T convention.
     gt_caps_per_img: list[list[int]] = [[] for _ in range(len(unique_img_ids))]
     for cap_p, img_idx in enumerate(pair_img_idx):
         gt_caps_per_img[int(img_idx)].append(cap_p)
 
-    # For each image, the rank reported is the rank of its best-scoring GT
-    # caption among all captions (lower is better; 0 = perfect top-1).
     i2t_min_rank = np.empty(z_img.shape[0], dtype=np.int64)
+    i2t_tie_size = np.empty(z_img.shape[0], dtype=np.int64)
     for s in range(0, z_img.shape[0], chunk):
         scores = z_img[s:s + chunk] @ z_txt.T  # (b, n_cap)
         for row in range(scores.shape[0]):
             img_idx = s + row
             gt_caps = gt_caps_per_img[img_idx]
             best_gt_score = scores[row, gt_caps].max()
-            rank = int((scores[row] > best_gt_score).sum().item())
-            i2t_min_rank[img_idx] = rank
+            # pessimistic rank of best gt caption among all captions
+            ge_count = int((scores[row] >= best_gt_score).sum().item())
+            eq_count = int((scores[row] == best_gt_score).sum().item())
+            i2t_min_rank[img_idx] = ge_count - 1
+            i2t_tie_size[img_idx] = eq_count
 
     t2i = _recall_at_k(t2i_ranks)
     i2t = _recall_at_k(i2t_min_rank)
     logger.info("T→I %s", t2i)
     logger.info("I→T %s", i2t)
+
+    # Tie diagnostics: what fraction of queries have gt tied with any other item?
+    # Mean tie-size measures how indecisive the cosines are (1 = unique gt).
+    t2i_tie_info = {
+        "tie_at_gt_rate": float((t2i_tie_size > 1).mean()),
+        "mean_tie_size": float(t2i_tie_size.mean()),
+    }
+    i2t_tie_info = {
+        "tie_at_gt_rate": float((i2t_tie_size > 1).mean()),
+        "mean_tie_size": float(i2t_tie_size.mean()),
+    }
+    logger.info("T→I ties: %s", t2i_tie_info)
+    logger.info("I→T ties: %s", i2t_tie_info)
 
     result = {
         "method": args.method,
@@ -137,6 +158,8 @@ def main() -> None:
         "latent_size": int(z_img.shape[1]),
         "T2I": t2i,
         "I2T": i2t,
+        "T2I_ties": t2i_tie_info,
+        "I2T_ties": i2t_tie_info,
     }
     with open(out_path, "w") as f:
         json.dump(result, f, indent=2)

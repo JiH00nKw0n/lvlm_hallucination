@@ -28,6 +28,7 @@ __all__ = [
     "OneSidedSAETrainer",
     "OneSidedAuxSAETrainer",
     "TwoSidedSAETrainer",
+    "VLSAETrainer",
     "DeadReviveCallback",
     "RealAuxAlignmentTrainer",
 ]
@@ -704,6 +705,57 @@ class TwoSidedSAETrainer(Trainer):
                 logs[key] = round(val / steps, 6)
                 setattr(self.state, attr, torch.tensor(0.0, device=self.args.device))
         self.state._ts_last_logged = self.state.global_step
+        super().log(logs, start_time=start_time)
+
+
+class VLSAETrainer(Trainer):
+    """Minimal Trainer for VL-SAE (shared encoder, two modality-specific decoders).
+
+    The model consumes `image_embeds` and `text_embeds` directly and returns
+    `VLSAEOutput` whose `.loss` is the sum of per-modality MSE. No AuxK, no
+    aux alignment loss, no dead-feature tracking.
+    """
+
+    supports_sae_weights = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.model_accepts_loss_kwargs = False
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        outputs = model(
+            image_embeds=inputs["image_embeds"],
+            text_embeds=inputs["text_embeds"],
+        )
+        loss = outputs.loss
+
+        for key in ("recon_loss", "recon_loss_image", "recon_loss_text"):
+            val = getattr(outputs, key, None)
+            if val is None:
+                continue
+            attr = f"_vl_{key}"
+            current = getattr(self.state, attr, torch.tensor(0.0, device=val.device))
+            setattr(self.state, attr, current + val.detach())
+
+        return (loss, outputs) if return_outputs else loss
+
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        with torch.no_grad():
+            loss = self.compute_loss(model, inputs, return_outputs=False)
+        return (loss.detach(), None, None)
+
+    def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
+        steps = self.state.global_step - getattr(self.state, "_vl_last_logged", 0)
+        if steps <= 0:
+            steps = 1
+        for key in ("recon_loss", "recon_loss_image", "recon_loss_text"):
+            attr = f"_vl_{key}"
+            if hasattr(self.state, attr):
+                tensor = getattr(self.state, attr)
+                val = float(tensor.detach().mean().item())
+                logs[key] = round(val / steps, 6)
+                setattr(self.state, attr, torch.tensor(0.0, device=self.args.device))
+        self.state._vl_last_logged = self.state.global_step
         super().log(logs, start_time=start_time)
 
 

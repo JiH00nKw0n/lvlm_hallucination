@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", type=str, required=True)
-    p.add_argument("--method", choices=["shared", "separated", "aux", "ours"], required=True)
+    p.add_argument("--method", choices=["shared", "separated", "aux", "ours", "vl_sae", "shared_enc"], required=True)
     p.add_argument("--dataset", choices=["coco", "imagenet"], required=True)
     p.add_argument("--cache-dir", type=str, required=True)
     p.add_argument("--split", type=str, required=True)
@@ -52,8 +52,8 @@ def parse_args() -> argparse.Namespace:
 
 
 @torch.no_grad()
-def _recon_mse(sae, embeds: torch.Tensor, batch_size: int, device: torch.device) -> float:
-    """Mean per-sample squared reconstruction error (sum over feature dim)."""
+def _recon_mse_topksae(sae, embeds: torch.Tensor, batch_size: int, device: torch.device) -> float:
+    """Mean per-sample squared reconstruction error for TopKSAE."""
     sae.eval()
     sae.to(device)  # type: ignore[arg-type]
     total = 0.0
@@ -63,6 +63,24 @@ def _recon_mse(sae, embeds: torch.Tensor, batch_size: int, device: torch.device)
         out = sae(hidden_states=chunk)
         x_hat = out.output.squeeze(1)
         err = (chunk.squeeze(1) - x_hat).pow(2).sum(dim=-1)
+        total += float(err.sum().item())
+        n += chunk.shape[0]
+    return total / max(n, 1)
+
+
+@torch.no_grad()
+def _recon_mse_vlsae(model, embeds: torch.Tensor, modality: str, batch_size: int, device: torch.device) -> float:
+    """Mean per-sample squared reconstruction error for VLSAE (image or text side)."""
+    model.eval()
+    model.to(device)  # type: ignore[arg-type]
+    decoder = model.vision_decoder if modality == "image" else model.text_decoder
+    total = 0.0
+    n = 0
+    for s in range(0, embeds.shape[0], batch_size):
+        chunk = embeds[s:s + batch_size].to(device)
+        z = model.encode(chunk)
+        x_hat = decoder(z)
+        err = (chunk - x_hat).pow(2).sum(dim=-1)
         total += float(err.sum().item())
         n += chunk.shape[0]
     return total / max(n, 1)
@@ -86,13 +104,17 @@ def main() -> None:
     txt = torch.stack([ds[i]["text_embeds"] for i in range(n)], dim=0)
     logger.info("n=%d, img=%s txt=%s", n, img.shape, txt.shape)
 
-    if args.method in ("shared", "aux"):
-        sae_i = sae_t = model
+    if args.method in ("vl_sae", "shared_enc"):
+        mse_img = _recon_mse_vlsae(model, img, "image", args.batch_size, device)
+        mse_txt = _recon_mse_vlsae(model, txt, "text", args.batch_size, device)
     else:
-        sae_i = model.image_sae
-        sae_t = model.text_sae
-    mse_img = _recon_mse(sae_i, img, args.batch_size, device)
-    mse_txt = _recon_mse(sae_t, txt, args.batch_size, device)
+        if args.method in ("shared", "aux"):
+            sae_i = sae_t = model
+        else:
+            sae_i = model.image_sae
+            sae_t = model.text_sae
+        mse_img = _recon_mse_topksae(sae_i, img, args.batch_size, device)
+        mse_txt = _recon_mse_topksae(sae_t, txt, args.batch_size, device)
     recon = 0.5 * (mse_img + mse_txt)
 
     result = {
