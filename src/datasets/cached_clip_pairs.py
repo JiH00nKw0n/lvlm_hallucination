@@ -62,12 +62,15 @@ class CachedClipPairsDataset(Dataset):
         # Each entry is [image_id, caption_idx]
         self.pairs: list[tuple[int, int]] = [tuple(p) for p in splits[split]]  # type: ignore[misc]
 
-        self._image_table, self._image_id_to_row = self._load_and_stack(
-            cache_dir / "image_embeddings.pt", key_cast=int,
+        # Prefer pre-stacked artifacts if present (see
+        # scripts/real_alpha/preprocess_cc3m_cache.py). Falls back to loading
+        # the raw per-sample dict and stacking in-process (COCO-style caches).
+        self._image_table, self._image_id_to_row = self._load_modality(
+            cache_dir, modality="image", key_cast=int,
             dtype=dtype, normalize_chunk=normalize_chunk,
         )
-        self._text_table, self._text_key_to_row = self._load_and_stack(
-            cache_dir / "text_embeddings.pt", key_cast=str,
+        self._text_table, self._text_key_to_row = self._load_modality(
+            cache_dir, modality="text", key_cast=str,
             dtype=dtype, normalize_chunk=normalize_chunk,
         )
 
@@ -89,6 +92,41 @@ class CachedClipPairsDataset(Dataset):
                 "dropped %d/%d pairs (%.2f%%) with missing image or text entries",
                 dropped, before, 100.0 * dropped / max(before, 1),
             )
+
+    def _load_modality(
+        self, cache_dir: Path, modality: str, key_cast,
+        dtype: torch.dtype, normalize_chunk: int,
+    ) -> tuple[torch.Tensor, dict]:
+        """Resolve one modality's (table, mapping). Fast path: pre-stacked
+        artifacts emitted by ``preprocess_cc3m_cache.py`` (mmap load, ~0
+        peak RAM). Slow path: raw per-sample dict, stacked in-process (for
+        COCO-style caches that have no preprocessed artifact)."""
+        stack_path = cache_dir / f"{modality}_embeddings_stack.pt"
+        map_path = cache_dir / f"{modality}_embeddings_map.json"
+        if stack_path.exists() and map_path.exists():
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "loading pre-stacked %s artifacts (mmap)", modality,
+            )
+            # mmap=True lets the kernel page rows in on demand, so RSS
+            # stays small and subsequent training runs on the same cache
+            # dir skip the 20-min dict → stack conversion entirely.
+            try:
+                table = torch.load(stack_path, map_location="cpu", mmap=True)
+            except TypeError:
+                # Older torch versions: fall back to eager load.
+                table = torch.load(stack_path, map_location="cpu")
+            if table.dtype != dtype:
+                table = table.to(dtype)
+            with open(map_path, "r") as f:
+                raw_map = json.load(f)
+            # JSON keys are always strings; recast to caller's key type.
+            mapping = {key_cast(k): int(v) for k, v in raw_map.items()}
+            return table, mapping
+        return self._load_and_stack(
+            cache_dir / f"{modality}_embeddings.pt", key_cast,
+            dtype=dtype, normalize_chunk=normalize_chunk,
+        )
 
     def _load_and_stack(
         self, path: Path, key_cast,
