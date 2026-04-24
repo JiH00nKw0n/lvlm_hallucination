@@ -51,20 +51,32 @@ class CachedClipPairsDataset(Dataset):
         # Each entry is [image_id, caption_idx]
         self.pairs: list[tuple[int, int]] = [tuple(p) for p in splits[split]]  # type: ignore[misc]
 
-        image_dict = torch.load(cache_dir / "image_embeddings.pt", map_location="cpu")
-        text_dict = torch.load(cache_dir / "text_embeddings.pt", map_location="cpu")
-        # Image embeddings: keyed by int image_id. Text: keyed by "imageid_idx".
-        self._image_dict = {int(k): v.to(dtype) for k, v in image_dict.items()}
-        self._text_dict = {str(k): v.to(dtype) for k, v in text_dict.items()}
+        # Memory-efficient load: pop-transfer each entry from the raw dict into
+        # the final dict, folding in dtype cast + L2 normalize in one pass.
+        # Prevents peak = 2× data size (both dicts alive during comprehension),
+        # which OOM'd on CC3M (~2.8M pairs, 24 GB RAM box). Peak stays ~1× data.
+        # Use the same norm formula as transformers.models.clip.modeling_clip so
+        # our SAE inputs match CLIP's native inference-space embeddings exactly
+        # (no epsilon, sqrt(sum(x^2)) on the last dim).
+        self._image_dict = self._load_and_prepare(
+            cache_dir / "image_embeddings.pt", key_cast=int, dtype=dtype,
+        )
+        self._text_dict = self._load_and_prepare(
+            cache_dir / "text_embeddings.pt", key_cast=str, dtype=dtype,
+        )
 
-        if self.l2_normalize:
-            # Use the same formula as transformers.models.clip.modeling_clip
-            # so our SAE inputs match CLIP's native inference-space embeddings
-            # exactly (no epsilon, sqrt(sum(x^2)) on the last dim).
-            for k, v in self._image_dict.items():
-                self._image_dict[k] = v / _clip_vector_norm(v)
-            for k, v in self._text_dict.items():
-                self._text_dict[k] = v / _clip_vector_norm(v)
+    def _load_and_prepare(self, path: Path, key_cast, dtype: torch.dtype) -> dict:
+        raw = torch.load(path, map_location="cpu")
+        out: dict = {}
+        for k in list(raw.keys()):
+            v = raw.pop(k)
+            if v.dtype != dtype:
+                v = v.to(dtype)
+            if self.l2_normalize:
+                v = v / _clip_vector_norm(v)
+            out[key_cast(k)] = v
+        del raw
+        return out
 
     def __len__(self) -> int:
         return len(self.pairs)

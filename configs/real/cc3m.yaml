@@ -22,7 +22,7 @@ training:
   latent_size: 8192
   hidden_size: 512
   seed: 0
-  dataloader_num_workers: 2
+  dataloader_num_workers: 0
   device: cuda
 
 methods:
