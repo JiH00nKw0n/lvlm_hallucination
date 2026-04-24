@@ -6,7 +6,7 @@ data:
   sparsity: 0.99
   beta: 1.0
   obs_noise_std: 0.05
-  max_interference: 0.1
+  max_interference: 0.3
   num_train: 50000
   num_eval: 10000
 
