@@ -71,6 +71,25 @@ class CachedClipPairsDataset(Dataset):
             dtype=dtype, normalize_chunk=normalize_chunk,
         )
 
+        # Filter pairs to those where BOTH the image and text entries exist.
+        # CC3M's cache was written at 98.2% (extraction was killed before the
+        # final flush), so splits.json references some (image_id, cap_idx)
+        # pairs whose tensors never made it into the .pt files. Dropping
+        # these at load time keeps __getitem__ side clean.
+        before = len(self.pairs)
+        self.pairs = [
+            (iid, cid) for (iid, cid) in self.pairs
+            if int(iid) in self._image_id_to_row
+            and f"{int(iid)}_{int(cid)}" in self._text_key_to_row
+        ]
+        dropped = before - len(self.pairs)
+        if dropped > 0:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "dropped %d/%d pairs (%.2f%%) with missing image or text entries",
+                dropped, before, 100.0 * dropped / max(before, 1),
+            )
+
     def _load_and_stack(
         self, path: Path, key_cast,
         dtype: torch.dtype, normalize_chunk: int,
