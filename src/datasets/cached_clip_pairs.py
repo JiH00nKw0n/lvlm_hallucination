@@ -75,15 +75,19 @@ class CachedClipPairsDataset(Dataset):
         )
 
         # Filter pairs to those where BOTH the image and text entries exist.
+        # Two text-key conventions in use:
+        #   * COCO-style: f"{image_id}_{caption_idx}"  (multiple captions per image)
+        #   * CC3M-style: just f"{image_id}"            (one caption per image)
+        # We try the composite form first and fall back to the bare id.
         # CC3M's cache was written at 98.2% (extraction was killed before the
-        # final flush), so splits.json references some (image_id, cap_idx)
-        # pairs whose tensors never made it into the .pt files. Dropping
-        # these at load time keeps __getitem__ side clean.
+        # final flush), so splits.json references some pairs whose tensors
+        # never made it into the .pt files. Dropping these at load time keeps
+        # __getitem__ side clean.
         before = len(self.pairs)
         self.pairs = [
             (iid, cid) for (iid, cid) in self.pairs
             if int(iid) in self._image_id_to_row
-            and f"{int(iid)}_{int(cid)}" in self._text_key_to_row
+            and self._text_key_for(iid, cid) is not None
         ]
         dropped = before - len(self.pairs)
         if dropped > 0:
@@ -175,13 +179,29 @@ class CachedClipPairsDataset(Dataset):
 
         return table, key_to_row
 
+    def _text_key_for(self, image_id, caption_idx) -> str | None:
+        """Return the text-cache key for a (image_id, cap_idx) pair, honoring
+        whichever key convention the cache uses. Returns None if absent."""
+        composite = f"{int(image_id)}_{int(caption_idx)}"
+        if composite in self._text_key_to_row:
+            return composite
+        bare = str(image_id)
+        if bare in self._text_key_to_row:
+            return bare
+        return None
+
     def __len__(self) -> int:
         return len(self.pairs)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         image_id, caption_idx = self.pairs[idx]
         img_row = self._image_id_to_row[int(image_id)]
-        txt_row = self._text_key_to_row[f"{int(image_id)}_{int(caption_idx)}"]
+        tkey = self._text_key_for(image_id, caption_idx)
+        assert tkey is not None, (
+            f"text key missing for pair ({image_id!r}, {caption_idx!r}) — "
+            "filter should have dropped this entry"
+        )
+        txt_row = self._text_key_to_row[tkey]
         return {
             "image_embeds": self._image_table[img_row],
             "text_embeds": self._text_table[txt_row],
