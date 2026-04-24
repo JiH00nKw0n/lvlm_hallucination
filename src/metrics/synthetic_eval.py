@@ -90,37 +90,59 @@ def compute_merged_fraction(
 
 
 def compute_gre_top1(
-    learned_vectors: np.ndarray,
+    w_enc: np.ndarray,
+    b_enc: np.ndarray,
+    w_dec: np.ndarray,
+    b_dec: np.ndarray,
     gt_matrix: np.ndarray,
+    k: int = 1,
 ) -> float:
-    """Ground-truth Recovery Error with top-1 activation (per-modality).
+    """Ground-truth Recovery Error through the trained (untied) SAE pipeline.
 
-    For each GT atom ``g_i`` (column of ``gt_matrix``) and decoder ``V`` whose
-    rows are unit atoms in ``d``-space, define ``sigma`` as top-1 activation
-    (keep only the single largest entry of the pre-activations, zero the rest):
+    For each GT atom ``g_i`` (column of ``gt_matrix``), run the full forward
+    pass of the trained SAE (encoder → ReLU → top-k → decoder) and measure
+    the reconstruction error against ``g_i``:
 
-        GRE := mean_i || g_i - V @ sigma(V.T @ g_i) ||_2^2 .
+        z_i  = top_k( ReLU(w_enc @ g_i + b_enc) )
+        ĝ_i  = w_dec.T @ z_i + b_dec
+        GRE  = mean_i ||g_i - ĝ_i||_2^2
 
-    Concretely, ``pre = V @ g_i`` has shape ``(L,)``; ``j* = argmax_j pre[j]``;
-    ``recon = pre[j*] * V[j*, :]``. Decoder rows and atoms are expected unit
-    norm (the function does not renormalize).
+    Unlike the earlier tied formulation (which used ``w_dec`` both as encoder
+    and decoder via ``V^T``), this variant uses the actually-trained encoder.
+    This exposes the shrinkage induced by aux losses such as group-sparse,
+    which bias ``w_enc`` outputs toward smaller magnitudes while leaving the
+    decoder rows unit-norm.
 
     Args:
-        learned_vectors: ``(L, d)`` decoder rows.
+        w_enc: ``(L, d)`` encoder weights.
+        b_enc: ``(L,)`` encoder bias.
+        w_dec: ``(L, d)`` decoder rows.
+        b_dec: ``(d,)`` decoder bias.
         gt_matrix: ``(d, n_gt)`` GT atoms as columns.
+        k: Top-k sparsity at inference. Defaults to 1 (matches the paper's
+            ``σ = top-1`` definition).
 
     Returns:
         Mean per-atom squared reconstruction error, or ``nan`` when empty.
     """
-    if gt_matrix.shape[1] == 0 or learned_vectors.shape[0] == 0:
+    if gt_matrix.shape[1] == 0 or w_enc.shape[0] == 0:
         return float("nan")
-    V = learned_vectors.astype(np.float64)
+    W_e = w_enc.astype(np.float64)
+    b_e = b_enc.astype(np.float64)
+    W_d = w_dec.astype(np.float64)
+    b_d = b_dec.astype(np.float64)
     G = gt_matrix.astype(np.float64)
-    pre = V @ G  # (L, n_gt)
-    idx = pre.argmax(axis=0)  # (n_gt,)
-    n = G.shape[1]
-    top_vals = pre[idx, np.arange(n)]  # (n_gt,)
-    recon = (V[idx] * top_vals[:, None]).T  # (d, n_gt)
+
+    pre = W_e @ G + b_e[:, None]  # (L, n_gt)
+    pre = np.maximum(pre, 0.0)     # ReLU (matches TopKSAE)
+    # Top-k sparsify along slot axis
+    kk = min(k, pre.shape[0])
+    # argsort ascending; take last kk indices
+    idx = np.argsort(pre, axis=0)[-kk:, :]  # (kk, n_gt)
+    z = np.zeros_like(pre)
+    vals = np.take_along_axis(pre, idx, axis=0)
+    np.put_along_axis(z, idx, vals, axis=0)
+    recon = W_d.T @ z + b_d[:, None]  # (d, n_gt)
     err = np.sum((G - recon) ** 2, axis=0)
     return float(err.mean())
 

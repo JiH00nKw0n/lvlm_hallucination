@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", type=str, required=True)
     p.add_argument("--method", choices=["shared", "separated", "aux", "ours", "vl_sae", "shared_enc"], required=True)
-    p.add_argument("--dataset", choices=["coco", "imagenet"], required=True)
+    p.add_argument("--dataset", choices=["coco", "imagenet", "cc3m"], required=True)
     p.add_argument("--cache-dir", type=str, required=True)
     p.add_argument("--split", type=str, required=True)
     p.add_argument("--output", type=str, required=True)

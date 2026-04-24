@@ -118,12 +118,18 @@ def evaluate_method(
 
     w_dec_img = sae_i.W_dec.detach().cpu().numpy()
     w_dec_txt = sae_t.W_dec.detach().cpu().numpy()
+    w_enc_img = sae_i.encoder.weight.detach().cpu().numpy()
+    w_enc_txt = sae_t.encoder.weight.detach().cpu().numpy()
+    b_enc_img = sae_i.encoder.bias.detach().cpu().numpy()
+    b_enc_txt = sae_t.encoder.bias.detach().cpu().numpy()
+    b_dec_img = sae_i.b_dec.detach().cpu().numpy()
+    b_dec_txt = sae_t.b_dec.detach().cpu().numpy()
 
     img_mgt = compute_recovery_metrics_multi_tau(w_dec_img, phi_S, _JOINT_TAUS)
     txt_mgt = compute_recovery_metrics_multi_tau(w_dec_txt, psi_S, _JOINT_TAUS)
 
-    img_gre = compute_gre_top1(w_dec_img, phi_S)
-    txt_gre = compute_gre_top1(w_dec_txt, psi_S)
+    img_gre = compute_gre_top1(w_enc_img, b_enc_img, w_dec_img, b_dec_img, phi_S, k=1)
+    txt_gre = compute_gre_top1(w_enc_txt, b_enc_txt, w_dec_txt, b_dec_txt, psi_S, k=1)
 
     phi_full = np.concatenate([phi_I, phi_S], axis=1) if phi_I is not None and phi_I.size > 0 else phi_S
     psi_full = np.concatenate([psi_S, psi_T], axis=1) if psi_T is not None and psi_T.size > 0 else psi_S

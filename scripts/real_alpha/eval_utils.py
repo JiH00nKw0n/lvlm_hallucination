@@ -27,7 +27,7 @@ from src.models.shared_enc_sae import SharedEncSAE  # type: ignore
 logger = logging.getLogger(__name__)
 
 Method = Literal["shared", "separated", "aux", "ours", "vl_sae", "shared_enc"]
-Dataset = Literal["coco", "imagenet"]
+Dataset = Literal["coco", "imagenet", "cc3m"]
 
 
 # ----------------------------------------------------------------------
@@ -70,6 +70,10 @@ def load_pair_dataset(
             cache_dir, split=split,  # type: ignore
             max_per_class=max_per_class, l2_normalize=True,
         )
+    if dataset == "cc3m":
+        # CC3M has no test/val — it's always the "train" split in cache.
+        # Callers that need a subset cap it upstream (e.g. build_perm's max_samples).
+        return CachedClipPairsDataset(cache_dir, split="train", l2_normalize=True)
     raise ValueError(f"unknown dataset {dataset!r}")
 
 

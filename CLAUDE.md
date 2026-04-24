@@ -60,6 +60,7 @@ Entry points: `run_synthetic_v2.py` (single trainer for all methods) driven by Y
 |---|---|---|
 | **RE** | $\mathbb{E}[\|x-\tilde x\|^2 + \|y-\tilde y\|^2]$ | recon quality |
 | **GRR** @ $\tau$ | GT shared atom 중 $\tau$-cone 안에 decoder column이 있는 비율 | dictionary가 GT를 담는가 |
+| **GRE** (untied, 2026-04-24~) | GT atom을 학습된 SAE pipeline (W_enc → ReLU → top-1 → W_dec)에 통과시킨 recon MSE. 이전 tied 정의 (encoder=V^T) 는 L21 shrinkage 우회했었음; untied로 바뀐 후 recon 순서와 일치. | full-pipeline GT recovery |
 | **CR** (Collapse Rate) | GT shared atom 중 best-img/best-txt column이 $>0.95$로 평행한 비율 | decoder가 두 modality를 merge하는가 |
 | **ELSim** | paired eval $(x_n,y_n)$의 $\cos(z_I,z_T)$ | real sample에서 sparse code 유사도 |
 | **FLSim** | GT atom 주입 시 $\cos(z_I,z_T)$ | pure GT probe에서 sparse code 일치도 |

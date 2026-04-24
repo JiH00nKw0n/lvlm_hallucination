@@ -1,0 +1,52 @@
+name: cc3m
+
+# Training source: CC3M (cached CLIP ViT-B/32 embeddings, ~2.82M pairs at 98.2%).
+# Schema matches COCO cache (image_embeddings.pt / text_embeddings.pt / splits.json:{"train":[...]}),
+# so CachedClipPairsDataset loads it unchanged. CC3M has no "test" split in the cache — we
+# hold out `eval_samples` pairs from the tail of "train" for HF-Trainer eval loss.
+data:
+  dataset: cc3m
+  cache_dir: cache/clip_b32_cc3m
+  split_train: train
+  split_eval: train
+  eval_samples: 20000
+
+training:
+  lr: 5.0e-4
+  num_epochs: 30
+  batch_size: 1024
+  weight_decay: 1.0e-5
+  max_grad_norm: 1.0
+  warmup_ratio: 0.05
+  k: 32
+  latent_size: 8192
+  hidden_size: 512
+  seed: 0
+  dataloader_num_workers: 2
+  device: cuda
+
+methods:
+  - name: shared                   # one_sae — single TopKSAE shared across modalities
+  - name: separated                # two_sae — two independent TopKSAEs
+  - name: iso_align                # aux_sae variant (β · -cos(z_I,z_T))
+    aux_weight: 1.0e-4
+  - name: group_sparse             # aux_sae variant (λ · Σ sqrt(z_I^2 + z_T^2))
+    aux_weight: 0.05
+  - name: ours                     # post-hoc Hungarian perm on separated ckpt
+    base_method: separated
+
+# Evaluations after training. data.dataset == ev.dataset -> in-domain.
+# CC3M in-domain eval is intentionally omitted: no GT retrieval/zs,
+# and HF Trainer's per-epoch eval_loss already captures CC3M recon.
+evaluations:
+  - dataset: coco
+    cache_dir: cache/clip_b32_coco
+    split: test
+    tasks: [recon, retrieval]
+  - dataset: imagenet
+    cache_dir: cache/clip_b32_imagenet
+    split: val
+    tasks: [recon, zeroshot_raw]
+
+output:
+  root: outputs/real_exp_cc3m

@@ -169,8 +169,16 @@ def compute_metrics_for_run(
                 cr = compute_merged_fraction(
                     w_dec_img, w_dec_txt, npz["phi_S"], npz["psi_S"],
                 )
-                gre_i = compute_gre_top1(w_dec_img, npz["phi_S"])
-                gre_t = compute_gre_top1(w_dec_txt, npz["psi_S"])
+                gre_i = compute_gre_top1(
+                    npz["w_enc_img"], npz["b_enc_img"],
+                    w_dec_img, sae_i.b_dec.detach().cpu().numpy(),
+                    npz["phi_S"], k=1,
+                )
+                gre_t = compute_gre_top1(
+                    npz["w_enc_txt"], npz["b_enc_txt"],
+                    w_dec_txt, sae_t.b_dec.detach().cpu().numpy(),
+                    npz["psi_S"], k=1,
+                )
 
                 metrics[(alpha, seed, method)] = {
                     "CR": float(cr),

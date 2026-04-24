@@ -60,8 +60,11 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--variant", choices=["one_sae", "two_sae", "aux_sae", "vl_sae", "shared_enc"], required=True)
-    p.add_argument("--dataset", choices=["coco", "imagenet"], default="coco")
+    p.add_argument("--dataset", choices=["coco", "imagenet", "cc3m"], default="coco")
     p.add_argument("--cache-dir", type=str, required=True)
+    p.add_argument("--eval-samples", type=int, default=0,
+                   help="Used with --dataset cc3m: hold out this many pairs from the tail "
+                        "of the train split for Trainer eval. 0 disables eval.")
     p.add_argument("--output-dir", type=str, required=True)
     p.add_argument("--latent", type=int, default=8192)
     p.add_argument("--k", type=int, default=8)
@@ -234,6 +237,19 @@ def main() -> None:
     if args.dataset == "coco":
         train_ds = CachedClipPairsDataset(args.cache_dir, split="train", l2_normalize=True)
         eval_ds = CachedClipPairsDataset(args.cache_dir, split="test", l2_normalize=True)
+    elif args.dataset == "cc3m":
+        # CC3M cache schema matches COCO, but has no "test" split — hold out
+        # the tail of "train" for Trainer eval_loss logging.
+        from torch.utils.data import Subset
+        full_ds = CachedClipPairsDataset(args.cache_dir, split="train", l2_normalize=True)
+        n = len(full_ds)
+        if args.eval_samples > 0:
+            head = n - args.eval_samples
+            train_ds = Subset(full_ds, list(range(0, head)))
+            eval_ds = Subset(full_ds, list(range(head, n)))
+        else:
+            train_ds = full_ds
+            eval_ds = None
     else:  # imagenet
         train_ds = CachedImageNetPairsDataset(
             args.cache_dir, split="train",
@@ -242,7 +258,10 @@ def main() -> None:
         eval_ds = CachedImageNetPairsDataset(
             args.cache_dir, split="val", l2_normalize=True,
         )
-    logger.info("train=%d eval=%d", len(train_ds), len(eval_ds))
+    logger.info("train=%d eval=%s", len(train_ds), len(eval_ds) if eval_ds is not None else "none")
+
+    # HF Trainer needs eval_strategy='no' when no eval dataset is available.
+    eval_strategy = "epoch" if eval_ds is not None else "no"
 
     training_args = TrainingArguments(
         output_dir=str(output_dir),
@@ -256,7 +275,7 @@ def main() -> None:
         weight_decay=args.weight_decay,
         max_grad_norm=args.max_grad_norm,
         optim="adamw_torch",
-        eval_strategy="epoch",
+        eval_strategy=eval_strategy,
         save_strategy="epoch",
         save_total_limit=3,
         logging_steps=50,
@@ -267,6 +286,7 @@ def main() -> None:
         remove_unused_columns=False,
         dataloader_num_workers=args.dataloader_num_workers,
         dataloader_pin_memory=True,
+        disable_tqdm=False,  # show HF Trainer ETA/progress bar
     )
 
     if args.variant == "one_sae":

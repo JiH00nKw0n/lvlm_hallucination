@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", type=str, required=True)
-    p.add_argument("--dataset", choices=["coco", "imagenet"], required=True)
+    p.add_argument("--dataset", choices=["coco", "imagenet", "cc3m"], required=True)
     p.add_argument("--cache-dir", type=str, required=True)
     p.add_argument("--max-per-class", type=int, default=1000,
                    help="ImageNet-only balance cap.")

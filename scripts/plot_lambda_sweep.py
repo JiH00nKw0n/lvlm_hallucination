@@ -103,8 +103,16 @@ def compute_gre_for_method(params_dir: Path, method_id: str) -> tuple[float, flo
     vals = []
     for p in sorted(params_dir.glob(f"alpha*_seed*_{method_id}.npz")):
         npz = np.load(p, allow_pickle=True)
-        gre_i = compute_gre_top1(npz["w_dec_img"], npz["phi_S"])
-        gre_t = compute_gre_top1(npz["w_dec_txt"], npz["psi_S"])
+        gre_i = compute_gre_top1(
+            npz["w_enc_img"], npz["b_enc_img"],
+            npz["w_dec_img"], npz["b_dec_img"],
+            npz["phi_S"], k=1,
+        )
+        gre_t = compute_gre_top1(
+            npz["w_enc_txt"], npz["b_enc_txt"],
+            npz["w_dec_txt"], npz["b_dec_txt"],
+            npz["psi_S"], k=1,
+        )
         vals.append(0.5 * (gre_i + gre_t))
     if not vals:
         return float("nan"), float("nan")
