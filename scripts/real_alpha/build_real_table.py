@@ -40,7 +40,7 @@ METHOD_LABELS = {
     "separated": "Separated SAE",
     "iso_align": "Iso-Energy Align",
     "group_sparse": "Group-Sparse",
-    "ours": r"\textbf{Hebbian-Match Align} (Ours)",
+    "ours": r"\textbf{Post-hoc Align} (Ours)",
     "vl_sae": "VL-SAE",
 }
 
