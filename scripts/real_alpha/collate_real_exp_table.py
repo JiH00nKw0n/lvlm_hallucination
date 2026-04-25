@@ -28,7 +28,7 @@ METHOD_LABELS = {
     "separated": "Separated SAE",
     "iso_align": "Iso-Energy Align",
     "group_sparse": "Group-Sparse",
-    "ours": "Ours (post-hoc)",
+    "ours": "Hebbian-Match Align (Ours)",
     "vl_sae": "VL-SAE",
 }
 
@@ -277,7 +277,7 @@ Consolidated results for 6 methods × in-domain (COCO, ImageNet) + cross-domain 
 2. **Separated SAE**: TwoSidedTopKSAE (independent image/text SAEs), per-side recon
 3. **Iso-Energy Align**: single TopKSAE + `-β·cos(z_I, z_T)` auxiliary (masked top-1)
 4. **Group-Sparse**: single TopKSAE + `λ·‖(z_I, z_T)‖_{{2,1}}` group-L2 auxiliary
-5. **Ours** (post-hoc): Separated SAE ckpt + Hungarian matching to align text slots to image slots (no re-training, dead-latent-filtered assignment)
+5. **Hebbian-Match Align (Ours)**: Separated SAE ckpt + Hungarian matching on co-firing patterns to align text slots to image slots (no re-training, dead-latent-filtered assignment)
 6. **VL-SAE**: shared distance-based encoder + two modality-specific decoders (Shen et al., NeurIPS 2025)
 
 ## Parameter Counts

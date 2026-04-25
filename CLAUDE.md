@@ -175,11 +175,13 @@ Full pipeline 캐시 완료(ish). Source: `pixparse/cc3m-wds` (HF streaming). Mo
 
 ### 5.6 CC3M-Trained Pipeline (`real_exp_cc3m`, k=32, 2026-04-24)
 
-YAML-driven (`configs/real/cc3m.yaml`) + `scripts/real_alpha/run_real_v2.py` 단일 드라이버로 5 method × COCO{recon, retrieval} + ImageNet{recon, zeroshot_raw} = 20 evals + perm 2 + table 1 = 27 step 완료. Wall **3.17 h** (mmap-load 6 s × 5 + 35 min train × 4 + perm 6 min + eval 40 min). Methods: shared / separated / iso_align / group_sparse / **ours (post-hoc Hungarian on separated ckpt)**.
+YAML-driven (`configs/real/cc3m.yaml`) + `scripts/real_alpha/run_real_v2.py` 단일 드라이버로 5 method × COCO{recon, retrieval} + ImageNet{recon, zeroshot_raw} = 20 evals + perm 2 + table 1 = 27 step 완료. Wall **3.17 h** (mmap-load 6 s × 5 + 35 min train × 4 + perm 6 min + eval 40 min). Methods: shared / separated / iso_align / group_sparse / **Hebbian-Match Align (Ours)** = separated ckpt + post-hoc Hungarian on co-firing patterns.
+
+**메서드 이름 철학**: Hebbian "fire together, wire together" — 짝 데이터에서 image-text 슬롯이 *함께 활성화* 되는 패턴이 곧 modality 간 atom 대응의 *evidence*. Iso-Energy/Group-Sparse는 학습 중 loss로 정렬을 *강제*하지만, 우리는 사후에 Hungarian으로 그 evidence를 *읽어낼* 뿐. 학습 중 0 constraint, 0 hyperparameter.
 
 Training: 10 epochs (CC3M가 COCO Karpathy의 5배 → 30ep 불필요), 27 330 steps × 13 it/s. Eval은 양쪽 모두 OOD (CC3M trained → COCO/ImageNet eval).
 
-**Headline (test set 모두 OOD):** Ours가 retrieval + zs 전 지표 1위.
+**Headline (test set 모두 OOD):** Hebbian-Match Align이 retrieval + zs 전 지표 1위.
 - COCO I→T R@1: **10.80** (Ours) vs 6.52 (Shared) vs 0.04 (Separated, slot-mismatch)
 - ImageNet zs top-1: **27.23 %** (Ours) vs 21.99 % (Group-Sparse) vs 18.11 % (Shared)
 - Recon: Ours = Separated = 0.0906 (Hungarian no-op on recon)
@@ -258,7 +260,7 @@ Theorem 1 실증: Separated SAE가 recon 최고지만 retrieval/zs 0% — slot i
 - **Dead-latent mitigation** — AuxK loss ($2^{-5}$) 또는 $L$ 축소로 alive 비율 ~14% → ≥50%. 신규 alive atom이 $\rho>0$ 영역에 가는지 확인.
 - ~~ImageNet-1K 2R 학습 + Diagnostic B~~ — ✅ k=8 matrix 완료 (`real_exp_v1`, §5.3).
 - ~~CC3M 캐싱~~ — ✅ 98.2% (`cache/clip_b32_cc3m/`, §5.5).
-- ~~CC3M 기반 real 학습 + Table 1~~ — ✅ k=32 5-method 완료 (`real_exp_cc3m`, §5.6). Ours가 retrieval + zs 1위 (I→T R@1 10.80, IN zs 27.23%).
+- ~~CC3M 기반 real 학습 + Table 1~~ — ✅ k=32 5-method 완료 (`real_exp_cc3m`, §5.6). Hebbian-Match Align (Ours)가 retrieval + zs 1위 (I→T R@1 10.80, IN zs 27.23%).
 - **Seed sweep** — real 전부 + followup 15/16 모두 single seed. 에러 바 붙이려면 3 seed 필수.
 
 ### 7.2 Figure Gaps
