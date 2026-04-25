@@ -171,12 +171,31 @@ Class-label pairing + 80 OpenAI template — COCO free-form caption보다 구조
 
 Full pipeline 캐시 완료(ish). Source: `pixparse/cc3m-wds` (HF streaming). Model: CLIP ViT-B/32. Output `cache/clip_b32_cc3m/`: 13 GB (image_embeddings.pt 6.6 GB, text_embeddings.pt 6.6 GB, splits.json 48 MB). **Partial**: ~98.2% (n=2,818,048 / ~2.87M) — final flush에서 torch.save deadlock으로 마지막 1.8%는 손실. Resume 지원되지만 추가 실행 없이 98%로 사용. Script: `scripts/real_alpha/extract_clip_cc3m_cache.py` (DataLoader num_workers=2 권장, 4는 I/O 경합). Throughput 실측 60–73 samples/sec → 약 13시간 소요 (HF streaming + JPEG decode가 bottleneck, GPU 아님).
 
-### 5.6 Real-side 코드 맵 (핵심만)
+**Pre-stacked artifacts** (2026-04-24, OOM mitigation): `scripts/real_alpha/preprocess_cc3m_cache.py`가 dict-of-tensor 캐시를 `(N, 512)` contiguous tensor + key→row map JSON으로 한 번 변환. Modality별 별도 subprocess로 실행 → peak ~12 GB. 결과물 `cache/clip_b32_cc3m/{image,text}_embeddings_stack.pt` + `_map.json`. 학습 시 `CachedClipPairsDataset`이 자동 감지 후 `torch.load(stack, mmap=True)`로 lazy-load → 25 min load → **6초**. 24 GB-RAM 박스 OOM 해결의 핵심.
+
+### 5.6 CC3M-Trained Pipeline (`real_exp_cc3m`, k=32, 2026-04-24)
+
+YAML-driven (`configs/real/cc3m.yaml`) + `scripts/real_alpha/run_real_v2.py` 단일 드라이버로 5 method × COCO{recon, retrieval} + ImageNet{recon, zeroshot_raw} = 20 evals + perm 2 + table 1 = 27 step 완료. Wall **3.17 h** (mmap-load 6 s × 5 + 35 min train × 4 + perm 6 min + eval 40 min). Methods: shared / separated / iso_align / group_sparse / **ours (post-hoc Hungarian on separated ckpt)**.
+
+Training: 10 epochs (CC3M가 COCO Karpathy의 5배 → 30ep 불필요), 27 330 steps × 13 it/s. Eval은 양쪽 모두 OOD (CC3M trained → COCO/ImageNet eval).
+
+**Headline (test set 모두 OOD):** Ours가 retrieval + zs 전 지표 1위.
+- COCO I→T R@1: **10.80** (Ours) vs 6.52 (Shared) vs 0.04 (Separated, slot-mismatch)
+- ImageNet zs top-1: **27.23 %** (Ours) vs 21.99 % (Group-Sparse) vs 18.11 % (Shared)
+- Recon: Ours = Separated = 0.0906 (Hungarian no-op on recon)
+
+Theorem 1 실증: Separated SAE가 recon 최고지만 retrieval/zs 0% — slot index 안 맞아서. 풀 결과 + memory engineering 노트는 `outputs/real_exp_cc3m/RESULTS.md`.
+
+### 5.7 Real-side 코드 맵 (핵심만)
 
 - `scripts/real_alpha/_bootstrap.py` — server `src.*` import fix (transformers 5.5.3 `flex_attention` 브레이크 우회). 모든 real-alpha 스크립트에서 `sys.path.insert(0,...) ; import _bootstrap`.
 - `scripts/real_alpha/extract_{clip_coco,imagenet,clip_cc3m}_cache.py` — 임베딩 추출 (idempotent; cc3m은 HF streaming).
-- `scripts/real_alpha/train_real_sae.py` — `--variant {one_sae, two_sae, aux_sae, vl_sae}`, HF Trainer. K env override (`K=4/8/16/32`)로 sweep.
-- `scripts/real_alpha/run_real_exp_matrix.sh` / `run_cross_valprobe.sh` — downstream matrix + cross eval. `OUT=outputs/real_exp_k{K}`로 분리 저장.
+- `scripts/real_alpha/preprocess_cc3m_cache.py` — modality별 subprocess로 dict-of-tensor 캐시를 stacked tensor + key→row map JSON으로 변환 (mmap-친화적; OOM 회피용 일회성).
+- `scripts/real_alpha/train_real_sae.py` — `--variant {one_sae, two_sae, aux_sae, vl_sae}`, HF Trainer. `--dataset {coco, imagenet, cc3m}` 지원. K env override (`K=4/8/16/32`)로 sweep.
+- `scripts/real_alpha/run_real_v2.py` — YAML-driven 단일 드라이버 (synthetic v2 mirror). `configs/real/cc3m.yaml` 또는 `coco.yaml` → train(4) + perm(2) + eval(20) + table(1) = 27 step. skip-if-exists, --dry-run, --force, ETA per step.
+- `scripts/real_alpha/build_real_table.py` — yaml + out_root → LaTeX (`table.tex`) + markdown (`table.md`), best/2nd-best 마킹.
+- `src/configs/real_experiment.py` — `RealExperimentConfig` dataclass + `from_yaml()` (synthetic 패턴 mirror).
+- `scripts/real_alpha/run_real_exp_matrix.sh` / `run_cross_valprobe.sh` — (legacy) downstream matrix + cross eval. `OUT=outputs/real_exp_k{K}`로 분리 저장.
 - `scripts/real_alpha/eval_imagenet_{valprobe,zeroshot,zeroshot_masked_dense}.py` — 3가지 zs 변형 (raw / dominant-masked dense / masked+top-1).
 - `scripts/real_alpha/run_diagnostic_B.py` — Hungarian + decoder cosine + cofiring threshold sweep.
 - `scripts/real_alpha/plot_diagnostic_{A_pub,B_violin}.py` — publication plots.
@@ -188,7 +207,7 @@ Full pipeline 캐시 완료(ish). Source: `pixparse/cc3m-wds` (HF streaming). Mo
 - `src/models/{configuration,modeling}_sae.py` — `TwoSidedTopKSAE{Config,}` 추가.
 - `src/runners/trainer.py` — `OneSidedSAETrainer`, `TwoSidedSAETrainer`.
 
-### 5.7 Scope / Limits
+### 5.8 Scope / Limits
 
 - Linear atom 가정 (prior work 공통).
 - SAE 최적화 local optima → seed sweep 필요.
@@ -238,7 +257,8 @@ Full pipeline 캐시 완료(ish). Source: `pixparse/cc3m-wds` (HF streaming). Mo
 - **Mean-centering control** — per-modality train mean 뺀 후 ℓ2-norm, 재학습, Diagnostic B 재측정. CLIP modality gap (Liang 2022) vs real shared structure 분리 테스트.
 - **Dead-latent mitigation** — AuxK loss ($2^{-5}$) 또는 $L$ 축소로 alive 비율 ~14% → ≥50%. 신규 alive atom이 $\rho>0$ 영역에 가는지 확인.
 - ~~ImageNet-1K 2R 학습 + Diagnostic B~~ — ✅ k=8 matrix 완료 (`real_exp_v1`, §5.3).
-- ~~CC3M 캐싱~~ — ✅ 98.2% (`cache/clip_b32_cc3m/`, §5.5). CC3M 기반 real 학습/Diagnostic 후속 실험 남음.
+- ~~CC3M 캐싱~~ — ✅ 98.2% (`cache/clip_b32_cc3m/`, §5.5).
+- ~~CC3M 기반 real 학습 + Table 1~~ — ✅ k=32 5-method 완료 (`real_exp_cc3m`, §5.6). Ours가 retrieval + zs 1위 (I→T R@1 10.80, IN zs 27.23%).
 - **Seed sweep** — real 전부 + followup 15/16 모두 single seed. 에러 바 붙이려면 3 seed 필수.
 
 ### 7.2 Figure Gaps
@@ -262,3 +282,6 @@ Full pipeline 캐시 완료(ish). Source: `pixparse/cc3m-wds` (HF streaming). Mo
 - **`_bootstrap.py` 필수** — `scripts/real_alpha/*.py`에서 `src.*` import 시 transformers 5.5.3의 `flex_attention` 브레이크 우회. `sys.path.insert(0, ...) ; import _bootstrap`.
 - **Real-data dead latent ~85%** at $k=8$, $L \in \{4096,8192,16384\}$, 30 ep, no AuxK. Diagnostic B 분석은 반드시 alive-restricted Hungarian (fire rate >0.001). Firing rate cache는 `diagnostic_B_firing_rates.npz`.
 - **L-capacity on $\Delta_\text{loss}$** — $L=4096$에서는 per-side 2048뿐이라 2R이 손해 ($\Delta<0$). Theorem 2 signal ($\Delta>0$)은 $L\ge 8192$부터. 부호 해석 전 $L$ 확인.
+- **CC3M 24 GB-RAM OOM** — dict-of-tensor 캐시를 그대로 `torch.load` 하면 unpickle buffer + dict overhead로 ~20 GB 피크. `preprocess_cc3m_cache.py` 한 번 돌려서 `*_stack.pt` + `*_map.json` 만든 뒤 `CachedClipPairsDataset`이 자동으로 mmap 로드 (peak ~5 GB). 새 CC3M-scale 데이터셋도 동일 패턴 권장.
+- **Cache key format 차이** — COCO text dict 키는 `f"{image_id}_{cap_idx}"`, CC3M는 `f"{image_id}"` (single caption). `CachedClipPairsDataset._text_key_for()` 가 둘 다 시도 후 fallback. 새 dataset adapter 추가 시 키 format 먼저 확인.
+- **CC3M orphan pairs** — 캐시 추출 마지막 1.8% flush 실패로 `splits.json`에는 있지만 `.pt`엔 없는 pair 존재. 데이터셋 init에서 자동 drop + warning. 다른 partial cache도 동일 처리.
