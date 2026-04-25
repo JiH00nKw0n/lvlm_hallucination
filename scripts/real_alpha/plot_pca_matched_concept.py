@@ -525,11 +525,16 @@ def make_plot(
     # Axis limits: include all arrows + labels
     all_x = np.concatenate([img_pts[:, 0], txt_pts[:, 0], [x_pt[0], y_pt[0], 0.0]])
     all_y = np.concatenate([img_pts[:, 1], txt_pts[:, 1], [x_pt[1], y_pt[1], 0.0]])
-    span = max(all_x.max() - all_x.min(), all_y.max() - all_y.min()) * 1.25
+    # Use separate per-axis spans (not a common max) so the panel can be
+    # shorter without leaving giant whitespace at the sides. We drop the
+    # equal aspect because the user asked for "keep horizontal length,
+    # reduce vertical length only" — true equal aspect would force the
+    # plot to remain square inside the now-shorter figure.
+    x_span = (all_x.max() - all_x.min()) * 1.25
+    y_span = (all_y.max() - all_y.min()) * 1.25
     cx, cy = (all_x.max() + all_x.min()) / 2, (all_y.max() + all_y.min()) / 2
-    ax.set_xlim(float(cx - span / 2), float(cx + span / 2))
-    ax.set_ylim(float(cy - span / 2), float(cy + span / 2))
-    ax.set_aspect("equal")
+    ax.set_xlim(float(cx - x_span / 2), float(cx + x_span / 2))
+    ax.set_ylim(float(cy - y_span / 2), float(cy + y_span / 2))
     ax.set_xlabel("Principal Component 1", fontsize=9, labelpad=1)
     ax.set_ylabel("Principal\nComponent 2", fontsize=9, labelpad=1)
     from matplotlib.ticker import MultipleLocator
