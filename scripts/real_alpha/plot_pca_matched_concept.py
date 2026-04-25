@@ -431,7 +431,7 @@ def make_plot(
 
     # Square panel; figsize chosen so that (plot + legend row) total height
     # matches the density SVG (~2.64") after bbox_inches="tight".
-    fig, ax = plt.subplots(figsize=(2.62, 2.62))
+    fig, ax = plt.subplots(figsize=(2.62, 1.572))
 
     # Concept basis arrows: filled "fancy" arrow (curved tail + triangular head).
     FANCY_STYLE = "fancy,head_length=0.35,head_width=0.35,tail_width=0.15"
@@ -515,7 +515,7 @@ def make_plot(
                label="Text embedding"),
     ]
     ax.legend(handles=emb_handles, loc="lower center",
-              bbox_to_anchor=(0.5, -0.32), ncol=2, frameon=False,
+              bbox_to_anchor=(0.5, -0.55), ncol=2, frameon=False,
               fontsize=9, handlelength=0.6, handletextpad=0.3, columnspacing=1.2)
 
     ax.scatter([0], [0], s=8, c="black", zorder=6)  # origin marker
@@ -531,7 +531,7 @@ def make_plot(
     ax.set_ylim(float(cy - span / 2), float(cy + span / 2))
     ax.set_aspect("equal")
     ax.set_xlabel("Principal Component 1", fontsize=9, labelpad=1)
-    ax.set_ylabel("Principal Component 2", fontsize=9, labelpad=1)
+    ax.set_ylabel("Principal\nComponent 2", fontsize=9, labelpad=1)
     from matplotlib.ticker import MultipleLocator
     ax.xaxis.set_major_locator(MultipleLocator(0.5))
     ax.yaxis.set_major_locator(MultipleLocator(0.5))

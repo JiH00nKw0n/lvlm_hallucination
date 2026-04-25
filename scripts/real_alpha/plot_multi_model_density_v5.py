@@ -81,7 +81,7 @@ def main():
 
     models = json.load(open(args.models)) if args.models else MODELS
 
-    fig, ax = plt.subplots(1, 1, figsize=(3.6, 2.6))
+    fig, ax = plt.subplots(1, 1, figsize=(3.6, 1.56))
 
     for m in models:
         C_m, dist_m, n_ai, n_at = load_model_data(m["run_dir"])
@@ -114,12 +114,12 @@ def main():
         ncol=len(models),
         fontsize=8, frameon=False,
         handlelength=1.2, handletextpad=0.3, columnspacing=1.0,
-        bbox_to_anchor=(0.5, -0.04),
+        bbox_to_anchor=(0.5, -0.10),
     )
     for line in leg.get_lines():
         line.set_linewidth(2.8)
 
-    plt.subplots_adjust(left=0.12, right=0.99, bottom=0.22, top=0.96)
+    plt.subplots_adjust(left=0.12, right=0.99, bottom=0.36, top=0.95)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
