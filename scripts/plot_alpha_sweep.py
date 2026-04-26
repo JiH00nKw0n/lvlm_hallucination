@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Figure 1 (v3, self-contained): 3-panel (CR, RE, GRE) computed entirely from saved npz.
+"""Alpha sweep plot: 3-panel (CR, RE, GRE) computed from saved npz params.
 
-Unlike ``plot_fig1_v3.py`` which reads CR/RE from ``result.json``, this variant
-recomputes all three metrics offline from decoder/encoder weights + regenerated
-eval data. Use when ``result.json`` is missing or when you want to merge npz
-across multiple run dirs (e.g. an interrupted sweep + a resume).
+Recomputes CR/RE/GRE offline from decoder + encoder weights and regenerated
+eval data, so the figure can be built from a ``runs/run_<ts>/params/`` dir
+without relying on ``result.json``. GRE is the untied variant (encoder =
+trained ``w_enc``, not ``V^T``).
 
 Usage:
-    python scripts/plot_fig1_v3_from_npz.py \\
-        --params-dir outputs/theorem2_v2_1R2R_5seeds_coarse_wtie/runs/merged/params \\
-        --config     configs/synthetic/alpha_1R_2R_L8192_5seeds_coarse_weight_tie.yaml \\
-        --out        outputs/theorem2_v2_1R2R_5seeds_coarse_wtie/fig1_v3.pdf \\
+    python scripts/plot_alpha_sweep.py \\
+        --params-dir outputs/theorem2_v2_1R2R_5seeds_coarse/runs/<run>/params \\
+        --config     configs/synthetic/alpha_1R_2R_L8192_5seeds_coarse.yaml \\
+        --out        outputs/theorem2_v2_1R2R_5seeds_coarse/alpha_sweep.pdf \\
         --alphas 0.0,0.2,0.4,0.6,0.8,1.0
 """
 
@@ -43,7 +43,7 @@ from src.models.modeling_sae import TopKSAE
 C_NO  = "#f94144"   # Strawberry Red
 C_YES = "#277da1"   # Cerulean
 LBL_NO  = "Shared SAE"
-LBL_YES = "Separated SAE"
+LBL_YES = "Modality-Specific SAEs"
 
 METHODS = [("single_recon", C_NO, "-o", LBL_NO),
            ("two_recon",    C_YES, "-s", LBL_YES)]
@@ -214,7 +214,7 @@ def compute_metrics_for_run(
 
 
 def make_fig(series, alphas_target, out_path):
-    fig, axes = plt.subplots(1, 3, figsize=(5.5, 1.45))
+    fig, axes = plt.subplots(1, 3, figsize=(5.5, 1.015))
     handles = []
 
     for i, (ax, (metric, ylim)) in enumerate(zip(axes, PANELS)):
@@ -228,7 +228,7 @@ def make_fig(series, alphas_target, out_path):
             if i == 0:
                 handles.append(h)
 
-        ax.set_xlabel(r"$\alpha$ (alignment)", fontsize=8, labelpad=1)
+        ax.set_xlabel(r"$\cos(\phi_i, \psi_i)$", fontsize=8, labelpad=1)
         ax.set_xlim(-0.02, 1.02)
         ax.set_xticks(sorted(alphas_target))
         ax.tick_params(axis="both", labelsize=6.5, pad=1)
@@ -256,9 +256,10 @@ def make_fig(series, alphas_target, out_path):
     plt.savefig(out_path, dpi=200, bbox_inches="tight", facecolor="white", pad_inches=0.04)
     print(f"saved {out_path}")
     if str(out_path).endswith(".pdf"):
-        png = str(out_path).replace(".pdf", ".png")
-        plt.savefig(png, dpi=200, bbox_inches="tight", facecolor="white", pad_inches=0.04)
-        print(f"saved {png}")
+        for ext in (".png", ".svg"):
+            sib = str(out_path).replace(".pdf", ext)
+            plt.savefig(sib, dpi=200, bbox_inches="tight", facecolor="white", pad_inches=0.04)
+            print(f"saved {sib}")
     plt.close()
 
 

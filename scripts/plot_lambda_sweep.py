@@ -84,7 +84,7 @@ BASELINES = {
 # Post-hoc Matching uses the same plot style as sweep curves (solid + marker)
 # to indicate it is the method being compared against baselines/sweep methods.
 POSTHOC_STYLE = {
-    "color": BLUE_SLATE, "label": "Post-hoc Alignment", "marker": "o",
+    "color": BLUE_SLATE, "label": "Post-hoc Alignment (Ours)", "marker": "o",
 }
 
 PANELS = ["RE", "GRE", "ESim", "FSim"]
@@ -400,7 +400,7 @@ def main():
         elif metric == "ESim":
             # plotting 1 - ESim → "ESim distance"; lower = more aligned.
             ax.set_ylim(0.78, 1.01)
-            ax.set_yticks([0.8, 0.85, 0.9, 0.95, 1.0])
+            ax.set_yticks([0.8, 0.9, 1.0])
         elif metric == "FSim":
             # plotting 1 - FSim → "FSim distance"; lower = more aligned.
             ax.set_ylim(-0.02, 1.02)
@@ -420,9 +420,10 @@ def main():
     fig.savefig(out_path, dpi=200, bbox_inches="tight", facecolor="white", pad_inches=0.04)
     print(f"saved {out_path}")
     if str(out_path).endswith(".pdf"):
-        png = str(out_path).replace(".pdf", ".png")
-        fig.savefig(png, dpi=200, bbox_inches="tight", facecolor="white", pad_inches=0.04)
-        print(f"saved {png}")
+        for ext in (".png", ".svg"):
+            sib = str(out_path).replace(".pdf", ext)
+            fig.savefig(sib, dpi=200, bbox_inches="tight", facecolor="white", pad_inches=0.04)
+            print(f"saved {sib}")
     plt.close()
 
 
