@@ -72,7 +72,7 @@ METHODS = {
     },
     "group_sparse": {
         "base": GS_BASE, "color": SEAWEED,
-        "label": "Group-Sparsity", "marker": "D",
+        "label": "Group-Sparse", "marker": "D",
     },
 }
 
