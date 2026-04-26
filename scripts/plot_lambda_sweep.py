@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Figure 2 (v3): 4-panel lambda sweep with RE / GRE / ESim / FSim.
+"""Lambda sweep plot: 4-panel (RE / GRE / ESim / FSim) at fixed α=0.5.
 
 Panels:
   (a) Reconstruction Error (RE)  -- avg_eval_loss  (lower is better)
-  (b) GT Recovery Error   (GRE)  -- offline compute_gre_top1 (lower is better)
-  (c) Embedding SIM              -- pair_cos_mean  (higher is better; raw cos, NOT 1-cos)
-  (d) Feature SIM                -- probe_vec_cos  (higher is better; raw for shared SAE,
-                                     probe_vec_cos_posthoc for Post-hoc Matching)
+  (b) GT Recovery Error   (GRE)  -- untied compute_gre_top1 (lower is better;
+                                    uses trained encoder, not V^T)
+  (c) Embedding SIM              -- pair_cos_mean  (higher is better)
+  (d) Feature SIM                -- probe_vec_cos (raw for Shared SAE;
+                                    probe_vec_cos_posthoc for Post-hoc Matching)
 
 Methods (5 lines):
   - Shared SAE             (baseline hline, single_recon)
@@ -16,10 +17,10 @@ Methods (5 lines):
   - Group-Sparse           (curve across lambda)
 
 Usage:
-    python scripts/plot_fig2_v3.py \\
-        --result outputs/theorem2_v2_lambda_sweep/runs/*/result.json \\
-        --params-dir outputs/theorem2_v2_lambda_sweep/runs/run_20260418_112601/params \\
-        --out outputs/theorem2_v2_lambda_sweep/lambda_sweep_v3.pdf
+    python scripts/plot_lambda_sweep.py \\
+        --result outputs/theorem2_v2_lambda_sweep/runs/<run>/result.json \\
+        --params-dir outputs/theorem2_v2_lambda_sweep/runs/<run>/params \\
+        --out outputs/theorem2_v2_lambda_sweep/lambda_sweep.pdf
 """
 
 from __future__ import annotations
@@ -67,26 +68,41 @@ GS_BASE = 0.05
 METHODS = {
     "iso_align": {
         "base": IA_BASE, "color": CARROT_ORANGE,
-        "label": "Iso-Energy Align", "marker": "^",
+        "label": "Iso-Energy Alignment", "marker": "^",
     },
     "group_sparse": {
         "base": GS_BASE, "color": SEAWEED,
-        "label": "Group-Sparse", "marker": "D",
+        "label": "Group-Sparsity", "marker": "D",
     },
 }
 
 BASELINES = {
     "single_recon": {"color": STRAWBERRY_RED, "label": "Shared SAE",    "ls": "--"},
-    "two_recon":    {"color": CERULEAN,       "label": "Separated SAE", "ls": ":"},
+    "two_recon":    {"color": CERULEAN,       "label": "Modality-Specific SAEs", "ls": ":"},
 }
 
 # Post-hoc Matching uses the same plot style as sweep curves (solid + marker)
 # to indicate it is the method being compared against baselines/sweep methods.
 POSTHOC_STYLE = {
-    "color": BLUE_SLATE, "label": "Post-hoc Matching", "marker": "o",
+    "color": BLUE_SLATE, "label": "Post-hoc Alignment", "marker": "o",
 }
 
 PANELS = ["RE", "GRE", "ESim", "FSim"]
+
+# Metrics that should be plotted as (1 - value), so higher original ⇒ lower
+# plotted value. Lets us draw "alignment distance" panels where lower = more
+# aligned, matching the recon-error panels' "lower = better" convention.
+INVERT_METRICS = {"ESim", "FSim"}
+
+
+def _maybe_invert(metric: str, ms: tuple[float, float]) -> tuple[float, float]:
+    """Apply ``1 - mean`` for metrics in ``INVERT_METRICS``; std unchanged."""
+    if metric not in INVERT_METRICS:
+        return ms
+    mean, std = ms
+    if np.isnan(mean):
+        return ms
+    return 1.0 - mean, std
 
 NPZ_RE = re.compile(r"^alpha([\d.]+)_seed(\d+)_(.+)\.npz$")
 
@@ -279,9 +295,10 @@ def main():
     for metric in PANELS:
         for method_key in ("single_recon", "two_recon"):
             if metric == "GRE":
-                bases[method_key][metric] = compute_gre_for_method(params_dir, method_key)
+                ms = compute_gre_for_method(params_dir, method_key)
             else:
-                bases[method_key][metric] = extract_from_json(j, metric, method_key, posthoc=False)
+                ms = extract_from_json(j, metric, method_key, posthoc=False)
+            bases[method_key][metric] = _maybe_invert(metric, ms)
 
     # Post-hoc Matching: solid-line curve with circle marker
     posthoc: dict[str, tuple[float, float]] = {}
@@ -293,11 +310,13 @@ def main():
             # decoder columns unchanged -> reuse
             posthoc[metric] = bases["two_recon"]["GRE"]
         elif metric == "FSim":
-            posthoc[metric] = extract_from_json(j, "FSim", "two_recon", posthoc=True)
+            ms = extract_from_json(j, "FSim", "two_recon", posthoc=True)
+            posthoc[metric] = _maybe_invert("FSim", ms)
         elif metric == "ESim":
             print("[posthoc] computing ESim offline (Hungarian-permuted) ...")
-            posthoc[metric] = compute_esim_posthoc(params_dir, cfg, device)
-            print(f"  ESim posthoc = {posthoc[metric][0]:.4f} +- {posthoc[metric][1]:.4f}")
+            ms = compute_esim_posthoc(params_dir, cfg, device)
+            print(f"  ESim posthoc raw = {ms[0]:.4f} +- {ms[1]:.4f}")
+            posthoc[metric] = _maybe_invert("ESim", ms)
 
     # Sweep curves (IA, GS) per lambda:
     sweep_data: dict[str, dict[str, list[tuple[float, float]]]] = {m: {} for m in METHODS}
@@ -308,13 +327,14 @@ def main():
                 w = round(mstyle["base"] * mult, 6)
                 method_id = f"{mk}_w{w}"
                 if metric == "GRE":
-                    row.append(compute_gre_for_method(params_dir, method_id))
+                    ms = compute_gre_for_method(params_dir, method_id)
                 else:
-                    row.append(extract_from_json(j, metric, method_id, posthoc=False))
+                    ms = extract_from_json(j, metric, method_id, posthoc=False)
+                row.append(_maybe_invert(metric, ms))
             sweep_data[mk][metric] = row
 
     # ---- Plot ----
-    fig, axes = plt.subplots(1, 4, figsize=(5.5, 1.45))
+    fig, axes = plt.subplots(1, 4, figsize=(5.5, 1.015))
     x = np.arange(len(MULTIPLIERS))
     all_handles, all_labels = [], []
 
@@ -364,16 +384,25 @@ def main():
         ax.set_xticklabels(MULT_LABELS)
         ax.set_xlabel(r"$\lambda$ multiplier", fontsize=8, labelpad=1)
         ax.tick_params(axis="both", labelsize=6, pad=1)
-        if metric in ("RE", "GRE"):
+        if metric == "RE":
             ax.set_yscale("log")
             ax.set_yticks([0.1, 0.2, 0.5, 1.0])
             plain = FuncFormatter(lambda y, _: f"{y:g}")
             ax.yaxis.set_major_formatter(plain)
             ax.yaxis.set_minor_formatter(FuncFormatter(lambda *_: ""))
+        elif metric == "GRE":
+            ax.set_yscale("log")
+            ax.set_ylim(bottom=0.2)
+            ax.set_yticks([0.2, 0.5, 1.0])
+            plain = FuncFormatter(lambda y, _: f"{y:g}")
+            ax.yaxis.set_major_formatter(plain)
+            ax.yaxis.set_minor_formatter(FuncFormatter(lambda *_: ""))
         elif metric == "ESim":
-            ax.set_ylim(-0.01, 0.22)
-            ax.set_yticks([0.0, 0.05, 0.1, 0.15, 0.2])
+            # plotting 1 - ESim → "ESim distance"; lower = more aligned.
+            ax.set_ylim(0.78, 1.01)
+            ax.set_yticks([0.8, 0.85, 0.9, 0.95, 1.0])
         elif metric == "FSim":
+            # plotting 1 - FSim → "FSim distance"; lower = more aligned.
             ax.set_ylim(-0.02, 1.02)
             ax.set_yticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
         ax.grid(alpha=0.15, linewidth=0.4, which="both")
