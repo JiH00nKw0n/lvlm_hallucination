@@ -61,21 +61,26 @@ def compute_merged_fraction(
     w_dec_txt: np.ndarray,
     phi_S: np.ndarray,
     psi_S: np.ndarray,
-    tau: float = 0.95,
+    tau: float = 0.95,  # accepted for backward-compat; unused
 ) -> float:
-    """Fraction of GT shared atoms whose best image-slot column is nearly
-    parallel (cos > ``tau``) to its best text-slot column.
+    """Cross-Modal Feature Collapse Index (paper §, eq. CCI).
 
-    For each shared GT concept g:
-      - best_i_idx = argmax_k cos(V[:,k], phi_S[:,g])
-      - best_t_idx = argmax_k cos(W[:,k], psi_S[:,g])
-    Then count g where ``cos(V[:, best_i_idx], W[:, best_t_idx]) > tau``.
+    Fraction of shared GT atoms for which the *same learned column index*
+    is selected as the best match in both modalities — i.e. the SAE
+    merged the two modality-specific representations into a single
+    latent component.
 
-    Captures Theorem-2-style "soft merge" of decoder columns: if aux pressure
-    is too strong and pushes the two decoders to point at the same direction
-    (typically the bisector of phi_S and psi_S), this metric trips. For a
-    correctly trained two-sided SAE preserving alpha < 1, the matched columns
-    stay roughly alpha-apart and CR stays near zero.
+    For each shared GT concept i ∈ [n_S]:
+        best_i = argmax_j cos(V[:,j], phi_i)
+        best_t = argmax_j cos(W[:,j], psi_i)
+        merged_i = (best_i == best_t)
+    Return mean(merged_i) ∈ [0, 1].
+
+    For a single-decoder SAE (V == W byte-for-byte), this trips whenever
+    the same column j best explains both phi_i and psi_i — which is the
+    Theorem-2 collapse signature when phi_i ≠ psi_i and the dictionary is
+    capacity-constrained. For two independently trained decoders the
+    column indices live in disjoint orderings, so CCI ≈ 1/m (noise floor).
     """
     if phi_S.size == 0 or psi_S.size == 0:
         return float("nan")
@@ -83,10 +88,9 @@ def compute_merged_fraction(
     w = normalize_rows(w_dec_txt.astype(np.float64))
     phi = normalize_rows(phi_S.T.astype(np.float64))
     psi = normalize_rows(psi_S.T.astype(np.float64))
-    best_i = (v @ phi.T).argmax(axis=0)        # (n_S,)
-    best_t = (w @ psi.T).argmax(axis=0)        # (n_S,)
-    pair_cos = (v[best_i] * w[best_t]).sum(axis=-1)   # (n_S,)
-    return float((pair_cos > tau).mean())
+    best_i = (v @ phi.T).argmax(axis=0)        # (n_S,)  best slot for phi_i in V
+    best_t = (w @ psi.T).argmax(axis=0)        # (n_S,)  best slot for psi_i in W
+    return float((best_i == best_t).mean())
 
 
 def compute_gre_top1(
