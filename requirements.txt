@@ -16,6 +16,7 @@ transformers>=4.40
 accelerate>=1.0
 trl>=0.20
 einops>=0.8
+open_clip_torch>=2.24
 
 # === Visualization ===
 matplotlib>=3.8
