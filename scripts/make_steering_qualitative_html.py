@@ -24,7 +24,7 @@ OUT = CMS / "qualitative.html"
 
 CONCEPTS = ["dog", "elephant", "pizza", "kite", "skateboard", "giraffe"]
 VARIANTS = ["ours", "iso_align", "group_sparse"]
-ALPHA = {"ours": 1.0, "iso_align": 1.0, "group_sparse": 0.25}
+ALPHA = {"ours": 1.0, "iso_align": 1.0, "group_sparse": 1.0}
 LABEL = {"ours": "Ours (Hungarian)",
          "iso_align": "Iso-Energy Alignment",
          "group_sparse": "Group-Sparse"}
