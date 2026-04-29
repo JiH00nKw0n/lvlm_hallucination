@@ -17,6 +17,7 @@ from trl import DPOConfig, maybe_extract_prompt, maybe_apply_chat_template, is_c
 from trl.trainer import SFTTrainer, DPOTrainer
 
 from src.common.registry import registry
+from src.training.grad_utils import project_sae_decoder_grads
 
 logger = logging.getLogger(__name__)
 
@@ -467,6 +468,14 @@ class OneSidedSAETrainer(Trainer):
 
         return (loss, (out_i, out_t)) if return_outputs else loss
 
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        # Match HF Trainer.training_step contract; project decoder grads
+        # before optimizer.step() so the post-step SAENormCallback's
+        # renormalization doesn't waste gradient signal.
+        loss = super().training_step(model, inputs, num_items_in_batch)
+        project_sae_decoder_grads(model)
+        return loss
+
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
         with torch.no_grad():
             loss = self.compute_loss(model, inputs, return_outputs=False)
@@ -687,6 +696,11 @@ class TwoSidedSAETrainer(Trainer):
             setattr(self.state, attr, current + val.detach())
 
         return (loss, outputs) if return_outputs else loss
+
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        loss = super().training_step(model, inputs, num_items_in_batch)
+        project_sae_decoder_grads(model)
+        return loss
 
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
         with torch.no_grad():

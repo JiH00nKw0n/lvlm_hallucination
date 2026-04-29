@@ -52,6 +52,7 @@ from src.runners.trainer import (  # type: ignore  # noqa: E402
     TwoSidedSAETrainer,
     VLSAETrainer,
 )
+from src.training.callbacks import SAENormCallback  # type: ignore  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -124,6 +125,7 @@ def build_one_sae_trainer(
         eval_dataset=eval_ds,  # type: ignore[arg-type]
         data_collator=default_data_collator,
     )
+    trainer.add_callback(SAENormCallback())
     return trainer
 
 
@@ -148,6 +150,7 @@ def build_aux_sae_trainer(
         aux_loss=args.aux_loss,
         aux_weight=aux_weight,
     )
+    trainer.add_callback(SAENormCallback())
     return trainer
 
 
@@ -219,6 +222,7 @@ def build_two_sae_trainer(
         dead_feature_threshold=args.dead_feature_threshold,
         revive_every_epoch=args.revive_every_epoch,
     )
+    trainer.add_callback(SAENormCallback())
     if args.revive_every_epoch:
         trainer.add_callback(DeadReviveCallback(trainer))
     return trainer
