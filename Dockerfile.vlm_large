@@ -1,0 +1,49 @@
+## Docker image for the per-VLM CC3M-trained SAE pipeline.
+##
+## Builds on the same base as the 10-VLM density pipeline; only the entrypoint
+## differs. The container expects HF_TOKEN, MODEL, and SEEDS as env vars and
+## runs scripts/run_pipeline_per_model.sh end-to-end.
+##
+## Build:
+##   docker build -t vlm-sae-pipeline -f Dockerfile.vlm_large .
+##
+## Run (default: all 3 large models × 3 seeds):
+##   docker run --rm --gpus all \
+##       -e HF_TOKEN=$HF_TOKEN \
+##       -v $PWD/cache:/workspace/lvlm_hallucination/cache \
+##       -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+##       -v $PWD/.log:/workspace/lvlm_hallucination/.log \
+##       vlm-sae-pipeline
+##
+## Override to a single model: -e MODEL=siglip_l
+## Available MODEL keys (csv): clip_l | openclip_l | siglip_l
+
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/workspace/.hf \
+    HF_HUB_ENABLE_HF_TRANSFER=1
+
+WORKDIR /workspace/lvlm_hallucination
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git build-essential ca-certificates \
+        libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+COPY . .
+
+RUN mkdir -p /workspace/.hf cache outputs .log \
+ && chmod +x scripts/run_pipeline_per_model.sh
+
+# MODEL=csv of {clip_l|openclip_l|siglip_l}; SEEDS=csv of seeds.
+# Default: all 3 large models × 3 seeds.
+ENV MODEL=clip_l,openclip_l,siglip_l \
+    SEEDS=0,1,2
+
+ENTRYPOINT ["bash", "scripts/run_pipeline_per_model.sh"]
+CMD []

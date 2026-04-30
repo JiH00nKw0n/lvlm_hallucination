@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# End-to-end pipeline for the 10-model multi-VLM density figure
+# End-to-end pipeline for the 8-model multi-VLM density figure
 # (paper §3.3, outputs/multi_model_density_base_large.{pdf,png,svg}).
 #
-# For each of 5 Base + 5 Large VLMs:
+# For each of 4 Base + 4 Large VLMs:
 #   1. extract image/text embeddings on COCO Karpathy
 #   2. train modality-specific TopK SAEs (--variant two_sae)
 #   3. compute the train-time cross-correlation matrix C (Diagnostic B)
@@ -63,23 +63,21 @@ PLOT_OUT="${PLOT_OUT:-outputs/multi_model_density_base_large.pdf}"
 
 mkdir -p .log cache outputs
 
-# ── 10-model definitions ───────────────────────────────────────────────────
+# ── 8-model definitions ────────────────────────────────────────────────────
 # Format: "backend|model|pretrained|cache_dir|output_dir|hidden_size"
 # output_dir basename must match plot_multi_model_density_base_large.py:
-#   BASE_MODELS = clip_b32, metaclip_b32, datacomp_b32, mobileclip2b, siglip2_base
-#   LARGE_MODELS = clip_l14, metaclip_l14, datacomp_l14, mobileclip2_l14, siglip2_large
+#   BASE_MODELS  = clip_b32, metaclip_b32, datacomp_b32, siglip2_base
+#   LARGE_MODELS = clip_l14, metaclip_l14, datacomp_l14, siglip2_large
 MODELS=(
   # Base
   "transformers|openai/clip-vit-base-patch32||cache/clip_b32_coco|outputs/clip_b32|512"
   "transformers|facebook/metaclip-b32-400m||cache/metaclip_b32_coco|outputs/metaclip_b32|512"
   "openclip|ViT-B-32|datacomp_xl_s13b_b90k|cache/datacomp_b32_coco|outputs/datacomp_b32|512"
-  "openclip|MobileCLIP2-B|dfndr2b|cache/mobileclip2b_coco|outputs/mobileclip2b|512"
   "transformers|google/siglip2-base-patch16-224||cache/siglip2_base_coco|outputs/siglip2_base|768"
   # Large
   "transformers|openai/clip-vit-large-patch14||cache/clip_l14_coco|outputs/clip_l14|768"
   "transformers|facebook/metaclip-l14-400m||cache/metaclip_l14_coco|outputs/metaclip_l14|768"
   "openclip|ViT-L-14|datacomp_xl_s13b_b90k|cache/datacomp_l14_coco|outputs/datacomp_l14|768"
-  "openclip|MobileCLIP2-L-14|dfndr2b|cache/mobileclip2_l14_coco|outputs/mobileclip2_l14|768"
   "transformers|google/siglip2-large-patch16-256||cache/siglip2_large_coco|outputs/siglip2_large|1024"
 )
 
@@ -147,7 +145,7 @@ done
 # Final plot
 echo ""
 echo "============================================"
-echo "=== Rendering 2x5 density figure → $PLOT_OUT"
+echo "=== Rendering 2x4 density figure → $PLOT_OUT"
 echo "============================================"
 $PLOT --out "$PLOT_OUT"
 echo ""
