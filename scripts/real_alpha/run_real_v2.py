@@ -199,17 +199,24 @@ def _train_cmd(
     return cmd
 
 
-def _perm_cmd(
+def _perm_cmd_training(
     separated_ckpt: Path,
-    ev: EvalSpec,
+    cfg: RealExperimentConfig,
     perm_path: Path,
     script: Path,
 ) -> list[str]:
+    """Build a single Hungarian perm from the SAE's training distribution.
+
+    The perm aligns image- and text-side latents based on co-activation in
+    the training distribution, then it is reused across all downstream eval
+    datasets — there is no per-eval-dataset re-fit. This matches the paper
+    §4.3 framing: post-hoc alignment learned once, applied universally.
+    """
     return [
         sys.executable, str(script),
         "--ckpt", str(separated_ckpt),
-        "--dataset", ev.dataset,
-        "--cache-dir", ev.cache_dir,
+        "--dataset", cfg.data.dataset,
+        "--cache-dir", cfg.data.cache_dir,
         "--output", str(perm_path),
     ]
 
@@ -336,21 +343,21 @@ def build_steps(
             cost=COST_TRAIN,
         ))
 
-    # 2. PERM — only for eval.datasets that need slot alignment.
+    # 2. PERM — single Hungarian alignment built from the training cache,
+    # reused across all downstream eval datasets (paper §4.3).
     has_ours = any(m.name == "ours" for m in cfg.methods)
-    perm_targets: dict[str, EvalSpec] = {}
-    if has_ours:
-        for ev in cfg.evaluations:
-            needs_perm = any(t in ("retrieval", "zeroshot_raw") for t in ev.tasks)
-            if needs_perm and ev.dataset not in perm_targets:
-                perm_targets[ev.dataset] = ev
+    needs_perm = any(
+        any(t in ("retrieval", "zeroshot_raw") for t in ev.tasks)
+        for ev in cfg.evaluations
+    )
 
     sep_ckpt = out_root / "separated" / "ckpt" / "final"
-    for ev_ds, ev in perm_targets.items():
-        perm_path = out_root / "ours" / ev_ds / "perm.npz"
+    perm_path: Path | None = None
+    if has_ours and needs_perm:
+        perm_path = out_root / "ours" / "perm.npz"
         steps.append(Step(
-            tag=f"perm[ours → {ev_ds}]",
-            cmd=_perm_cmd(sep_ckpt, ev, perm_path, perm_script),
+            tag=f"perm[ours ← {cfg.data.dataset} train]",
+            cmd=_perm_cmd_training(sep_ckpt, cfg, perm_path, perm_script),
             out_artifact=perm_path,
             cost=COST_PERM,
         ))
@@ -362,8 +369,8 @@ def build_steps(
             out_dir = out_root / m.name / ev.dataset
             method_tag = _method_tag(m)
             perm = None
-            if m.name == "ours" and ev.dataset in perm_targets:
-                perm = out_root / "ours" / ev.dataset / "perm.npz"
+            if m.name == "ours" and perm_path is not None:
+                perm = perm_path
             for task in ev.tasks:
                 out_json = out_dir / f"{task}.json"
                 if task == "recon":
