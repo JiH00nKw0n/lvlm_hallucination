@@ -1,0 +1,10 @@
+\paragraph{Evaluation Metrics.}
+We assess each method along three axes: (i) how well the SAE reconstructs the multi-modal embeddings, (ii) how well it aligns the latent codes across modalities, and (iii) whether the cross-modal feature collapse predicted by Theorem~\ref{thm:m-small} occurs. To this end, we adopt the following five metrics:
+\begin{itemize}
+    \item \textbf{Reconstruction Error.} We measure the mean squared error (MSE) between the input embeddings $(\vx, \vy)$ and their reconstructions $(\tilde{\vx}, \tilde{\vy})$ on a evaluation set, averaged over both modalities.
+    \item \textbf{Alignment Error.} We measure the cosine distance between the image and text latent codes $\tilde{\vz}_{\mathrm I}$ and $\tilde{\vz}_{\mathrm T}$ produced from paired image-text embeddings $(\vx, \vy)$.
+    \item \textbf{Ground-truth Recovery Error.} We measure the MSE between the ground-truth feature directions $(\phi_i, \psi_i)$ and their SAE reconstructions $(\tilde{\phi}_i, \tilde{\psi}_i)$, averaged over shared concepts $i \in [n_{\mathrm S}]$.
+    \item \textbf{Ground-truth Alignment Error.} We measure the cosine distance between the latent codes $\tilde{\vz}_{\mathrm I}(\phi_i)$ and $\tilde{\vz}_{\mathrm T}(\psi_i)$ obtained by passing the ground-truth shared atoms $(\phi_i, \psi_i)$ through their respective SAE encoders, averaged over shared concepts $i \in [n_{\mathrm S}]$.
+    \item \textbf{Cross-Modal Feature Collapse Index.} We measure the fraction of shared ground-truth atoms $(\phi_i, \psi_i)$ for which both modality SAEs $(\vV, \vW)$ select the same learned column index $j \in [m]$ as the best match, directly probing whether the collapse predicted by Theorem~\ref{thm:m-small} occurs.
+\end{itemize}
+Note that the last three metrics require access to the ground-truth dictionaries $(\vPhi, \vPsi)$ and thus apply only in the synthetic setting. Formal definitions are deferred to Appendix~\ref{app:synth_metrics}.

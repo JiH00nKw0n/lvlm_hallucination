@@ -43,7 +43,12 @@ HF_SPLIT = "train"
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--model", type=str, default="openai/clip-vit-base-patch32")
+    p.add_argument("--backend", type=str, default="transformers",
+                   choices=["transformers", "openclip"])
+    p.add_argument("--model", type=str, default="openai/clip-vit-base-patch32",
+                   help="HF model id (transformers) or OpenCLIP arch name (e.g. ViT-L-14)")
+    p.add_argument("--pretrained", type=str, default="",
+                   help="OpenCLIP pretrained tag (only used when --backend openclip)")
     p.add_argument("--cache-dir", type=str, default="cache/clip_b32_cc3m")
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--device", type=str, default="cuda")
@@ -79,6 +84,73 @@ def _transform(row):
     return {"key": str(row["__key__"]), "img": img, "txt": txt}
 
 
+def _load_model(args, device):
+    """Returns (forward_image, forward_text, emb_dim, backend_kind).
+
+    forward_image: list[PIL] -> Tensor[B, dim] (cpu, fp32)
+    forward_text:  list[str] -> Tensor[B, dim] (cpu, fp32)
+    backend_kind:  "openclip" | "siglip" | "clip" — for logging only
+    """
+    if args.backend == "openclip":
+        import open_clip
+        pretrained = args.pretrained or None
+        logger.info("Loading OpenCLIP %s (pretrained=%s)", args.model, pretrained)
+        model, _, oc_preprocess = open_clip.create_model_and_transforms(
+            args.model, pretrained=pretrained, device=device)
+        model.eval()
+        oc_tokenizer = open_clip.get_tokenizer(args.model)
+        with torch.no_grad():
+            dummy = torch.randn(1, 3, 224, 224, device=device)
+            emb_dim = int(model.encode_image(dummy).shape[-1])
+
+        @torch.no_grad()
+        def fwd_img(pils):
+            batch = torch.stack([oc_preprocess(p) for p in pils]).to(device)
+            return model.encode_image(batch).float().cpu()
+
+        @torch.no_grad()
+        def fwd_txt(texts):
+            tokens = oc_tokenizer(texts).to(device)
+            return model.encode_text(tokens).float().cpu()
+
+        return fwd_img, fwd_txt, emb_dim, "openclip"
+
+    # transformers
+    logger.info("Loading transformers %s", args.model)
+    tmodel = AutoModel.from_pretrained(args.model).to(device).eval()
+    tmodel.requires_grad_(False)
+    processor = AutoProcessor.from_pretrained(args.model)
+    siglip = getattr(tmodel.config, "model_type", "") == "siglip"
+    if siglip:
+        emb_dim = tmodel.config.vision_config.hidden_size
+    else:
+        emb_dim = tmodel.config.projection_dim
+
+    @torch.no_grad()
+    def fwd_img(pils):
+        inputs = processor(images=pils, return_tensors="pt")
+        v_out = tmodel.vision_model(pixel_values=inputs["pixel_values"].to(device))
+        if siglip:
+            return v_out.pooler_output.float().cpu()
+        return tmodel.visual_projection(v_out.pooler_output).float().cpu()
+
+    @torch.no_grad()
+    def fwd_txt(texts):
+        tok = processor(text=texts, return_tensors="pt",
+                        padding="max_length" if siglip else True,
+                        truncation=True, max_length=64 if siglip else 77)
+        input_ids = tok["input_ids"].to(device)
+        attn = tok.get("attention_mask")
+        if attn is not None:
+            attn = attn.to(device)
+        t_out = tmodel.text_model(input_ids=input_ids, attention_mask=attn)
+        if siglip:
+            return t_out.pooler_output.float().cpu()
+        return tmodel.text_projection(t_out.pooler_output).float().cpu()
+
+    return fwd_img, fwd_txt, emb_dim, ("siglip" if siglip else "clip")
+
+
 def _collate(batch):
     batch = [b for b in batch if b is not None]
     return {
@@ -95,12 +167,8 @@ def extract(args: argparse.Namespace) -> None:
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
     logger.info("Device: %s", device)
 
-    logger.info("Loading CLIP %s", args.model)
-    model = AutoModel.from_pretrained(args.model).to(device).eval()
-    model.requires_grad_(False)
-    processor = AutoProcessor.from_pretrained(args.model)
-    emb_dim = model.config.projection_dim
-    logger.info("Embedding dim: %d", emb_dim)
+    fwd_img, fwd_txt, emb_dim, backend_kind = _load_model(args, device)
+    logger.info("Embedding dim: %d (backend=%s)", emb_dim, backend_kind)
 
     image_dict: dict[str, torch.Tensor] = {
         str(k): v for k, v in load_state(cache_dir / "image_embeddings.pt").items()
@@ -138,8 +206,10 @@ def extract(args: argparse.Namespace) -> None:
     def flush_checkpoint():
         save_state(image_dict, cache_dir / "image_embeddings.pt")
         save_state(text_dict, cache_dir / "text_embeddings.pt")
+        # Write under the same split label we streamed from (train, validation, ...)
+        # so downstream loaders pick up the correct split.
         with open(cache_dir / "splits.json", "w") as f:
-            json.dump({"train": [[k, 0] for k in keys_so_far]}, f)
+            json.dump({args.hf_split: [[k, 0] for k in keys_so_far]}, f)
 
     @torch.no_grad()
     def forward_batch(batch):
@@ -158,18 +228,8 @@ def extract(args: argparse.Namespace) -> None:
         imgs = [x for x, m in zip(imgs, mask) if m]
         txts = [x for x, m in zip(txts, mask) if m]
 
-        inputs_i = processor(images=imgs, return_tensors="pt")
-        v_out = model.vision_model(pixel_values=inputs_i["pixel_values"].to(device))
-        img_feats = model.visual_projection(v_out.pooler_output).float().cpu()
-
-        tok = processor(text=txts, return_tensors="pt", padding=True,
-                        truncation=True, max_length=77)
-        input_ids = tok["input_ids"].to(device)
-        attn = tok.get("attention_mask")
-        if attn is not None:
-            attn = attn.to(device)
-        t_out = model.text_model(input_ids=input_ids, attention_mask=attn)
-        txt_feats = model.text_projection(t_out.pooler_output).float().cpu()
+        img_feats = fwd_img(imgs)
+        txt_feats = fwd_txt(txts)
 
         for k, iv, tv in zip(keys, img_feats, txt_feats):
             image_dict[k] = iv.clone()

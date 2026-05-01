@@ -36,11 +36,24 @@ def run(cfg: Config, stage: str = "all") -> None:
     import tempfile
     import yaml
 
+    # Legacy TrainingConfig only accepts these fields; rest live in SweepConfig.
+    _allowed_training = {"lr", "num_epochs", "batch_size", "weight_decay",
+                         "max_grad_norm", "k", "device", "weight_tie"}
+    training_d = {k: v for k, v in cfg.training.__dict__.items() if k in _allowed_training}
+
+    # Legacy method-name mapping: clean uses "shared"/"separated" → legacy uses
+    # "single_recon"/"two_recon".
+    _name_remap = {"shared": "single_recon", "separated": "two_recon"}
+    methods_d = []
+    for m in cfg.methods:
+        d = dict(m.__dict__)
+        d["name"] = _name_remap.get(d["name"], d["name"])
+        methods_d.append(d)
     tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
     yaml.safe_dump({
         "data": cfg.data.__dict__,
-        "training": cfg.training.__dict__,
-        "methods": [m.__dict__ for m in cfg.methods],
+        "training": training_d,
+        "methods": methods_d,
         "sweep": cfg.sweep.__dict__,
         "output": cfg.output.__dict__,
     }, tmp)

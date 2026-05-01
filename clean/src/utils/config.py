@@ -140,6 +140,7 @@ class SyntheticDataConfig:
     max_interference: float = 0.10
     num_train: int = 50_000
     num_eval: int = 10_000
+    l2_normalize: bool = False
 
 
 @dataclass

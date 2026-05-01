@@ -50,8 +50,8 @@ METHODS = [("single_recon", C_NO, "-o", LBL_NO),
 
 PANELS = [
     ("CR",  (-0.05, 1.05)),
-    ("RE",  None),
-    ("GRE", None),
+    ("RE",  (0.145, 0.20)),
+    ("GRE", (0.05, 0.22)),
 ]
 
 NPZ_RE = re.compile(r"^alpha([\d.]+)_seed(\d+)_(.+)\.npz$")
@@ -242,6 +242,10 @@ def make_fig(series, alphas_target, out_path):
                 lo, hi = all_vals.min(), all_vals.max()
                 margin = (hi - lo) * 0.12 + 1e-6
                 ax.set_ylim(lo - margin, hi + margin)
+        if metric == "RE":
+            ax.set_yticks([0.15, 0.17, 0.19])
+        elif metric == "GRE":
+            ax.set_yticks([0.05, 0.10, 0.15, 0.20])
         ax.grid(alpha=0.15, linewidth=0.4, which="both")
 
     fig.legend(

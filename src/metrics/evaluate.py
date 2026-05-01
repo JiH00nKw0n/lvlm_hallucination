@@ -163,9 +163,17 @@ def evaluate_method(
     if same_model:
         probe_ph = probe
     else:
-        C_ph = compute_latent_correlation(sae_i, sae_t, train_img, train_txt, batch_size, device)
-        _, col_ind_ph = linear_sum_assignment(-np.abs(C_ph))
-        probe_ph = probe_gt_pair_activation(sae_i, sae_t, phi_S, psi_S, device, txt_permutation=col_ind_ph)
+        # Canonical alive-restricted Hungarian — same procedure as ESim plot
+        # path (`scripts/plot_lambda_sweep.py`). See src/metrics/canonical_perm.py
+        # for why both call sites must share this single helper.
+        from src.metrics.canonical_perm import compute_canonical_perm
+        canon = compute_canonical_perm(
+            sae_i, sae_t, train_img, train_txt, batch_size, device,
+        )
+        probe_ph = probe_gt_pair_activation(
+            sae_i, sae_t, phi_S, psi_S, device,
+            txt_permutation=canon["perm"],
+        )
 
     return {
         "img_eval_loss": img_eval,

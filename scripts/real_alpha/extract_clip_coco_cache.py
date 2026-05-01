@@ -222,8 +222,9 @@ def extract(args: argparse.Namespace) -> None:
                     feats = model.encode_text(tokens).float().cpu()
                 else:
                     tok = processor(
-                        text=pending_texts, return_tensors="pt", padding=True, truncation=True,
-                        max_length=77 if not siglip else 64,
+                        text=pending_texts, return_tensors="pt",
+                        padding="max_length" if siglip else True, truncation=True,
+                        max_length=64 if siglip else 77,
                     )
                     input_ids = tok["input_ids"].to(device)
                     attention_mask = tok.get("attention_mask")

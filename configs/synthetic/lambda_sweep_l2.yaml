@@ -1,0 +1,48 @@
+# Legacy-format mirror of clean/configs/synthetic/lambda_sweep.yaml (Fig 2, L2-norm).
+# Used only by scripts/plot_lambda_sweep.py to regen eval/train data for posthoc ESim.
+
+data:
+  n_shared: 1024
+  n_image: 512
+  n_text: 512
+  representation_dim: 256
+  sparsity: 0.99
+  beta: 1.0
+  obs_noise_std: 0.05
+  max_interference: 0.30
+  num_train: 50000
+  num_eval: 10000
+  l2_normalize: true
+
+training:
+  lr: 5.0e-4
+  num_epochs: 10
+  batch_size: 256
+  weight_decay: 1.0e-5
+  max_grad_norm: 1.0
+  k: 16
+  device: cuda
+
+methods:
+  - {name: single_recon}
+  - {name: two_recon}
+  - {name: iso_align, aux_weight: 4.6875e-4}   # 0.03 x 1/64
+  - {name: iso_align, aux_weight: 7.5e-3}      # 0.03 x 1/4
+  - {name: iso_align, aux_weight: 3.0e-2}      # 0.03 x 1
+  - {name: iso_align, aux_weight: 1.2e-1}      # 0.03 x 4
+  - {name: iso_align, aux_weight: 1.92}        # 0.03 x 64
+  - {name: group_sparse, aux_weight: 7.8125e-4}  # 0.05 x 1/64
+  - {name: group_sparse, aux_weight: 1.25e-2}    # 0.05 x 1/4
+  - {name: group_sparse, aux_weight: 5.0e-2}     # 0.05 x 1
+  - {name: group_sparse, aux_weight: 2.0e-1}     # 0.05 x 4
+  - {name: group_sparse, aux_weight: 3.2}        # 0.05 x 64
+
+sweep:
+  alpha: [0.5]
+  latent_size: [8192]
+  num_seeds: 3
+  seed_base: 1
+
+output:
+  root: clean/outputs/theorem2_lambda_sweep_l2
+  save_decoders: true

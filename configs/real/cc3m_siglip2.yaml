@@ -1,0 +1,47 @@
+name: cc3m_siglip2
+
+# Same protocol as cc3m.yaml but using SigLIP2 Base (768d) embeddings.
+# CC3M cache must be extracted via streaming.
+data:
+  dataset: cc3m
+  cache_dir: cache/siglip2_base_cc3m
+  split_train: train
+  split_eval: train
+  eval_samples: 20000
+
+training:
+  lr: 5.0e-4
+  num_epochs: 10
+  batch_size: 1024
+  weight_decay: 1.0e-5
+  max_grad_norm: 1.0
+  warmup_ratio: 0.05
+  k: 32
+  latent_size: 8192
+  hidden_size: 768
+  seed: 0
+  dataloader_num_workers: 0
+  device: cuda
+
+methods:
+  - name: shared
+  - name: separated
+  - name: iso_align
+    aux_weight: 1.0e-4
+  - name: group_sparse
+    aux_weight: 0.05
+  - name: ours
+    base_method: separated
+
+evaluations:
+  - dataset: coco
+    cache_dir: cache/siglip2_base_coco
+    split: test
+    tasks: [recon, retrieval]
+  - dataset: imagenet
+    cache_dir: cache/siglip2_base_imagenet
+    split: val
+    tasks: [recon, zeroshot_raw]
+
+output:
+  root: outputs/real_exp_cc3m_siglip2

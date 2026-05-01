@@ -32,7 +32,7 @@ OUT = ROOT / "steering_curves.pdf"
 VARIANTS = [
     ("separated", "Modality-Specific (no align)", "#888888", "--"),
     ("iso_align", "Iso-Energy Alignment", CARROT_ORANGE, "-"),
-    ("group_sparse", "Group-Sparsity", SEAWEED, "-"),
+    ("group_sparse", "Group-Sparse", SEAWEED, "-"),
     ("ours", "Post-hoc Alignment (Ours)", BLUE_SLATE, "-"),
 ]
 

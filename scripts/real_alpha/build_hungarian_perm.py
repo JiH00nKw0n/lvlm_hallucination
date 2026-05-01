@@ -41,6 +41,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ckpt", type=str, required=True)
     p.add_argument("--dataset", choices=["coco", "imagenet", "cc3m"], required=True)
     p.add_argument("--cache-dir", type=str, required=True)
+    p.add_argument("--split", type=str, default=None,
+                   help="Split to read (default 'train'; falls back to 'val' if "
+                        "the train split is absent for imagenet).")
     p.add_argument("--max-per-class", type=int, default=1000,
                    help="ImageNet-only balance cap.")
     p.add_argument("--max-samples", type=int, default=50_000,
@@ -49,6 +52,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output", type=str, required=True)
     p.add_argument("--device", type=str, default="cuda")
     return p.parse_args()
+
+
+def _resolve_split(cache_dir: str, dataset: str, requested: str | None) -> str:
+    """Return 'train' if available, else fall back to 'val' (imagenet only)."""
+    import json
+    if requested:
+        return requested
+    splits_path = _Path(cache_dir) / "splits.json"
+    if splits_path.exists():
+        with open(splits_path) as f:
+            keys = set(json.load(f).keys())
+        if "train" not in keys and dataset == "imagenet" and "val" in keys:
+            logger.warning("imagenet train split missing in %s — falling back to val "
+                           "for permutation build", splits_path)
+            return "val"
+    return "train"
 
 
 def main() -> None:
@@ -60,11 +79,12 @@ def main() -> None:
     logger.info("loading separated SAE from %s", args.ckpt)
     model = eval_utils.load_sae(args.ckpt, "separated")
 
+    split = _resolve_split(args.cache_dir, args.dataset, args.split)
     ds = eval_utils.load_pair_dataset(
-        args.cache_dir, args.dataset, split="train",
+        args.cache_dir, args.dataset, split=split,
         max_per_class=args.max_per_class if args.dataset == "imagenet" else None,
     )
-    logger.info("paired dataset: %d samples", len(ds))
+    logger.info("paired dataset: %d samples (split=%s)", len(ds), split)
 
     result = eval_utils.build_perm(
         model, ds, device, max_samples=args.max_samples, batch_size=args.batch_size,

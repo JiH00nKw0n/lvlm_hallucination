@@ -71,9 +71,9 @@ def load_pair_dataset(
             max_per_class=max_per_class, l2_normalize=True,
         )
     if dataset == "cc3m":
-        # CC3M has no test/val — it's always the "train" split in cache.
-        # Callers that need a subset cap it upstream (e.g. build_perm's max_samples).
-        return CachedClipPairsDataset(cache_dir, split="train", l2_normalize=True)
+        # pixparse/cc3m-wds has both train and validation. Default historical
+        # behavior used "train"; pass split through so val-set evaluation works.
+        return CachedClipPairsDataset(cache_dir, split=split, l2_normalize=True)
     raise ValueError(f"unknown dataset {dataset!r}")
 
 

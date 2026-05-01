@@ -304,6 +304,12 @@ def run_single(
         seed=seed,
     )
     ds = builder.build()
+    if getattr(d, "l2_normalize", False):
+        for split in ("train", "eval"):
+            for key in ("image_representation", "text_representation"):
+                arr = ds[split][key]
+                norms = np.linalg.norm(arr, axis=1, keepdims=True) + 1e-12
+                ds[split][key] = (arr / norms).astype(arr.dtype, copy=False)
     train_ds = SyntheticPairedDataset(ds["train"]["image_representation"], ds["train"]["text_representation"])
     eval_ds = SyntheticPairedDataset(ds["eval"]["image_representation"], ds["eval"]["text_representation"])
     train_img = torch.from_numpy(ds["train"]["image_representation"])

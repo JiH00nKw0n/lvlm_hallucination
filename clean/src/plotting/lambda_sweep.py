@@ -355,7 +355,7 @@ def main():
         for metric in PANELS:
             row = []
             for mult in MULTIPLIERS:
-                w = round(mstyle["base"] * mult, 6)
+                w = round(mstyle["base"] * mult, 9)
                 method_id = f"{mk}_w{w}"
                 if metric == "GRE":
                     ms = compute_gre_for_method(params_dirs, method_id)
@@ -422,18 +422,18 @@ def main():
         ax.tick_params(axis="both", labelsize=6, pad=1)
         if metric == "GRE":
             ax.set_yscale("log")
-            ax.set_ylim(bottom=0.2)
-            ax.set_yticks([0.2, 0.5, 1.0])
+            ax.set_ylim(0.07, 1.1)
+            ax.set_yticks([0.1, 0.2, 0.5, 1.0])
             plain = FuncFormatter(lambda y, _: f"{y:g}")
             ax.yaxis.set_major_formatter(plain)
             ax.yaxis.set_minor_formatter(FuncFormatter(lambda *_: ""))
         elif metric == "ESim":
             # plotting 1 - ESim → "ESim distance"; lower = more aligned.
-            ax.set_ylim(0.78, 1.01)
+            ax.set_ylim(0.78, 1.02)
             ax.set_yticks([0.8, 0.9, 1.0])
         elif metric == "FSim":
             # plotting 1 - FSim → "FSim distance"; lower = more aligned.
-            ax.set_ylim(-0.02, 1.02)
+            ax.set_ylim(0.0, 1.02)
             ax.set_yticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
         ax.grid(alpha=0.15, linewidth=0.4, which="both")
 

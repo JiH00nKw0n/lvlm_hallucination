@@ -1,0 +1,22 @@
+\subsection{Empirical Verification across Vision-Language Models}
+\label{sec:heterogeneity:empirical}
+
+In the previous section, we argue that shared concepts are not perfectly aligned across modalities in pretrained VLMs, and consequently that the empirical distribution of $\cos(\phi_i, \psi_i)$ should concentrate strictly below $1$.
+Here we aim to verify this prediction indirectly through a proxy, since the ground-truth feature directions $\vPhi$ and $\vPsi$ are not directly observable in VLMs and $\cos(\phi_i, \psi_i)$ cannot be evaluated on the embeddings themselves.
+
+We design our proxy guided by the idea of~\citet{papadimitriou2025interpreting}: for any index pair $(i, j) \in [m] \times [m]$, if the two decoder columns $[\vV]_{:,i}$ and $[\vW]_{:,j}$ of the per-modality SAE pair $(\vV, \vW)$ faithfully recover the same shared concept, then (i) they should be jointly active on paired image-text inputs, with high statistical correlation $\Corr(\tilde{\vz}_{\mathrm I}, \tilde{\vz}_{\mathrm T})_{i,j}$, and (ii) their cosine distance $1 - \cos(\phi_i, \psi_i)$ should approximate that of the ground-truth atoms.
+Accordingly, each candidate pair is summarized by a statistical \emph{co-activation} term $\Corr(\tilde{\vz}_{\mathrm I}, \tilde{\vz}_{\mathrm T})_{i,j}$ and a geometric \emph{feature alignment} term $1 - \cos\!\big([\vV]_{:,i}, [\vW]_{:,j}\big)$.
+We identify the matched cross-modal counterpart $\pi(i)$ of each index $i$ via Hungarian matching on the correlation matrix, and then read off the geometric alignment $\cos\!\big([\vV]_{:,i}, [\vW]_{:,\pi(i)}\big)$ on these matched pairs as our proxy for $\cos(\phi_i, \psi_i)$.
+The empirical question is therefore how aligned the best-matched, well-learned shared atoms turn out to be.
+
+\paragraph{Experimental Setup.}
+We construct paired image--text embeddings from the MS-COCO~\citep{lin2014microsoft} dataset using five representative VLMs of different families and sizes pretrained with contrastive objectives: \texttt{CLIP}~\citep{radford21clip}, \texttt{MetaCLIP}~\citep{}, \texttt{OpenCLIP}~\citep{}, \texttt{MobileCLIP}~\citep{}, and \texttt{SigLIP2}~\citep{}.
+For each model, we independently train a pair of modality-specific SAEs $(\vV, \vW)$ with latent dimension $m = 8192$ using the TopK activation function.
+We follow the training protocol of~\citet{papadimitriou2025interpreting}: the AdamW optimizer with learning rate $5{\times}10^{-4}$ and weight decay $10^{-5}$, batch size $1024$, and a cosine schedule with $5\%$ linear warmup over $30$ training epochs.
+Both the co-activation correlation matrix $\Corr(\tilde{\vz}_{\mathrm I}, \tilde{\vz}_{\mathrm T})$ and the Hungarian matching $\pi$ are computed on the training set.
+
+\paragraph{Results.}
+Figure~\ref{fig:multi_model_density} reports the conditional density of the cosine distance of matched decoder columns for the five VLMs, binned by their co-activation correlation $r$.
+The trend is consistent across all models: as $r$ grows, the density of the cosine distance shifts toward lower values, confirming that pairs which strongly co-fire on paired inputs are also geometrically more aligned.
+Crucially, even for the most strongly co-activating pairs ($r \ge 0.6$)---those that behave as shared-concept candidates and would, under perfect cross-modal alignment, attain a cosine distance close to $0$---the conditional density does not concentrate near $0$ but instead sharpens around $0.5$.
+This persistent gap from perfect alignment is observed uniformly across all five models, indicating that cross-modal feature heterogeneity is a generic property of pretrained VLM embeddings rather than an artifact of any single architecture or training corpus.

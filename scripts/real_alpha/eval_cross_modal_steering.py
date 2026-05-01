@@ -23,6 +23,8 @@ import hashlib
 import json
 import logging
 import re
+
+from tqdm import tqdm
 import sys as _sys
 import time
 from pathlib import Path as _Path
@@ -361,7 +363,7 @@ def main() -> None:
 
     image_id_to_row = {int(iid): i for i, iid in enumerate(image_ids)}
 
-    for concept in COCO_80:
+    for concept in tqdm(COCO_80, desc="concept", unit="concept"):
         c_mask = _match_captions(captions_text, concept)
         n_pos = int(c_mask.sum())
         if n_pos < args.min_pos_captions:

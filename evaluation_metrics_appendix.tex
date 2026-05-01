@@ -1,0 +1,83 @@
+\subsection{Formal Definitions of Synthetic Evaluation Metrics}
+\label{app:synth_metrics}
+
+We provide formal definitions of the five metrics introduced in Section~\ref{subsec:synthetic_exp}.
+
+\paragraph{Reconstruction Error.}
+To evaluate reconstruction, we measure the mean squared error of reconstruction as
+\begin{equation}
+    \mathrm{RE}(\vx, \vy; \vV,\vW)
+    :=
+    \frac{1}{2}\;
+    \E
+    \bigg[
+    \norm{\vx-\tilde\vx}_2^2 + \norm{\vy-\tilde\vy}_2^2
+    \bigg]
+    =
+    \frac{1}{2}\;
+    \E
+    \bigg[
+    \norm{\vx- \vV\sigma\big(\vV^\top \vx\big)}_2^2 + \norm{\vy-\vW\sigma\big(\vW^\top \vy\big)}_2^2
+    \bigg]
+    ,
+\end{equation}
+where the embedding pairs are obtained from a held-out evaluation set~\citep{karvonen2025saebench}.
+
+\paragraph{Alignment Error.}
+To evaluate the alignment, we measure the cosine distance of cross-modal latent codes as
+\begin{equation}
+    \mathrm{AE}(\tilde \vz_{\mathrm I},\tilde \vz_{\mathrm T}; \vV,\vW)
+    :=
+    1-
+    \E
+    \left[
+    \cos\big(\tilde \vz_{\mathrm I},\tilde \vz_{\mathrm T}\big)
+    \right]
+    =
+    1-
+    \E
+    \left[
+    \cos\big(\sigma(\vV^{\!\top}\vx),\sigma(\vW^{\!\top}\vy)\big)
+    \right].
+\end{equation}
+
+In the synthetic setting where the shared ground-truth representations $\vPhi_{\mathrm S}$ and $\vPsi_{\mathrm S}$ are known, we further consider the following three metrics.
+
+\paragraph{Ground-truth Recovery Error.}
+\begin{equation}
+    \mathrm{GRE}(\vPhi, \vPsi; \vV,\vW)
+    :=
+    \frac{1}{2n_{\mathrm S}}\sum_{i\in[n_{\mathrm S}]}
+    \bigg(
+    \norm{\psi_i- \vV\sigma\big(\vV^\top \psi_i\big)}_2^2 + \norm{\phi_i-\vW\sigma\big(\vW^\top \phi_i\big)}_2^2
+    \bigg)
+    .
+\end{equation}
+
+\paragraph{Ground-truth Alignment Error.}
+The input to each modality SAE is the corresponding ground-truth shared atom:
+\begin{equation}
+    \mathrm{GAE}(\tilde{\vPhi}, \tilde{\vPsi};  \vV, \vW)
+    :=
+    1-
+    \frac{1}{n_{\mathrm S}}\sum_{i\in[n_{\mathrm S}]}
+    \cos\!\big(\sigma(\vV^{\!\top}\phi_i),\;\sigma(\vW^{\!\top}\psi_i)\big).
+\end{equation}
+
+\paragraph{Cross-Modal Feature Collapse Index.}
+To probe whether the collapse predicted by Theorem~\ref{thm:m-small} occurs, we measure the fraction of shared atoms for which both modalities select the same learned column, indicating whether the model merges the two modality-specific representations into a single latent component:
+\begin{equation}
+    \mathrm{CCI}(\vPhi, \vPsi; \vV, \vW)
+    :=
+    \frac{1}{n_{\mathrm S}}\sum_{i\in[n_{\mathrm S}]}
+    \mathbf{1}\!\left[\,
+    \argmax_{j\in[m]}
+    \cos\!\big([\vV]_{:,j},\, \phi_i \big)
+     \;=\;
+     \argmax_{j\in[m]}
+    \cos\!\big([\vW]_{:,j},\, \psi_i \big)
+     \,
+    \right]
+    \;\in\;[0,1],
+\end{equation}
+where the first term in the indicator denotes the index of the learned column that best matches the $i$-th shared ground-truth atom in the image modality, and the second term denotes the corresponding index in the text modality.

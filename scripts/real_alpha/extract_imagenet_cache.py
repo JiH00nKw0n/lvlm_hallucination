@@ -39,7 +39,12 @@ HF_TO_OUR_SPLIT = {"train": "train", "validation": "val"}
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--model", type=str, default="openai/clip-vit-base-patch32")
+    p.add_argument("--backend", type=str, default="transformers",
+                   choices=["transformers", "openclip"])
+    p.add_argument("--model", type=str, default="openai/clip-vit-base-patch32",
+                   help="HF model id (transformers) or OpenCLIP arch name")
+    p.add_argument("--pretrained", type=str, default="",
+                   help="OpenCLIP pretrained tag (only used when --backend openclip)")
     p.add_argument("--cache-dir", type=str, default="cache/clip_b32_imagenet")
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--device", type=str, default="cuda")
@@ -72,13 +77,35 @@ def extract(args: argparse.Namespace) -> None:
     hf_token = os.environ.get("HF_TOKEN")
     logger.info("Device: %s", device)
 
-    # Load CLIP model
-    logger.info("Loading %s", args.model)
-    model = AutoModel.from_pretrained(args.model).to(device).eval()
-    model.requires_grad_(False)
-    processor = AutoProcessor.from_pretrained(args.model)
-    emb_dim = model.config.projection_dim
-    logger.info("Embedding dim: %d", emb_dim)
+    backend = args.backend
+    if backend == "openclip":
+        import open_clip
+        pretrained = args.pretrained or None
+        logger.info("Loading OpenCLIP %s (pretrained=%s)", args.model, pretrained)
+        oc_model, _, oc_preprocess = open_clip.create_model_and_transforms(
+            args.model, pretrained=pretrained, device=device)
+        oc_model.eval()
+        oc_tokenizer = open_clip.get_tokenizer(args.model)
+        with torch.no_grad():
+            dummy = torch.randn(1, 3, 224, 224, device=device)
+            emb_dim = int(oc_model.encode_image(dummy).shape[-1])
+        siglip = False
+        model = oc_model  # for downstream `del model` and reuse
+        processor = None
+        logger.info("OpenCLIP dim: %d", emb_dim)
+    else:
+        logger.info("Loading %s", args.model)
+        model = AutoModel.from_pretrained(args.model).to(device).eval()
+        model.requires_grad_(False)
+        processor = AutoProcessor.from_pretrained(args.model)
+        siglip = getattr(model.config, "model_type", "") == "siglip"
+        if siglip:
+            emb_dim = model.config.vision_config.hidden_size
+        else:
+            emb_dim = model.config.projection_dim
+        oc_preprocess = None
+        oc_tokenizer = None
+        logger.info("Embedding dim: %d (siglip=%s)", emb_dim, siglip)
 
     image_dict: dict[int, torch.Tensor] = {
         int(k): v for k, v in load_state(cache_dir / "image_embeddings.pt").items()
@@ -125,11 +152,18 @@ def extract(args: argparse.Namespace) -> None:
             if not pending_pils:
                 return
             with torch.no_grad():
-                inputs = processor(images=pending_pils, return_tensors="pt")
-                vision_out = model.vision_model(
-                    pixel_values=inputs["pixel_values"].to(device)
-                )
-                feats = model.visual_projection(vision_out.pooler_output).float().cpu()
+                if backend == "openclip":
+                    batch = torch.stack([oc_preprocess(p) for p in pending_pils]).to(device)
+                    feats = model.encode_image(batch).float().cpu()
+                else:
+                    inputs = processor(images=pending_pils, return_tensors="pt")
+                    vision_out = model.vision_model(
+                        pixel_values=inputs["pixel_values"].to(device)
+                    )
+                    if siglip:
+                        feats = vision_out.pooler_output.float().cpu()
+                    else:
+                        feats = model.visual_projection(vision_out.pooler_output).float().cpu()
             for iid, vec in zip(pending_ids, feats):
                 image_dict[iid] = vec.clone()
             n_extracted += len(pending_ids)
@@ -195,18 +229,26 @@ def extract(args: argparse.Namespace) -> None:
             if not pending_texts:
                 return
             with torch.no_grad():
-                tok = processor(
-                    text=pending_texts, return_tensors="pt",
-                    padding=True, truncation=True, max_length=77,
-                )
-                input_ids = tok["input_ids"].to(device)
-                attention_mask = tok.get("attention_mask")
-                if attention_mask is not None:
-                    attention_mask = attention_mask.to(device)
-                text_out = model.text_model(
-                    input_ids=input_ids, attention_mask=attention_mask,
-                )
-                feats = model.text_projection(text_out.pooler_output).float().cpu()
+                if backend == "openclip":
+                    tokens = oc_tokenizer(pending_texts).to(device)
+                    feats = model.encode_text(tokens).float().cpu()
+                else:
+                    tok = processor(
+                        text=pending_texts, return_tensors="pt",
+                        padding="max_length" if siglip else True,
+                        truncation=True, max_length=64 if siglip else 77,
+                    )
+                    input_ids = tok["input_ids"].to(device)
+                    attention_mask = tok.get("attention_mask")
+                    if attention_mask is not None:
+                        attention_mask = attention_mask.to(device)
+                    text_out = model.text_model(
+                        input_ids=input_ids, attention_mask=attention_mask,
+                    )
+                    if siglip:
+                        feats = text_out.pooler_output.float().cpu()
+                    else:
+                        feats = model.text_projection(text_out.pooler_output).float().cpu()
             for key, vec in zip(pending_keys, feats):
                 text_dict[key] = vec.clone()
             n_txt_extracted += len(pending_keys)

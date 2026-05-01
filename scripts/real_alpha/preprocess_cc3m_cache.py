@@ -30,6 +30,7 @@ import logging
 from pathlib import Path
 
 import torch
+from tqdm import tqdm
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -67,21 +68,22 @@ def process_modality(cache_dir: Path, modality: str, force: bool) -> None:
     # Pop-transfer pattern: each raw entry is copied into the table row and
     # then refcount-freed, so peak ~= table size + (shrinking) raw size.
     keys = list(raw.keys())
+    pbar = tqdm(total=n, desc="copy→stack", unit="row", mininterval=1.0)
     for i, k in enumerate(keys):
         v = raw.pop(k)
         if v.dtype != torch.float32:
             v = v.float()
         table[i].copy_(v)
         mapping[str(k)] = i
-        if i > 0 and i % 500_000 == 0:
-            logger.info("  copied %d/%d (%.1f%%)", i, n, 100.0 * i / n)
+        pbar.update(1)
+    pbar.close()
     del raw, keys, first_v
     gc.collect()
 
     # Chunked in-place L2 normalize (small transient memory).
     logger.info("L2-normalizing in chunks")
     CHUNK = 200_000
-    for i0 in range(0, n, CHUNK):
+    for i0 in tqdm(range(0, n, CHUNK), desc="L2-normalize", unit="chunk"):
         i1 = min(i0 + CHUNK, n)
         chunk = table[i0:i1]
         norms = _clip_vector_norm(chunk)

@@ -94,6 +94,7 @@ declare -A MODEL_PREFIX
 MODEL_BACKEND[clip_l]="transformers";   MODEL_HF_ID[clip_l]="openai/clip-vit-large-patch14";       MODEL_PRETRAINED[clip_l]="";                  MODEL_HIDDEN[clip_l]=768;   MODEL_PREFIX[clip_l]="clip_l14"
 MODEL_BACKEND[openclip_l]="openclip";   MODEL_HF_ID[openclip_l]="ViT-L-14";                        MODEL_PRETRAINED[openclip_l]="datacomp_xl_s13b_b90k"; MODEL_HIDDEN[openclip_l]=768; MODEL_PREFIX[openclip_l]="openclip_l14"
 MODEL_BACKEND[siglip_l]="transformers"; MODEL_HF_ID[siglip_l]="google/siglip2-large-patch16-256";  MODEL_PRETRAINED[siglip_l]="";                MODEL_HIDDEN[siglip_l]=1024; MODEL_PREFIX[siglip_l]="siglip2_large"
+MODEL_BACKEND[openclip_b]="openclip";   MODEL_HF_ID[openclip_b]="ViT-B-32";                        MODEL_PRETRAINED[openclip_b]="datacomp_xl_s13b_b90k"; MODEL_HIDDEN[openclip_b]=512; MODEL_PREFIX[openclip_b]="datacomp_b32"
 
 for KEY in "${MODEL_KEYS[@]}"; do
   if [[ -z "${MODEL_HF_ID[$KEY]:-}" ]]; then

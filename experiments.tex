@@ -1,0 +1,35 @@
+\section{Experimental Results}
+\label{sec:experiments}
+
+In this section, we empirically verify the theoretical predictions of Section~\ref{sec:theory:split}.
+In Section~\ref{subsec:synthetic_exp}, we first conduct an experiment on synthetic image and text embeddings generated from a controlled generative model in which the ground-truth feature dictionaries $\boldsymbol\Phi$ and $\boldsymbol\Psi$ are known by construction.
+This is because verifying these predictions requires $\boldsymbol\Phi$ and $\boldsymbol\Psi$ to be known, which is not the case for real VLMs.
+In Section~\ref{subsec:real_exp}, we then conduct experiments on real image and text embeddings extracted from pretrained VLMs on image-caption paired datasets to compare our proposed post-hoc alignment against baselines in terms of mono-semantic feature recovery and cross-modal alignment.
+
+
+\subsection{Validation on Synthetic Data}
+\label{subsec:synthetic_exp}
+
+We empirically verify Theorem~\ref{thm:m-small} in Section~\ref{sec:theory:split} and Propositions~\ref{thm:prev:align},~\ref{thm:prev:group} in Section~\ref{sec:theory:prev}, respectively. To this end, we conduct two different experiments.
+First, varying the cross-modal feature alignment $\cos(\phi_i, \psi_i)$ for shared concepts $i \in [n_S]$, we compare a shared SAE with modality-specific SAEs. The former encodes both modalities through a single dictionary, inducing interference between geometrically close features, whereas the latter uses separate dictionaries that avoid such interference. In this experiment, we test whether the collapse-induced increase in reconstruction error and ground-truth recovery error arises only in the shared SAE, as predicted by Theorem~\ref{thm:m-small}.
+Second, sweeping the auxiliary-loss strength $\lambda$, we compare two auxiliary-loss baselines, Iso-Energy alignment~\citep{dhimoila2026crossmodal} and Group-sparse~\citep{kaushik2026learning}, with our post-hoc alignment method. The former augments the reconstruction objective with a cross-modal alignment penalty, whereas the latter leaves the reconstruction objective unchanged and aligns latent units only after training. In this experiment, we test whether the collapse-induced increase in reconstruction error and ground-truth recovery error arises only in the baselines, as predicted by Propositions~\ref{thm:prev:align} and~\ref{thm:prev:group}.
+
+\paragraph{Synthetic Data Generation Model.}
+Consistent with Section~\ref{sec:heterogeneity:prelim} and following sparse coding setups~\citep{goodfellow2012large, sheikh2014truncated} and recent synthetic SAE benchmarks~\citep{chanin2026synthsaebench}, we instantiate a Bernoulli-Exponential generative process.
+Each coordinate of the latent code $\vz$ is independently active under the Bernoulli mask of Eq.~\eqref{eq:sparsity} with sparsity $s = 0.99$, and active values are drawn i.i.d.\ from $\mathrm{Exp}(1)$.
+Given $\vz$, the paired image and text embeddings are produced by Eq.~\eqref{eq:embedding} with additive observation noise $\boldsymbol\epsilon_I, \boldsymbol\epsilon_T \sim \mathcal{N}(\boldsymbol{0}, \sigma_{\mathrm{obs}}^2 \mathbf{I})$ at $\sigma_{\mathrm{obs}} = 0.05$.
+We provide further details on the construction of the ground-truth dictionaries $\boldsymbol\Phi$ and $\boldsymbol\Psi$ in Appendix~\ref{app:synth_detail}.
+
+\paragraph{Experimental Setup.}
+For the synthetic data, we set the embedding dimension to $d = 256$ and the dimension of the latent code to $n = 2048$, of which $n_S = 1024$ coordinates are shared and the remaining are activated only in one modality, equally split between the two modalities.
+We train SAEs of latent dimension $m = 8192$ with unit-norm decoder columns, using the Top-$K$ activation function with $K = 16$.
+Each experiment is repeated over $5$ random seeds, and we report the average.
+We provide further hyperparameters, training details, and sample sizes in Appendix~\ref{app:synth_detail}.
+
+% TODO: Exp 1 (cos sweep) + Exp 2 (lambda sweep)
+
+
+\subsection{Validation on Real-World Data}
+\label{subsec:real_exp}
+
+% TODO: real-world experiments on MS-COCO and ImageNet

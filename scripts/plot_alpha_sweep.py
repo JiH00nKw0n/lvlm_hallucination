@@ -40,8 +40,8 @@ from src.models.configuration_sae import TopKSAEConfig
 from src.models.modeling_sae import TopKSAE
 
 
-C_NO  = "#f94144"   # Strawberry Red
-C_YES = "#277da1"   # Cerulean
+C_NO  = "#90be6d"   # Willow Green
+C_YES = "#f9844a"   # Atomic Tangerine
 LBL_NO  = "Shared SAE"
 LBL_YES = "Modality-Specific SAEs"
 
@@ -50,8 +50,8 @@ METHODS = [("single_recon", C_NO, "-o", LBL_NO),
 
 PANELS = [
     ("CR",  (-0.05, 1.05)),
-    ("RE",  None),
-    ("GRE", None),
+    ("RE",  (0.145, 0.20)),
+    ("GRE", (0.05, 0.22)),
 ]
 
 NPZ_RE = re.compile(r"^alpha([\d.]+)_seed(\d+)_(.+)\.npz$")
@@ -135,6 +135,12 @@ def compute_metrics_for_run(
                 seed=seed,
             )
             ds = builder.build()
+            if getattr(d, "l2_normalize", False):
+                for sp in ("train", "eval"):
+                    for k_ in ("image_representation", "text_representation"):
+                        a = ds[sp][k_]
+                        n = np.linalg.norm(a, axis=1, keepdims=True) + 1e-12
+                        ds[sp][k_] = (a / n).astype(a.dtype, copy=False)
             eval_img = torch.from_numpy(ds["eval"]["image_representation"])
             eval_txt = torch.from_numpy(ds["eval"]["text_representation"])
 
@@ -242,6 +248,10 @@ def make_fig(series, alphas_target, out_path):
                 lo, hi = all_vals.min(), all_vals.max()
                 margin = (hi - lo) * 0.12 + 1e-6
                 ax.set_ylim(lo - margin, hi + margin)
+        if metric == "RE":
+            ax.set_yticks([0.15, 0.17, 0.19])
+        elif metric == "GRE":
+            ax.set_yticks([0.05, 0.10, 0.15, 0.20])
         ax.grid(alpha=0.15, linewidth=0.4, which="both")
 
     fig.legend(

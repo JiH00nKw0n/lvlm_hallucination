@@ -1,0 +1,23 @@
+\section{Related Work}
+
+\paragraph{Mechanistic Interpretability and Linear Representation Hypothesis.}
+Mechanistic interpretability aims to understand neural networks by reverse-engineering their internal computations into human-interpretable components~\citep{olah2020zoom, elhage2021mathematical}.
+Significant progress has been made in identifying interpretable circuits in transformers~\citep{elhage2021mathematical, olsson2022context} and in locating factual knowledge in their parameters~\citep{meng2022locating}.
+A prominent assumption underlying this line of work is the \emph{linear representation hypothesis}~\citep{park2024lrh, elhage2022toy}, which posits that high-level concepts are encoded as linear directions in a model's activation space.
+This view is supported by probing, editing, and steering studies that extract or manipulate concepts along learned directions in language models~\citep{hewitt2019structural, turner2024activation, nanda2023emergent, li2023inference}.
+
+\paragraph{Sparse Autoencoders for Interpreting VLMs.}
+SAEs have emerged as a scalable tool for interpreting activations in pre-trained models, with a line of work showing that SAEs recover mono-semantic features in language models~\citep{huben2023sparse, lieberum2024gemma, templeton2024scaling, gao2025scaling, markssparse}.
+Building on these advances, SAEs have been extended to VLMs pre-trained with the contrastive objective~\citep{radford21clip}, where they have been used to extract interpretable per-modality concepts from image and text embeddings~\citep{rao2024discover, zaigrajew2025interpreting, pach2026sparse}.
+A separate line of work shifts the focus from single-modality concept extraction to characterizing cross-modal structure---how concepts in image and text representations relate, align, or diverge~\citep{costa2026from, kaushik2026learning, dhimoila2026crossmodal}.
+
+\paragraph{Internal Structure of Joint Embedding Space.}
+Joint vision-language embeddings have been studied at both the embedding and feature levels.
+At the embedding level, a prominent phenomenon is the \emph{modality gap}, where image and text embeddings occupy disjoint regions of the shared space~\citep{liang2022mind}.
+Prior work attributes this gap either to \emph{modality-specific} features that are inactive in the other modality~\citep{jiang2023understanding, zhang2024connect, ramasinghe2024accept, schrodi2025two, qian2023intra}, or to misalignment of \emph{shared} features~\citep{eslami2025mitigate, yamaguchi2025post, grassucci2025closing, grassucci2026closing, grassucci2026the, mistretta2025cross}.
+
+At the feature level, recent work analyzes representations using sparse autoencoders~\citep{zaigrajew2025interpreting, papadimitriou2025interpreting}.
+These analyses reveal a related phenomenon, \emph{modality split}, where similar semantic concepts activate different latent units across modalities~\citep{kaushik2026learning, dhimoila2026crossmodal}.
+Existing approaches aim to reduce this split by aligning latent activations, implicitly assuming that shared concepts correspond to common feature directions.
+This assumption overlooks that shared concepts may have different feature directions across modalities.
+In this work, we provide empirical and theoretical support for this view, and propose a method suited to this setting.
