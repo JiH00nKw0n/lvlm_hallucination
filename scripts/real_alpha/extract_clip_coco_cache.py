@@ -67,6 +67,57 @@ def save_state(state: dict, path: Path) -> None:
     tmp.replace(path)
 
 
+def _dump_captions_json(cache_dir: Path, hf_splits: list[str], expected_n: int) -> None:
+    """Emit f"{image_id}_{cap_idx}" -> caption_text dict.
+
+    Required by `eval_cross_modal_steering.py` (concept supervision) and
+    several inspection / qualitative-viz scripts. Cheap to build (HF parquet
+    iteration with the image column dropped, no model forward) so we always
+    emit it as part of cache extraction. Two outputs:
+
+      cache_dir/captions.json                 — per-cache, model-agnostic
+      cache/coco_karpathy_captions.json       — global, written if absent
+                                                 (legacy hardcoded path used
+                                                 by inspect_*/probe_*/HTML viz)
+    """
+    per_cache = cache_dir / "captions.json"
+    if per_cache.exists():
+        try:
+            with open(per_cache) as f:
+                existing = json.load(f)
+            if len(existing) >= expected_n:
+                logger.info("captions.json up-to-date (%d entries) — skipping",
+                            len(existing))
+                return
+        except Exception:
+            pass
+
+    captions: dict[str, str] = {}
+    for hf_split in hf_splits:
+        ds = load_dataset(DATASET_NAME, split=hf_split)
+        if "image" in ds.column_names:
+            ds = ds.remove_columns(["image"])
+        for row in tqdm(ds, desc=f"caps-{hf_split}"):
+            iid = int(row["image_id"])
+            for ci, cap in enumerate(row["captions"]):
+                captions[f"{iid}_{ci}"] = cap
+
+    tmp = per_cache.with_suffix(per_cache.suffix + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump(captions, f)
+    tmp.replace(per_cache)
+    logger.info("wrote %s (%d captions)", per_cache, len(captions))
+
+    legacy = Path("cache/coco_karpathy_captions.json")
+    if not legacy.exists():
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        tmp = legacy.with_suffix(legacy.suffix + ".tmp")
+        with open(tmp, "w") as f:
+            json.dump(captions, f)
+        tmp.replace(legacy)
+        logger.info("wrote %s (legacy global path)", legacy)
+
+
 def build_splits(cache_dir: Path, hf_splits: list[str]) -> dict[str, list[tuple[str, int]]]:
     splits_path = cache_dir / "splits.json"
     if splits_path.exists():
@@ -259,6 +310,8 @@ def extract(args: argparse.Namespace) -> None:
         flush_texts()
         save_state(text_dict, cache_dir / "text_embeddings.pt")
         logger.info("text_dict size = %d", len(text_dict))
+
+    _dump_captions_json(cache_dir, args.splits, expected_n=len(text_dict))
 
     meta = {
         "clip_model": model_name,

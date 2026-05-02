@@ -90,7 +90,8 @@ if [[ "$IS_CC3M_LIKE" == "1" ]]; then
     TRAIN_CACHE="$TRAIN_CACHE_CC3M_VAL" \
     EXT_CACHE=cache/metaclip_b32_cc3m_val \
     OUT_ROOT="$ROOT/ms_cc3m_val" \
-    bash scripts/run_eval_ms.sh
+    bash scripts/run_eval_ms.sh \
+    || log "  MS step failed (non-fatal: not paper headline, continuing)"
 fi
 
 # 3. ImageNet zero-shot with always-on latent filter (drop fire_rate > 0.5).

@@ -14,7 +14,7 @@ if [[ -f .venv/bin/activate ]]; then
 fi
 
 CACHE_DIR=${CACHE_DIR:-cache/clip_b32_coco}
-CAPTIONS_JSON=${CAPTIONS_JSON:-cache/coco_karpathy_captions.json}
+CAPTIONS_JSON=${CAPTIONS_JSON:-${CACHE_DIR}/captions.json}
 ROOT=${ROOT:-outputs/real_exp_cc3m}
 OUT_ROOT=${OUT_ROOT:-$ROOT/cross_modal_steering}
 LOG_DIR=${LOG_DIR:-.log}
