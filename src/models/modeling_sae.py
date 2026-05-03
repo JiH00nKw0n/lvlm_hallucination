@@ -14,6 +14,7 @@ from .configuration_sae import (
     BatchTopKSAEConfig,
     MatryoshkaSAEConfig,
     TopKSAEConfig,
+    TwoSidedBatchTopKSAEConfig,
     TwoSidedTopKSAEConfig,
     VLBatchTopKSAEConfig,
     VLMatryoshkaSAEConfig,
@@ -618,13 +619,20 @@ class BatchTopKSAE(PreTrainedModel):
         y = _decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec)
         return y + self.b_dec
 
-    def forward(self, hidden_states: Tensor, dead_mask: Optional[Tensor] = None) -> SAEOutput:
+    def forward(
+        self,
+        hidden_states: Tensor,
+        dead_mask: Optional[Tensor] = None,
+        return_dense_latents: bool = False,
+    ) -> SAEOutput:
         """
         Run a forward pass and compute reconstruction + auxiliary metrics.
 
         Args:
             hidden_states: Input activations. Shape: (batch, seq_len, hidden_size).
             dead_mask: Optional boolean mask of dead features. Shape: (latent_size,).
+            return_dense_latents: If True, populate `output.dense_latents` with
+                the per-sample sparse activation tensor (batch, seq_len, latent_size).
 
         Returns:
             SAEOutput with reconstruction and training metrics.
@@ -690,6 +698,7 @@ class BatchTopKSAE(PreTrainedModel):
             latent_indices=top_indices,
             recon_loss=recon_loss,
             auxk_loss=auxk_loss,
+            dense_latents=sparse_acts if return_dense_latents else None,
         )
 
     @torch.no_grad()
@@ -2164,6 +2173,65 @@ class TwoSidedTopKSAE(PreTrainedModel):
         self.text_sae.set_decoder_norm_to_unit_norm()
 
 
+class TwoSidedBatchTopKSAE(PreTrainedModel):
+    """Two disjoint BatchTopKSAE stacks (image / text) with no shared params.
+
+    Mirrors ``TwoSidedTopKSAE`` so the rest of the pipeline (build_perm,
+    encode_{image,text}, eval scripts) treats it identically — `image_sae`
+    and `text_sae` attributes share the same forward signature.
+    """
+
+    config_class = TwoSidedBatchTopKSAEConfig
+    base_model_prefix = "two_sided_batch_topk_sae"
+
+    def __init__(self, config: TwoSidedBatchTopKSAEConfig):
+        super().__init__(config)
+        self.cfg = config
+        per_side = config.latent_size_per_side
+        sub_config = BatchTopKSAEConfig(
+            hidden_size=config.hidden_size,
+            latent_size=per_side,
+            expansion_factor=1,
+            normalize_decoder=config.normalize_decoder,
+            k=config.k,
+            multi_topk=config.multi_topk,
+            use_batch_topk_in_eval=config.use_batch_topk_in_eval,
+        )
+        self.image_sae = BatchTopKSAE(sub_config)
+        self.text_sae = BatchTopKSAE(BatchTopKSAEConfig(**sub_config.to_dict()))
+        self.post_init()
+
+    def _init_weights(self, module: nn.Module):
+        return
+
+    def forward(
+        self,
+        image_embeds: Tensor,
+        text_embeds: Tensor,
+        **_: dict,
+    ) -> TwoSidedSAEOutput:
+        hs_i = image_embeds.unsqueeze(1) if image_embeds.dim() == 2 else image_embeds
+        hs_t = text_embeds.unsqueeze(1) if text_embeds.dim() == 2 else text_embeds
+
+        out_i = self.image_sae(hidden_states=hs_i)
+        out_t = self.text_sae(hidden_states=hs_t)
+
+        recon = (out_i.recon_loss + out_t.recon_loss) / 2
+        return TwoSidedSAEOutput(
+            loss=recon,
+            recon_loss=recon,
+            recon_loss_image=out_i.recon_loss,
+            recon_loss_text=out_t.recon_loss,
+            image_output=out_i.output,
+            text_output=out_t.output,
+        )
+
+    @torch.no_grad()
+    def set_decoder_norm_to_unit_norm(self):
+        self.image_sae.set_decoder_norm_to_unit_norm()
+        self.text_sae.set_decoder_norm_to_unit_norm()
+
+
 __all__ = [
     "TopKSAE",
     "BatchTopKSAE",
@@ -2172,6 +2240,7 @@ __all__ = [
     "VLBatchTopKSAE",
     "VLMatryoshkaSAE",
     "TwoSidedTopKSAE",
+    "TwoSidedBatchTopKSAE",
     "SAEOutput",
     "MatryoshkaSAEOutput",
     "VLSAEOutput",

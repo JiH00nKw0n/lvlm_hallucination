@@ -41,8 +41,18 @@ from transformers.data.data_collator import default_data_collator  # noqa: E402
 
 from src.datasets.cached_clip_pairs import CachedClipPairsDataset  # type: ignore  # noqa: E402
 from src.datasets.cached_imagenet_pairs import CachedImageNetPairsDataset  # type: ignore  # noqa: E402
-from src.models.configuration_sae import TopKSAEConfig, TwoSidedTopKSAEConfig  # type: ignore  # noqa: E402
-from src.models.modeling_sae import TopKSAE, TwoSidedTopKSAE  # type: ignore  # noqa: E402
+from src.models.configuration_sae import (  # type: ignore  # noqa: E402
+    BatchTopKSAEConfig,
+    TopKSAEConfig,
+    TwoSidedBatchTopKSAEConfig,
+    TwoSidedTopKSAEConfig,
+)
+from src.models.modeling_sae import (  # type: ignore  # noqa: E402
+    BatchTopKSAE,
+    TopKSAE,
+    TwoSidedBatchTopKSAE,
+    TwoSidedTopKSAE,
+)
 from src.models.vl_sae import VLSAE, VLSAEConfig  # type: ignore  # noqa: E402
 from src.models.shared_enc_sae import SharedEncSAE, SharedEncSAEConfig  # type: ignore  # noqa: E402
 from src.runners.trainer import (  # type: ignore  # noqa: E402
@@ -60,7 +70,14 @@ logger = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--variant", choices=["one_sae", "two_sae", "aux_sae", "vl_sae", "shared_enc"], required=True)
+    p.add_argument(
+        "--variant",
+        choices=[
+            "one_sae", "two_sae", "aux_sae", "vl_sae", "shared_enc",
+            "one_sae_batch_topk", "two_sae_batch_topk", "aux_sae_batch_topk",
+        ],
+        required=True,
+    )
     p.add_argument("--dataset", choices=["coco", "imagenet", "cc3m"], default="coco")
     p.add_argument("--cache-dir", type=str, required=True)
     p.add_argument("--eval-samples", type=int, default=0,
@@ -111,13 +128,25 @@ def _build_topksae(args: argparse.Namespace) -> TopKSAE:
     return TopKSAE(cfg)
 
 
+def _build_batchtopksae(args: argparse.Namespace) -> BatchTopKSAE:
+    cfg = BatchTopKSAEConfig(
+        hidden_size=args.hidden_size,
+        latent_size=args.latent,
+        expansion_factor=1,
+        normalize_decoder=True,
+        k=args.k,
+    )
+    return BatchTopKSAE(cfg)
+
+
 def build_one_sae_trainer(
     args: argparse.Namespace,
     train_ds,
     eval_ds,
     training_args: TrainingArguments,
+    use_batch_topk: bool = False,
 ) -> Trainer:
-    model = _build_topksae(args)
+    model = _build_batchtopksae(args) if use_batch_topk else _build_topksae(args)
     trainer = OneSidedSAETrainer(
         model=model,
         args=training_args,
@@ -134,13 +163,14 @@ def build_aux_sae_trainer(
     train_ds,
     eval_ds,
     training_args: TrainingArguments,
+    use_batch_topk: bool = False,
 ) -> Trainer:
     if args.aux_loss is None:
         raise SystemExit("--aux-loss required for --variant aux_sae")
     aux_weight = args.aux_lambda
     if aux_weight is None:
         aux_weight = 1e-4 if args.aux_loss == "iso_align" else 0.05
-    model = _build_topksae(args)
+    model = _build_batchtopksae(args) if use_batch_topk else _build_topksae(args)
     trainer = OneSidedAuxSAETrainer(
         model=model,
         args=training_args,
@@ -203,15 +233,25 @@ def build_two_sae_trainer(
     train_ds,
     eval_ds,
     training_args: TrainingArguments,
+    use_batch_topk: bool = False,
 ) -> Trainer:
-    cfg = TwoSidedTopKSAEConfig(
-        hidden_size=args.hidden_size,
-        latent_size=args.latent,
-        k=args.k,
-        normalize_decoder=True,
-        k_aux=args.k_aux,
-    )
-    model = TwoSidedTopKSAE(cfg)
+    if use_batch_topk:
+        cfg = TwoSidedBatchTopKSAEConfig(
+            hidden_size=args.hidden_size,
+            latent_size=args.latent,
+            k=args.k,
+            normalize_decoder=True,
+        )
+        model = TwoSidedBatchTopKSAE(cfg)
+    else:
+        cfg = TwoSidedTopKSAEConfig(
+            hidden_size=args.hidden_size,
+            latent_size=args.latent,
+            k=args.k,
+            normalize_decoder=True,
+            k_aux=args.k_aux,
+        )
+        model = TwoSidedTopKSAE(cfg)
     trainer = TwoSidedSAETrainer(
         model=model,
         args=training_args,
@@ -295,12 +335,18 @@ def main() -> None:
 
     if args.variant == "one_sae":
         trainer = build_one_sae_trainer(args, train_ds, eval_ds, training_args)
+    elif args.variant == "one_sae_batch_topk":
+        trainer = build_one_sae_trainer(args, train_ds, eval_ds, training_args, use_batch_topk=True)
     elif args.variant == "two_sae":
         trainer = build_two_sae_trainer(args, train_ds, eval_ds, training_args)
+    elif args.variant == "two_sae_batch_topk":
+        trainer = build_two_sae_trainer(args, train_ds, eval_ds, training_args, use_batch_topk=True)
     elif args.variant == "vl_sae":
         trainer = build_vl_sae_trainer(args, train_ds, eval_ds, training_args)
     elif args.variant == "shared_enc":
         trainer = build_shared_enc_trainer(args, train_ds, eval_ds, training_args)
+    elif args.variant == "aux_sae_batch_topk":
+        trainer = build_aux_sae_trainer(args, train_ds, eval_ds, training_args, use_batch_topk=True)
     else:
         trainer = build_aux_sae_trainer(args, train_ds, eval_ds, training_args)
 

@@ -35,6 +35,7 @@ def _coerce_floats(d: dict[str, Any]) -> dict[str, Any]:
 _VALID_TASKS = {"recon", "retrieval", "zeroshot_raw", "dead_latents"}
 _VALID_DATASETS = {"cc3m", "coco", "imagenet"}
 _VALID_METHODS = {"shared", "separated", "iso_align", "group_sparse", "ours"}
+_VALID_SAE_CLASSES = {"topk", "batch_topk"}
 
 
 @dataclass
@@ -68,6 +69,7 @@ class MethodConfig:
     name: str                            # shared | separated | iso_align | group_sparse | ours
     aux_weight: float = 0.0              # iso_align (β) / group_sparse (λ)
     base_method: str = ""                # ours: "separated" (reuses ckpt)
+    sae_class: str = "topk"              # "topk" (default) | "batch_topk"
 
 
 @dataclass
@@ -116,6 +118,8 @@ class RealExperimentConfig:
         for m in methods:
             if m.name not in _VALID_METHODS:
                 raise ValueError(f"method.name={m.name!r} not in {_VALID_METHODS}")
+            if m.sae_class not in _VALID_SAE_CLASSES:
+                raise ValueError(f"method.sae_class={m.sae_class!r} not in {_VALID_SAE_CLASSES}")
 
         evals_raw = raw.get("evaluations", [])
         evaluations: list[EvalSpec] = []

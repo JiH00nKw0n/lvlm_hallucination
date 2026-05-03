@@ -20,7 +20,12 @@ from scipy.optimize import linear_sum_assignment
 
 from src.datasets.cached_clip_pairs import CachedClipPairsDataset  # type: ignore
 from src.datasets.cached_imagenet_pairs import CachedImageNetPairsDataset  # type: ignore
-from src.models.modeling_sae import TopKSAE, TwoSidedTopKSAE  # type: ignore
+from src.models.modeling_sae import (  # type: ignore
+    BatchTopKSAE,
+    TopKSAE,
+    TwoSidedBatchTopKSAE,
+    TwoSidedTopKSAE,
+)
 from src.models.vl_sae import VLSAE  # type: ignore
 from src.models.shared_enc_sae import SharedEncSAE  # type: ignore
 
@@ -34,17 +39,34 @@ Dataset = Literal["coco", "imagenet", "cc3m"]
 # Model loading
 # ----------------------------------------------------------------------
 
+def _model_type_of(ckpt_dir: str) -> str:
+    """Read model_type from the saved HF config.json (no model load)."""
+    import json
+    cfg_path = Path(ckpt_dir) / "config.json"
+    if not cfg_path.exists():
+        return ""
+    with open(cfg_path) as f:
+        return str(json.load(f).get("model_type", ""))
+
+
 def load_sae(ckpt_dir: str | Path, method: Method):
     """Load a saved SAE checkpoint.
 
-    For method ∈ {shared, aux}: returns a TopKSAE.
-    For method ∈ {separated, ours}: returns a TwoSidedTopKSAE.
+    For method ∈ {shared, aux}: returns TopKSAE or BatchTopKSAE based on
+        the saved model_type.
+    For method ∈ {separated, ours}: returns TwoSidedTopKSAE or
+        TwoSidedBatchTopKSAE based on saved model_type.
     For method == vl_sae: returns a VLSAE.
     """
     ckpt_dir = str(ckpt_dir)
+    mtype = _model_type_of(ckpt_dir)
     if method in ("shared", "aux"):
+        if mtype == "batch_topk_sae":
+            return BatchTopKSAE.from_pretrained(ckpt_dir)
         return TopKSAE.from_pretrained(ckpt_dir)
     if method in ("separated", "ours"):
+        if mtype == "two_sided_batch_topk_sae":
+            return TwoSidedBatchTopKSAE.from_pretrained(ckpt_dir)
         return TwoSidedTopKSAE.from_pretrained(ckpt_dir)
     if method == "vl_sae":
         return VLSAE.from_pretrained(ckpt_dir)

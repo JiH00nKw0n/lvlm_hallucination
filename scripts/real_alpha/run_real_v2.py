@@ -147,21 +147,18 @@ def run_steps(steps: list[Step], dry_run: bool, force: bool) -> None:
 
 
 def _variant_for(method: MethodConfig) -> tuple[str, list[str]]:
-    """Map method.name → (--variant, extra-args) for train_real_sae.py."""
+    """Map method.name + sae_class → (--variant, extra-args) for train_real_sae.py."""
+    btk = getattr(method, "sae_class", "topk") == "batch_topk"
     if method.name == "shared":
-        return "one_sae", []
+        return ("one_sae_batch_topk" if btk else "one_sae"), []
     if method.name == "separated":
-        return "two_sae", []
-    if method.name == "iso_align":
-        args = ["--aux-loss", "iso_align"]
+        return ("two_sae_batch_topk" if btk else "two_sae"), []
+    if method.name in ("iso_align", "group_sparse"):
+        variant = "aux_sae_batch_topk" if btk else "aux_sae"
+        args = ["--aux-loss", method.name]
         if method.aux_weight > 0:
             args += ["--aux-lambda", str(method.aux_weight)]
-        return "aux_sae", args
-    if method.name == "group_sparse":
-        args = ["--aux-loss", "group_sparse"]
-        if method.aux_weight > 0:
-            args += ["--aux-lambda", str(method.aux_weight)]
-        return "aux_sae", args
+        return variant, args
     raise ValueError(f"cannot train method {method.name!r} directly")
 
 

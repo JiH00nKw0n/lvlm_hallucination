@@ -117,6 +117,114 @@ re-run with the same `MODEL` + `SEEDS` — completed caches and final
 checkpoints are detected and skipped. To force re-extraction, delete
 the corresponding `cache/<prefix>_*/meta.json`.
 
+## 7-experiment matrix (paper §5.3 ablations, May 2026)
+
+End-to-end recipe to reproduce the 7 runs designed for the L-model
+diagnostic + paper ablations. Common settings: CC3M cap **2.8M** (full),
+**L = 16 × hidden_size** (matched-capacity total — Separated splits to
+8h × 2 automatically), 10 epochs, k=32 unless noted, 5 methods (Shared /
+Separated / Iso-Energy / Group-Sparse / Post-hoc), 3 seeds each.
+
+| ID | Model | hidden | L | k | Notes |
+|----|-------|--------|---|---|-------|
+| R1 | CLIP B/32 | 512 | 8192 | **16** | k sweep low |
+| R2 | CLIP B/32 | 512 | 8192 | 32 | base baseline (already in `outputs/real_exp_cc3m_mean/`) |
+| R3 | CLIP B/32 | 512 | 8192 | **64** | k sweep high |
+| R4 | CLIP B/32 | 512 | 8192 | 32 | **BatchTopK** swap (5 methods) |
+| R5 | OpenCLIP B/32 (datacomp_xl_s13b_b90k) | 512 | 8192 | 32 | new |
+| R6 | CLIP L/14 | 768 | 12288 | 32 | docker L re-run |
+| R7 | OpenCLIP L/14 (datacomp_xl_s13b_b90k) | 768 | 12288 | 32 | new |
+
+### Step 1 — build docker image (once)
+
+```bash
+docker build -t vlm-sae-pipeline -f Dockerfile.vlm_large .
+```
+
+### Step 2 — R5 / R6 / R7 (new models, full cache extract + sweep)
+
+Triggers cache extraction for openclip_b / clip_l / openclip_l (needs
+HF_TOKEN, ~9h × 3 models for cache + ~12h × 3 models × 3 seeds for
+training/eval).
+
+```bash
+docker run --rm --gpus all \
+    -e HF_TOKEN=$HF_TOKEN \
+    -e MODEL=openclip_b,clip_l,openclip_l \
+    -e SEEDS=0,1,2 \
+    -v $PWD/cache:/workspace/lvlm_hallucination/cache \
+    -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+    -v $PWD/.log:/workspace/lvlm_hallucination/.log \
+    vlm-sae-pipeline
+```
+
+Outputs:
+- `outputs/real_exp_cc3m_openclip_b_mean/table.md` (R5)
+- `outputs/real_exp_cc3m_clip_l_mean/table.md` (R6)
+- `outputs/real_exp_cc3m_openclip_l_mean/table.md` (R7)
+
+### Step 3 — R1 / R3 / R4 (CLIP B/32 variants, reuse base cache)
+
+Base CLIP B/32 cache (`cache/clip_b32_*`) must already exist on host
+(extracted once via the original cc3m experiment, or re-extracted with
+2.8M cap if a 1M-capped cache from a prior run exists).
+
+```bash
+for VARIANT in cc3m_clip_b32_k16 cc3m_clip_b32_k64 cc3m_clip_b32_batchtopk; do
+  for SEED in 0 1 2; do
+    docker run --rm --gpus all \
+        -v $PWD/cache:/workspace/lvlm_hallucination/cache \
+        -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+        -v $PWD/.log:/workspace/lvlm_hallucination/.log \
+        --entrypoint bash vlm-sae-pipeline \
+        scripts/run_seed_sweep.sh $VARIANT $SEED
+  done
+done
+```
+
+Then aggregate per-variant tables manually (or with
+`scripts/real_alpha/aggregate_seed_table.py`):
+
+```bash
+for V in clip_b32_k16 clip_b32_k64 clip_b32_batchtopk; do
+  docker run --rm \
+      -v $PWD/configs:/workspace/lvlm_hallucination/configs \
+      -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+      --entrypoint python vlm-sae-pipeline \
+      scripts/real_alpha/aggregate_seed_table.py \
+        --config configs/real/cc3m_$V.yaml \
+        --roots outputs/real_exp_cc3m_${V}_s0,outputs/real_exp_cc3m_${V}_s1,outputs/real_exp_cc3m_${V}_s2 \
+        --out outputs/real_exp_cc3m_${V}_mean
+done
+```
+
+### Step 4 — collect
+
+After all 6 docker invocations finish:
+
+| R | Output table |
+|---|---|
+| R1 | `outputs/real_exp_cc3m_clip_b32_k16_mean/table.md` |
+| R2 | `outputs/real_exp_cc3m_mean/table.md` (existing) |
+| R3 | `outputs/real_exp_cc3m_clip_b32_k64_mean/table.md` |
+| R4 | `outputs/real_exp_cc3m_clip_b32_batchtopk_mean/table.md` |
+| R5 | `outputs/real_exp_cc3m_openclip_b_mean/table.md` |
+| R6 | `outputs/real_exp_cc3m_clip_l_mean/table.md` |
+| R7 | `outputs/real_exp_cc3m_openclip_l_mean/table.md` |
+
+### GPU / wall-time budget
+
+| Step | Wall (single A100) |
+|---|---|
+| R5 + R6 + R7 cache extract | ~27h (3 × 9h) |
+| R5 + R6 + R7 sweep (3 models × 3 seeds × 5 methods) | ~36h (3 × 12h) |
+| R1 + R3 + R4 sweep (3 variants × 3 seeds × 5 methods) | ~36h |
+| **Total** | ~100h ≈ 4–5 days single GPU |
+
+Multi-GPU: run each `docker run` on a separate device by adding
+`-e CUDA_VISIBLE_DEVICES=N --gpus '"device=N"'`. R5/R6/R7 are independent;
+the 9 R1/R3/R4 runs are independent too.
+
 ## Failure modes
 
 | Symptom                         | Fix                                                           |

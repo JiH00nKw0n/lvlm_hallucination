@@ -335,6 +335,38 @@ class TwoSidedTopKSAEConfig(PretrainedConfig):
         return self.latent_size // 2
 
 
+class TwoSidedBatchTopKSAEConfig(PretrainedConfig):
+    """Two independent BatchTopKSAE stacks, each ``latent_size // 2`` wide."""
+
+    model_type = "two_sided_batch_topk_sae"
+
+    def __init__(
+        self,
+        hidden_size: int = 512,
+        latent_size: int = 8192,
+        k: int = 8,
+        normalize_decoder: bool = True,
+        multi_topk: bool = False,
+        weight_tie: bool = False,
+        use_batch_topk_in_eval: bool = True,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        if latent_size % 2 != 0:
+            raise ValueError(f"latent_size must be even, got {latent_size}")
+        self.hidden_size = hidden_size
+        self.latent_size = latent_size
+        self.k = k
+        self.normalize_decoder = normalize_decoder
+        self.multi_topk = multi_topk
+        self.weight_tie = weight_tie
+        self.use_batch_topk_in_eval = use_batch_topk_in_eval
+
+    @property
+    def latent_size_per_side(self) -> int:
+        return self.latent_size // 2
+
+
 __all__ = [
     "TopKSAEConfig",
     "BatchTopKSAEConfig",
@@ -343,4 +375,5 @@ __all__ = [
     "VLBatchTopKSAEConfig",
     "VLMatryoshkaSAEConfig",
     "TwoSidedTopKSAEConfig",
+    "TwoSidedBatchTopKSAEConfig",
 ]

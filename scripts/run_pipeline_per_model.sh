@@ -104,7 +104,7 @@ for KEY in "${MODEL_KEYS[@]}"; do
   fi
 done
 
-CC3M_MAX_SAMPLES=${CC3M_MAX_SAMPLES:-1000000}
+CC3M_MAX_SAMPLES=${CC3M_MAX_SAMPLES:-2800000}
 CC3M_NUM_WORKERS=${CC3M_NUM_WORKERS:-2}
 
 mkdir -p .log cache outputs
@@ -194,12 +194,15 @@ DATASET_NAME="cc3m_${MODEL_KEY}"
 TARGET_CFG="configs/real/${DATASET_NAME}.yaml"
 SRC_CFG="configs/real/cc3m.yaml"
 
-# Rewrite cache_dir / hidden_size / output.root / name from cc3m.yaml.
+# Rewrite cache_dir / hidden_size / latent_size / output.root / name.
+# latent_size scales with hidden so SAE atom budget is matched per model.
+LATENT=$((HIDDEN * 16))
 sed -E \
   -e "s|^( *cache_dir:) cache/clip_b32_cc3m\$|\1 ${CACHE_CC3M}|" \
   -e "s|^( *cache_dir:) cache/clip_b32_coco\$|\1 ${CACHE_COCO}|" \
   -e "s|^( *cache_dir:) cache/clip_b32_imagenet\$|\1 ${CACHE_IMAGENET}|" \
   -e "s|^( *hidden_size:) 512\$|\1 ${HIDDEN}|" \
+  -e "s|^( *latent_size:) 8192\$|\1 ${LATENT}|" \
   -e "s|^( *root:) outputs/real_exp_cc3m\$|\1 outputs/real_exp_${DATASET_NAME}|" \
   -e "s|^name: cc3m\$|name: ${DATASET_NAME}|" \
   "$SRC_CFG" > "$TARGET_CFG"
