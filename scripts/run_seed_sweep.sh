@@ -77,6 +77,15 @@ log "config=$TMP_CFG  root=$ROOT"
 log "STEP train+eval pipeline"
 python scripts/real_alpha/run_real_v2.py --config "$TMP_CFG"
 
+# TABLE_ONLY=1 short-circuits all post-table steps (MS, steering, zs_filtered).
+# Use this when only the headline retrieval/recon/zeroshot table is needed
+# (the only thing reported in the paper §5.3 ablations).
+if [[ "${TABLE_ONLY:-0}" == "1" ]]; then
+  log "TABLE_ONLY=1 — skipping cross-modal steering / MS / zs_filtered"
+  log "DONE sweep"
+  exit 0
+fi
+
 # 2. cc3m / cc3m_siglip2: cross-modal steering + MS (CC3M val only) at ROOT.
 # MMS (Kaushik 2026) and MS-COCO MS deprecated — not reported in current paper.
 if [[ "$IS_CC3M_LIKE" == "1" ]]; then

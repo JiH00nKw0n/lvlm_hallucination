@@ -119,93 +119,148 @@ the corresponding `cache/<prefix>_*/meta.json`.
 
 ## 7-experiment matrix (paper §5.3 ablations, May 2026)
 
-End-to-end recipe to reproduce the 7 runs designed for the L-model
-diagnostic + paper ablations. Common settings: CC3M cap **2.8M** (full),
-**L = 16 × hidden_size** (matched-capacity total — Separated splits to
-8h × 2 automatically), 10 epochs, k=32 unless noted, 5 methods (Shared /
+End-to-end recipe for 7 runs designed for the L-model diagnostic +
+paper ablations. Common settings: CC3M cap **2.8M** (full), **L = 16 ×
+hidden_size** (matched-capacity total — Separated splits to 8h × 2
+automatically), 10 epochs, k=32 unless noted, 5 methods (Shared /
 Separated / Iso-Energy / Group-Sparse / Post-hoc), 3 seeds each.
+**Each docker run is self-contained**: extracts its model cache (if
+missing) then runs the 3-seed sweep + aggregate.
 
 | ID | Model | hidden | L | k | Notes |
 |----|-------|--------|---|---|-------|
 | R1 | CLIP B/32 | 512 | 8192 | **16** | k sweep low |
-| R2 | CLIP B/32 | 512 | 8192 | 32 | base baseline (already in `outputs/real_exp_cc3m_mean/`) |
+| R2 | CLIP B/32 | 512 | 8192 | 32 | base baseline |
 | R3 | CLIP B/32 | 512 | 8192 | **64** | k sweep high |
 | R4 | CLIP B/32 | 512 | 8192 | 32 | **BatchTopK** swap (5 methods) |
 | R5 | OpenCLIP B/32 (datacomp_xl_s13b_b90k) | 512 | 8192 | 32 | new |
 | R6 | CLIP L/14 | 768 | 12288 | 32 | docker L re-run |
 | R7 | OpenCLIP L/14 (datacomp_xl_s13b_b90k) | 768 | 12288 | 32 | new |
 
-### Step 1 — build docker image (once)
+R1, R2, R3, R4 share `cache/clip_b32_*`. The first of these to run
+extracts the cache; subsequent ones detect `meta.json` and skip the
+9h extraction step. R5, R6, R7 each have their own cache.
+
+### Build docker image (once)
 
 ```bash
 docker build -t vlm-sae-pipeline -f Dockerfile.vlm_large .
 ```
 
-### Step 2 — R5 / R6 / R7 (new models, full cache extract + sweep)
+### `TABLE_ONLY=1` semantics
 
-Triggers cache extraction for openclip_b / clip_l / openclip_l (needs
-HF_TOKEN, ~9h × 3 models for cache + ~12h × 3 models × 3 seeds for
-training/eval).
+Every command below sets `-e TABLE_ONLY=1`, which short-circuits the
+post-table steps inside `run_seed_sweep.sh` and the steering/MS/MMS
+plot generation in `run_pipeline_per_model.sh`. Only the headline
+retrieval + recon + zeroshot table (`table.md` / `table.tex`) is
+produced — exactly the columns reported in paper §5.3 ablations.
+
+### Common docker mounts
+
+All commands assume the host repo working dir is `$PWD`. Cache, outputs,
+logs are bind-mounted so artifacts persist across runs and are visible
+on the host.
+
+```
+-v $PWD/cache:/workspace/lvlm_hallucination/cache
+-v $PWD/outputs:/workspace/lvlm_hallucination/outputs
+-v $PWD/.log:/workspace/lvlm_hallucination/.log
+```
+
+### R1 — CLIP B/32, k=16
 
 ```bash
 docker run --rm --gpus all \
     -e HF_TOKEN=$HF_TOKEN \
-    -e MODEL=openclip_b,clip_l,openclip_l \
-    -e SEEDS=0,1,2 \
+    -e MODEL=clip_b32 -e DATASET=cc3m_clip_b32_k16 \
+    -e SEEDS=0,1,2 -e TABLE_ONLY=1 \
     -v $PWD/cache:/workspace/lvlm_hallucination/cache \
     -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
     -v $PWD/.log:/workspace/lvlm_hallucination/.log \
     vlm-sae-pipeline
 ```
 
-Outputs:
-- `outputs/real_exp_cc3m_openclip_b_mean/table.md` (R5)
-- `outputs/real_exp_cc3m_clip_l_mean/table.md` (R6)
-- `outputs/real_exp_cc3m_openclip_l_mean/table.md` (R7)
-
-### Step 3 — R1 / R3 / R4 (CLIP B/32 variants, reuse base cache)
-
-Base CLIP B/32 cache (`cache/clip_b32_*`) must already exist on host
-(extracted once via the original cc3m experiment, or re-extracted with
-2.8M cap if a 1M-capped cache from a prior run exists).
+### R2 — CLIP B/32, k=32 (base baseline)
 
 ```bash
-for VARIANT in cc3m_clip_b32_k16 cc3m_clip_b32_k64 cc3m_clip_b32_batchtopk; do
-  for SEED in 0 1 2; do
-    docker run --rm --gpus all \
-        -v $PWD/cache:/workspace/lvlm_hallucination/cache \
-        -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
-        -v $PWD/.log:/workspace/lvlm_hallucination/.log \
-        --entrypoint bash vlm-sae-pipeline \
-        scripts/run_seed_sweep.sh $VARIANT $SEED
-  done
-done
+docker run --rm --gpus all \
+    -e HF_TOKEN=$HF_TOKEN \
+    -e MODEL=clip_b32 \
+    -e SEEDS=0,1,2 -e TABLE_ONLY=1 \
+    -v $PWD/cache:/workspace/lvlm_hallucination/cache \
+    -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+    -v $PWD/.log:/workspace/lvlm_hallucination/.log \
+    vlm-sae-pipeline
 ```
 
-Then aggregate per-variant tables manually (or with
-`scripts/real_alpha/aggregate_seed_table.py`):
+### R3 — CLIP B/32, k=64
 
 ```bash
-for V in clip_b32_k16 clip_b32_k64 clip_b32_batchtopk; do
-  docker run --rm \
-      -v $PWD/configs:/workspace/lvlm_hallucination/configs \
-      -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
-      --entrypoint python vlm-sae-pipeline \
-      scripts/real_alpha/aggregate_seed_table.py \
-        --config configs/real/cc3m_$V.yaml \
-        --roots outputs/real_exp_cc3m_${V}_s0,outputs/real_exp_cc3m_${V}_s1,outputs/real_exp_cc3m_${V}_s2 \
-        --out outputs/real_exp_cc3m_${V}_mean
-done
+docker run --rm --gpus all \
+    -e HF_TOKEN=$HF_TOKEN \
+    -e MODEL=clip_b32 -e DATASET=cc3m_clip_b32_k64 \
+    -e SEEDS=0,1,2 -e TABLE_ONLY=1 \
+    -v $PWD/cache:/workspace/lvlm_hallucination/cache \
+    -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+    -v $PWD/.log:/workspace/lvlm_hallucination/.log \
+    vlm-sae-pipeline
 ```
 
-### Step 4 — collect
+### R4 — CLIP B/32, BatchTopK (5 methods all swap)
 
-After all 6 docker invocations finish:
+```bash
+docker run --rm --gpus all \
+    -e HF_TOKEN=$HF_TOKEN \
+    -e MODEL=clip_b32 -e DATASET=cc3m_clip_b32_batchtopk \
+    -e SEEDS=0,1,2 -e TABLE_ONLY=1 \
+    -v $PWD/cache:/workspace/lvlm_hallucination/cache \
+    -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+    -v $PWD/.log:/workspace/lvlm_hallucination/.log \
+    vlm-sae-pipeline
+```
+
+### R5 — OpenCLIP B/32 (datacomp_xl_s13b_b90k)
+
+```bash
+docker run --rm --gpus all \
+    -e HF_TOKEN=$HF_TOKEN \
+    -e MODEL=openclip_b -e SEEDS=0,1,2 -e TABLE_ONLY=1 \
+    -v $PWD/cache:/workspace/lvlm_hallucination/cache \
+    -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+    -v $PWD/.log:/workspace/lvlm_hallucination/.log \
+    vlm-sae-pipeline
+```
+
+### R6 — CLIP L/14
+
+```bash
+docker run --rm --gpus all \
+    -e HF_TOKEN=$HF_TOKEN \
+    -e MODEL=clip_l -e SEEDS=0,1,2 -e TABLE_ONLY=1 \
+    -v $PWD/cache:/workspace/lvlm_hallucination/cache \
+    -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+    -v $PWD/.log:/workspace/lvlm_hallucination/.log \
+    vlm-sae-pipeline
+```
+
+### R7 — OpenCLIP L/14 (datacomp_xl_s13b_b90k)
+
+```bash
+docker run --rm --gpus all \
+    -e HF_TOKEN=$HF_TOKEN \
+    -e MODEL=openclip_l -e SEEDS=0,1,2 -e TABLE_ONLY=1 \
+    -v $PWD/cache:/workspace/lvlm_hallucination/cache \
+    -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+    -v $PWD/.log:/workspace/lvlm_hallucination/.log \
+    vlm-sae-pipeline
+```
+
+### Result locations
 
 | R | Output table |
 |---|---|
 | R1 | `outputs/real_exp_cc3m_clip_b32_k16_mean/table.md` |
-| R2 | `outputs/real_exp_cc3m_mean/table.md` (existing) |
+| R2 | `outputs/real_exp_cc3m_clip_b32_mean/table.md` |
 | R3 | `outputs/real_exp_cc3m_clip_b32_k64_mean/table.md` |
 | R4 | `outputs/real_exp_cc3m_clip_b32_batchtopk_mean/table.md` |
 | R5 | `outputs/real_exp_cc3m_openclip_b_mean/table.md` |
@@ -216,14 +271,14 @@ After all 6 docker invocations finish:
 
 | Step | Wall (single A100) |
 |---|---|
-| R5 + R6 + R7 cache extract | ~27h (3 × 9h) |
-| R5 + R6 + R7 sweep (3 models × 3 seeds × 5 methods) | ~36h (3 × 12h) |
-| R1 + R3 + R4 sweep (3 variants × 3 seeds × 5 methods) | ~36h |
-| **Total** | ~100h ≈ 4–5 days single GPU |
+| Cache extract per model (R2/R5/R6/R7 first run; R1/R3/R4 reuse R2's cache) | ~9h × 4 = ~36h |
+| Sweep per experiment (5 methods × 3 seeds × 2.8M × 10ep) | ~12h × 7 = ~84h |
+| **Total worst case** (sequential, fresh cache) | ~120h ≈ 5 days single GPU |
 
-Multi-GPU: run each `docker run` on a separate device by adding
-`-e CUDA_VISIBLE_DEVICES=N --gpus '"device=N"'`. R5/R6/R7 are independent;
-the 9 R1/R3/R4 runs are independent too.
+Order tips: run R2 first to populate `cache/clip_b32_*`, then R1 / R3 /
+R4 detect the cache and skip extraction. R5 / R6 / R7 are independent
+and can run in parallel on additional GPUs (`-e CUDA_VISIBLE_DEVICES=N
+--gpus '"device=N"'`).
 
 ## Failure modes
 

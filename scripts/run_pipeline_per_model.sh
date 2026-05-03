@@ -91,6 +91,7 @@ declare -A MODEL_HIDDEN
 declare -A MODEL_PREFIX
 
 #                       backend         model_id                                       pretrained                hidden  prefix
+MODEL_BACKEND[clip_b32]="transformers"; MODEL_HF_ID[clip_b32]="openai/clip-vit-base-patch32";      MODEL_PRETRAINED[clip_b32]="";                MODEL_HIDDEN[clip_b32]=512;  MODEL_PREFIX[clip_b32]="clip_b32"
 MODEL_BACKEND[clip_l]="transformers";   MODEL_HF_ID[clip_l]="openai/clip-vit-large-patch14";       MODEL_PRETRAINED[clip_l]="";                  MODEL_HIDDEN[clip_l]=768;   MODEL_PREFIX[clip_l]="clip_l14"
 MODEL_BACKEND[openclip_l]="openclip";   MODEL_HF_ID[openclip_l]="ViT-L-14";                        MODEL_PRETRAINED[openclip_l]="datacomp_xl_s13b_b90k"; MODEL_HIDDEN[openclip_l]=768; MODEL_PREFIX[openclip_l]="openclip_l14"
 MODEL_BACKEND[siglip_l]="transformers"; MODEL_HF_ID[siglip_l]="google/siglip2-large-patch16-256";  MODEL_PRETRAINED[siglip_l]="";                MODEL_HIDDEN[siglip_l]=1024; MODEL_PREFIX[siglip_l]="siglip2_large"
@@ -190,24 +191,38 @@ for MOD in image text; do
 done
 
 # ─── 3. Per-model config (parameterized cc3m.yaml) ───────────────────────
-DATASET_NAME="cc3m_${MODEL_KEY}"
-TARGET_CFG="configs/real/${DATASET_NAME}.yaml"
-SRC_CFG="configs/real/cc3m.yaml"
+# DATASET env override: skip sed-generation and use a pre-existing yaml
+# under configs/real/. Cache extraction above still runs based on MODEL_KEY,
+# so a single docker run can extract base CLIP B/32 cache and then drive
+# any pre-written cc3m_clip_b32_<variant>.yaml off it.
+if [[ -n "${DATASET:-}" ]]; then
+  DATASET_NAME="$DATASET"
+  TARGET_CFG="configs/real/${DATASET_NAME}.yaml"
+  if [[ ! -f "$TARGET_CFG" ]]; then
+    echo "ERROR: DATASET=$DATASET requires $TARGET_CFG (pre-existing yaml)"
+    exit 2
+  fi
+  log "Using pre-existing config: $TARGET_CFG (DATASET override)"
+else
+  DATASET_NAME="cc3m_${MODEL_KEY}"
+  TARGET_CFG="configs/real/${DATASET_NAME}.yaml"
+  SRC_CFG="configs/real/cc3m.yaml"
 
-# Rewrite cache_dir / hidden_size / latent_size / output.root / name.
-# latent_size scales with hidden so SAE atom budget is matched per model.
-LATENT=$((HIDDEN * 16))
-sed -E \
-  -e "s|^( *cache_dir:) cache/clip_b32_cc3m\$|\1 ${CACHE_CC3M}|" \
-  -e "s|^( *cache_dir:) cache/clip_b32_coco\$|\1 ${CACHE_COCO}|" \
-  -e "s|^( *cache_dir:) cache/clip_b32_imagenet\$|\1 ${CACHE_IMAGENET}|" \
-  -e "s|^( *hidden_size:) 512\$|\1 ${HIDDEN}|" \
-  -e "s|^( *latent_size:) 8192\$|\1 ${LATENT}|" \
-  -e "s|^( *root:) outputs/real_exp_cc3m\$|\1 outputs/real_exp_${DATASET_NAME}|" \
-  -e "s|^name: cc3m\$|name: ${DATASET_NAME}|" \
-  "$SRC_CFG" > "$TARGET_CFG"
+  # Rewrite cache_dir / hidden_size / latent_size / output.root / name.
+  # latent_size scales with hidden so SAE atom budget is matched per model.
+  LATENT=$((HIDDEN * 16))
+  sed -E \
+    -e "s|^( *cache_dir:) cache/clip_b32_cc3m\$|\1 ${CACHE_CC3M}|" \
+    -e "s|^( *cache_dir:) cache/clip_b32_coco\$|\1 ${CACHE_COCO}|" \
+    -e "s|^( *cache_dir:) cache/clip_b32_imagenet\$|\1 ${CACHE_IMAGENET}|" \
+    -e "s|^( *hidden_size:) 512\$|\1 ${HIDDEN}|" \
+    -e "s|^( *latent_size:) 8192\$|\1 ${LATENT}|" \
+    -e "s|^( *root:) outputs/real_exp_cc3m\$|\1 outputs/real_exp_${DATASET_NAME}|" \
+    -e "s|^name: cc3m\$|name: ${DATASET_NAME}|" \
+    "$SRC_CFG" > "$TARGET_CFG"
 
-log "Wrote per-model config: $TARGET_CFG"
+  log "Wrote per-model config: $TARGET_CFG"
+fi
 
 # ─── 4. 3-seed sweep ─────────────────────────────────────────────────────
 for SEED in "${SEEDS[@]}"; do
@@ -215,6 +230,7 @@ for SEED in "${SEEDS[@]}"; do
   TRAIN_CACHE_COCO="$CACHE_COCO" \
   TRAIN_CACHE_CC3M_VAL="$CACHE_CC3M_VAL" \
   TRAIN_CACHE_IMAGENET="$CACHE_IMAGENET" \
+  TABLE_ONLY="${TABLE_ONLY:-0}" \
     bash scripts/run_seed_sweep.sh "$DATASET_NAME" "$SEED"
 done
 
@@ -235,7 +251,9 @@ python scripts/real_alpha/aggregate_seed_table.py \
   --roots "$ROOTS_CSV" \
   --out "$MEAN_DIR"
 
-if (( ${#SEEDS[@]} > 1 )); then
+# Steering / MS / MMS plots only when TABLE_ONLY is off (paper §5.3 just
+# needs the headline retrieval/recon/zeroshot table).
+if [[ "${TABLE_ONLY:-0}" != "1" ]] && (( ${#SEEDS[@]} > 1 )); then
   STEER_ROOTS_CSV=""
   for s in "${SEEDS[@]}"; do
     [[ -n "$STEER_ROOTS_CSV" ]] && STEER_ROOTS_CSV+=","
