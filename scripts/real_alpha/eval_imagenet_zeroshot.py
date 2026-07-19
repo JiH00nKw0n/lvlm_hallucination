@@ -44,6 +44,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache-dir", type=str, required=True)
     p.add_argument("--perm", type=str, default=None,
                    help="Path to perm.npz (required for method='ours').")
+    p.add_argument("--soft-map", type=str, default=None,
+                   help="npz with soft assignment 'T' (rebuttal E6); "
+                        "overrides --perm for method='ours'")
     p.add_argument("--output", type=str, required=True)
     p.add_argument("--batch-size", type=int, default=2048)
     p.add_argument("--n-classes", type=int, default=1000)
