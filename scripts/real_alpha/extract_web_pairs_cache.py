@@ -221,6 +221,7 @@ def extract(args: argparse.Namespace) -> None:
     unflushed_keys = 0
     t0 = time.time()
     last_log = 0
+    rows_at_start = len(keys)  # rate baseline: fixed at launch, NOT at flush
 
     def _flush():
         nonlocal unflushed_keys
@@ -294,11 +295,12 @@ def extract(args: argparse.Namespace) -> None:
 
         if len(keys) - last_log >= max(1, args.flush_every // 4):
             elapsed = time.time() - t0
-            rate = (len(keys) - state.rows_written) / max(elapsed, 1e-6)
+            rate = (len(keys) - rows_at_start) / max(elapsed, 1e-6)
             eta_min = (args.max_samples - len(keys)) / max(rate, 1e-6) / 60
-            logger.info("n=%d/%d (%.1f%%) rate=%.0f/s failed=%d ETA=%.0fmin",
+            logger.info("n=%d/%d (%.1f%%) rate=%.0f/s failed=%d ETA=%.0fmin (wall_end=%s)",
                         len(keys), args.max_samples,
-                        100 * len(keys) / args.max_samples, rate, n_failed, eta_min)
+                        100 * len(keys) / args.max_samples, rate, n_failed, eta_min,
+                        time.strftime("%H:%M UTC", time.gmtime(time.time() + eta_min * 60)))
             last_log = len(keys)
         if unflushed_keys >= args.flush_every:
             _flush()
