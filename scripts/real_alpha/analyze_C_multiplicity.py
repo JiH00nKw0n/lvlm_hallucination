@@ -213,15 +213,24 @@ def analyze(C: np.ndarray, fire_i: np.ndarray, fire_t: np.ndarray,
         perm = pz["perm"]
         alive_idx_t = np.where(alive_t)[0]
         argmax_alive = alive_idx_t[C_alive.argmax(axis=1)]  # global text idx of row max
-        hung_partner = perm[np.where(alive_i)[0]]
+        rows_idx = np.where(alive_i)[0]
+        hung_partner = perm[rows_idx]
+        partner_C = C[rows_idx, hung_partner]
         agree = hung_partner == argmax_alive
         out["hungarian"] = {
             "frac_perm_equals_argmax": float(agree.mean()),
             "n_alive_rows": int(agree.size),
             "frac_partner_C_ge": {
-                str(tau): float((
-                    C[np.where(alive_i)[0], hung_partner] >= tau
-                ).mean()) for tau in taus
+                str(tau): float((partner_C >= tau).mean()) for tau in taus
+            },
+            # agreement conditioned on partner strength: where the match is
+            # strongly co-activating, Hungarian should equal the row argmax
+            "agree_given_partner_C_ge": {
+                str(tau): {
+                    "n": int((partner_C >= tau).sum()),
+                    "frac_agree": float(agree[partner_C >= tau].mean())
+                    if (partner_C >= tau).any() else None,
+                } for tau in taus
             },
         }
     return out, alive_i, alive_t, top1, margin
