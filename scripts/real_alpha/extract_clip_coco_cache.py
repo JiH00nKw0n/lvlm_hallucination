@@ -1,8 +1,9 @@
 """Extract VLM image/text embeddings for COCO Karpathy.
 
-Supports:
+Supports (model forwards centralized in extract_common.load_model_forwards):
   - CLIPModel-based (CLIP, MetaCLIP) via transformers
   - SiglipModel-based (SigLIP2) via transformers
+  - Aimv2Model (apple/aimv2-*-lit) via transformers
   - OpenCLIP models (DataComp, MobileCLIP) via --backend openclip
 
 Usage:
@@ -19,13 +20,16 @@ import argparse
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 
 import torch
 from datasets import load_dataset
 from tqdm import tqdm
-from transformers import AutoModel, AutoProcessor, AutoConfig
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from extract_common import load_model_forwards  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -47,11 +51,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--flush-every", type=int, default=4096)
     p.add_argument("--splits", nargs="+", default=["train", "validation", "test"])
     return p.parse_args()
-
-
-def _is_siglip(model_name: str) -> bool:
-    cfg = AutoConfig.from_pretrained(model_name)
-    return cfg.model_type == "siglip"
 
 
 def load_state(path: Path) -> dict:
@@ -152,36 +151,9 @@ def extract(args: argparse.Namespace) -> None:
     logger.info("Device: %s", device)
 
     model_name = args.model
-    backend = args.backend
-
-    if backend == "openclip":
-        import open_clip
-        pretrained = args.pretrained or None
-        logger.info("Loading OpenCLIP %s (pretrained=%s)", model_name, pretrained)
-        model, _, oc_preprocess = open_clip.create_model_and_transforms(
-            model_name, pretrained=pretrained, device=device)
-        model.eval()
-        oc_tokenizer = open_clip.get_tokenizer(model_name)
-        # Detect dim from a dummy forward
-        with torch.no_grad():
-            dummy = torch.randn(1, 3, 224, 224, device=device)
-            emb_dim = model.encode_image(dummy).shape[-1]
-        siglip = False
-        processor = None  # not used for openclip
-        logger.info("OpenCLIP dim: %d", emb_dim)
-    else:
-        siglip = _is_siglip(model_name)
-        logger.info("Loading %s (siglip=%s)", model_name, siglip)
-        model = AutoModel.from_pretrained(model_name).to(device).eval()
-        model.requires_grad_(False)
-        processor = AutoProcessor.from_pretrained(model_name)
-        oc_preprocess = None
-        oc_tokenizer = None
-        if siglip:
-            emb_dim = model.config.vision_config.hidden_size
-        else:
-            emb_dim = model.config.projection_dim
-        logger.info("Embedding dim: %d", emb_dim)
+    fwd = load_model_forwards(model_name, device, args.backend, args.pretrained)
+    emb_dim = fwd.emb_dim
+    logger.info("Embedding dim: %d (kind=%s)", emb_dim, fwd.kind)
 
     image_dict: dict[int, torch.Tensor] = {
         int(k): v for k, v in load_state(cache_dir / "image_embeddings.pt").items()
@@ -212,18 +184,7 @@ def extract(args: argparse.Namespace) -> None:
             nonlocal pending_ids, pending_pils, processed_since_flush
             if not pending_pils:
                 return
-            with torch.no_grad():
-                if backend == "openclip":
-                    batch = torch.stack([oc_preprocess(p) for p in pending_pils]).to(device)
-                    feats = model.encode_image(batch).float().cpu()
-                elif siglip:
-                    inputs = processor(images=pending_pils, return_tensors="pt")
-                    out = model.vision_model(pixel_values=inputs["pixel_values"].to(device))
-                    feats = out.pooler_output.float().cpu()
-                else:
-                    inputs = processor(images=pending_pils, return_tensors="pt")
-                    vision_out = model.vision_model(pixel_values=inputs["pixel_values"].to(device))
-                    feats = model.visual_projection(vision_out.pooler_output).float().cpu()
+            feats = fwd.fwd_img(pending_pils)
             for iid, vec in zip(pending_ids, feats):
                 image_dict[iid] = vec.clone()
             processed_since_flush += len(pending_ids)
@@ -267,26 +228,7 @@ def extract(args: argparse.Namespace) -> None:
             nonlocal pending_keys, pending_texts, processed_since_flush
             if not pending_texts:
                 return
-            with torch.no_grad():
-                if backend == "openclip":
-                    tokens = oc_tokenizer(pending_texts).to(device)
-                    feats = model.encode_text(tokens).float().cpu()
-                else:
-                    tok = processor(
-                        text=pending_texts, return_tensors="pt",
-                        padding="max_length" if siglip else True, truncation=True,
-                        max_length=64 if siglip else 77,
-                    )
-                    input_ids = tok["input_ids"].to(device)
-                    attention_mask = tok.get("attention_mask")
-                    if attention_mask is not None:
-                        attention_mask = attention_mask.to(device)
-                    if siglip:
-                        out = model.text_model(input_ids=input_ids, attention_mask=attention_mask)
-                        feats = out.pooler_output.float().cpu()
-                    else:
-                        text_out = model.text_model(input_ids=input_ids, attention_mask=attention_mask)
-                        feats = model.text_projection(text_out.pooler_output).float().cpu()
+            feats = fwd.fwd_txt(pending_texts)
             for key, vec in zip(pending_keys, feats):
                 text_dict[key] = vec.clone()
             processed_since_flush += len(pending_keys)

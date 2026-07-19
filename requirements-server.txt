@@ -1,0 +1,21 @@
+# Server (elice-10g, A100) environment for the rebuttal pipeline.
+# python3 -m venv .venv && .venv/bin/pip install -r requirements-server.txt
+#
+# transformers is pinned BELOW 5.x on purpose: the extractors access
+# model.vision_model / visual_projection and 4.57 ships Aimv2Model.
+torch==2.7.0
+torchvision==0.22.0
+transformers==4.57.1
+datasets==3.2.0
+accelerate==1.6.0
+numpy>=2,<3
+scipy>=1.14
+open_clip_torch==2.32.0
+safetensors
+pyyaml
+tqdm
+pillow
+matplotlib
+huggingface-hub
+einops        # src/models/modeling_sae.py
+trl           # src/runners/trainer.py (loaded via _bootstrap)
