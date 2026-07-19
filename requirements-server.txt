@@ -20,3 +20,4 @@ huggingface-hub
 einops        # src/models/modeling_sae.py
 trl           # src/runners/trainer.py (loaded via _bootstrap)
 omegaconf     # build_real_table via src.common
+pydantic      # src.common dependency chain
