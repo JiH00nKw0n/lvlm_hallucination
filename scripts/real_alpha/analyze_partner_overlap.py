@@ -55,6 +55,12 @@ def parse_args():
     p.add_argument("--dataset", choices=["cc3m", "coco", "laion"], default="cc3m")
     p.add_argument("--split", type=str, default="train")
     p.add_argument("--tau", type=float, default=0.4)
+    p.add_argument("--relative", action="store_true",
+                   help="select groups by RELATIVE competition instead of the "
+                        "absolute tau cut: partners are cols with C >= rel-ratio "
+                        "* rowmax, groups need rowmax >= min-top1 and >=2 partners")
+    p.add_argument("--rel-ratio", type=float, default=0.8)
+    p.add_argument("--min-top1", type=float, default=0.3)
     p.add_argument("--top-m", type=int, default=0,
                    help="0 = ALL 1:N groups; else only the top-M by 2nd-partner C")
     p.add_argument("--max-partners", type=int, default=4)
@@ -79,8 +85,15 @@ def main():
     rows_g, cols_g = np.where(alive_i)[0], np.where(alive_t)[0]
     C_alive = C[np.ix_(alive_i, alive_t)]
 
-    n_partners = (C_alive >= args.tau).sum(axis=1)
-    cand = np.where(n_partners >= 2)[0]
+    rowmax = C_alive.max(axis=1)
+    if args.relative:
+        thr = args.rel_ratio * rowmax[:, None]          # per-row cut
+        n_partners = (C_alive >= thr).sum(axis=1)
+        cand = np.where((n_partners >= 2) & (rowmax >= args.min_top1))[0]
+    else:
+        thr = np.full((C_alive.shape[0], 1), args.tau)  # absolute cut
+        n_partners = (C_alive >= args.tau).sum(axis=1)
+        cand = np.where(n_partners >= 2)[0]
     second_best = np.sort(C_alive, axis=1)[:, -2]
     cand = cand[np.argsort(-second_best[cand])]
     if args.top_m:
@@ -89,9 +102,11 @@ def main():
     for r in cand:
         order = np.argsort(-C_alive[r])
         partners = [(int(cols_g[c]), float(C_alive[r, c]))
-                    for c in order[:args.max_partners] if C_alive[r, c] >= args.tau]
+                    for c in order[:args.max_partners] if C_alive[r, c] >= thr[r, 0]]
         groups.append({"img_latent": int(rows_g[r]), "partners": partners})
-    print(f"{len(groups)} groups (tau={args.tau})")
+    mode = (f"relative rel_ratio={args.rel_ratio} min_top1={args.min_top1}"
+            if args.relative else f"absolute tau={args.tau}")
+    print(f"{len(groups)} groups ({mode})")
 
     model = eval_utils.load_sae(args.ckpt, "separated")
     model.to(device).eval()
@@ -200,6 +215,9 @@ def main():
         "frac_groups_jaccard_p1p2_gt_0.5": float(np.mean([j > 0.5 for j in j12])) if j12 else None,
     }
     result = {"tau": args.tau, "dataset": args.dataset, "corpus_size": N,
+              "selection": ({"mode": "relative", "rel_ratio": args.rel_ratio,
+                             "min_top1": args.min_top1} if args.relative
+                            else {"mode": "absolute", "tau": args.tau}),
               "aggregate": agg, "groups": out_groups}
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
