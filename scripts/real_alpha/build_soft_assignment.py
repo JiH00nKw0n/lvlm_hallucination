@@ -110,8 +110,8 @@ def greedy_perm(C: np.ndarray, alive_i: np.ndarray, alive_t: np.ndarray) -> np.n
 
 def dec_cos_perm(two_sae, alive_i: np.ndarray, alive_t: np.ndarray) -> np.ndarray:
     """Hungarian on decoder-direction cosine (no co-activation signal)."""
-    Wi = two_sae.image_sae.W_dec.detach().float().numpy()
-    Wt = two_sae.text_sae.W_dec.detach().float().numpy()
+    Wi = two_sae.image_sae.W_dec.detach().float().cpu().numpy()
+    Wt = two_sae.text_sae.W_dec.detach().float().cpu().numpy()
     Wi = Wi / np.clip(np.linalg.norm(Wi, axis=1, keepdims=True), 1e-12, None)
     Wt = Wt / np.clip(np.linalg.norm(Wt, axis=1, keepdims=True), 1e-12, None)
     S = (Wi @ Wt.T).astype(np.float64)
