@@ -271,6 +271,18 @@ def extract(args: argparse.Namespace) -> None:
             img_feats = fwd.fwd_img(pixel_list)
         txt_feats = fwd.fwd_txt(texts)
 
+        # Guard: a rare corrupt image can push the encoder to NaN/Inf; one such
+        # row poisons batch-variance-normalized losses downstream. Drop them.
+        finite = (torch.isfinite(img_feats).all(dim=1)
+                  & torch.isfinite(txt_feats).all(dim=1))
+        if not bool(finite.all()):
+            n_failed += int((~finite).sum())
+            img_feats = img_feats[finite]
+            txt_feats = txt_feats[finite]
+            batch_keys = [k for k, ok in zip(batch_keys, finite.tolist()) if ok]
+            if not batch_keys:
+                return
+
         s = len(keys)
         mm_img[s:s + len(batch_keys)] = img_feats.numpy()
         mm_txt[s:s + len(batch_keys)] = txt_feats.numpy()
