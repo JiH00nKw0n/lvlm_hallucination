@@ -32,7 +32,8 @@ from src.models.shared_enc_sae import SharedEncSAE  # type: ignore
 logger = logging.getLogger(__name__)
 
 Method = Literal["shared", "separated", "aux", "ours", "vl_sae", "shared_enc"]
-Dataset = Literal["coco", "imagenet", "cc3m"]
+Dataset = Literal["coco", "imagenet", "cc3m", "laion", "flickr30k",
+                  "cifar100", "food101", "pets"]
 
 
 # ----------------------------------------------------------------------
@@ -92,10 +93,16 @@ def load_pair_dataset(
             cache_dir, split=split,  # type: ignore
             max_per_class=max_per_class, l2_normalize=True,
         )
-    if dataset == "cc3m":
-        # pixparse/cc3m-wds has both train and validation. Default historical
-        # behavior used "train"; pass split through so val-set evaluation works.
+    if dataset in ("cc3m", "laion", "flickr30k"):
+        # Paired caches sharing the COCO schema. cc3m/laion: bare-key text
+        # entries, single "train" split; flickr30k: Karpathy test split.
         return CachedClipPairsDataset(cache_dir, split=split, l2_normalize=True)
+    if dataset in ("cifar100", "food101", "pets"):
+        # ImageNet-schema zero-shot caches (class × template text entries).
+        return CachedImageNetPairsDataset(
+            cache_dir, split=split,  # type: ignore
+            max_per_class=max_per_class, l2_normalize=True,
+        )
     raise ValueError(f"unknown dataset {dataset!r}")
 
 
@@ -292,6 +299,7 @@ def encode_text(
     device: torch.device,
     perm: np.ndarray | None = None,
     batch_size: int = 2048,
+    soft_T: np.ndarray | None = None,
 ) -> torch.Tensor:
     """Encode text embeddings (N, H) to dense latents (N, L).
 
@@ -299,7 +307,8 @@ def encode_text(
     For separated: text side, raw — slots NOT aligned to image side (expected
         to be weak on retrieval/zeroshot).
     For ours: text side, then re-index columns by `perm` so matched slots
-        share index with image side. `perm` must be provided.
+        share index with image side — OR, if `soft_T` is given (L×L soft
+        assignment, rebuttal E6), mix columns: z'_T = z_T @ row_norm(T)^T.
     For vl_sae: shared distance-based encoder applied to text input; slots
         align to image side by construction (shared encoder).
     """
@@ -311,10 +320,15 @@ def encode_text(
         sae = model.text_sae
     z_t = _stream_dense_latents(sae, y, batch_size, device)
     if method == "ours":
-        if perm is None:
-            raise ValueError("perm required for method='ours'")
-        perm_t = torch.as_tensor(perm, dtype=torch.long)
-        z_t = z_t[:, perm_t]
+        if soft_T is not None:
+            T = torch.as_tensor(np.asarray(soft_T), dtype=torch.float32)
+            row_sum = T.sum(dim=1, keepdim=True).clamp_min(1e-12)
+            z_t = z_t @ (T / row_sum).T
+        elif perm is not None:
+            perm_t = torch.as_tensor(perm, dtype=torch.long)
+            z_t = z_t[:, perm_t]
+        else:
+            raise ValueError("perm or soft_T required for method='ours'")
     return z_t
 
 

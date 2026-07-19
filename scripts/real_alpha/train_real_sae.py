@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
         ],
         required=True,
     )
-    p.add_argument("--dataset", choices=["coco", "imagenet", "cc3m"], default="coco")
+    p.add_argument("--dataset", choices=["coco", "imagenet", "cc3m", "laion"], default="coco")
     p.add_argument("--cache-dir", type=str, required=True)
     p.add_argument("--eval-samples", type=int, default=0,
                    help="Used with --dataset cc3m: hold out this many pairs from the tail "
@@ -281,9 +281,9 @@ def main() -> None:
     if args.dataset == "coco":
         train_ds = CachedClipPairsDataset(args.cache_dir, split="train", l2_normalize=True)
         eval_ds = CachedClipPairsDataset(args.cache_dir, split="test", l2_normalize=True)
-    elif args.dataset == "cc3m":
-        # CC3M cache schema matches COCO, but has no "test" split — hold out
-        # the tail of "train" for Trainer eval_loss logging.
+    elif args.dataset in ("cc3m", "laion"):
+        # CC3M/LAION cache schema matches COCO, but has no "test" split — hold
+        # out the tail of "train" for Trainer eval_loss logging.
         from torch.utils.data import Subset
         full_ds = CachedClipPairsDataset(args.cache_dir, split="train", l2_normalize=True)
         n = len(full_ds)

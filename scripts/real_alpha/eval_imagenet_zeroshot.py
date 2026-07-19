@@ -80,11 +80,16 @@ def main() -> None:
     model = eval_utils.load_sae(args.ckpt, args.method)
 
     perm = None
+    soft_T = None
     if args.method == "ours":
-        if args.perm is None:
-            raise SystemExit("--perm required for method='ours'")
-        perm = np.load(args.perm)["perm"]
-        logger.info("loaded perm (len=%d) from %s", perm.shape[0], args.perm)
+        if args.soft_map is not None:
+            soft_T = np.load(args.soft_map)["T"].astype(np.float32)
+            logger.info("loaded soft map %s from %s", soft_T.shape, args.soft_map)
+        elif args.perm is not None:
+            perm = np.load(args.perm)["perm"]
+            logger.info("loaded perm (len=%d) from %s", perm.shape[0], args.perm)
+        else:
+            raise SystemExit("--perm or --soft-map required for method='ours'")
 
     # 1) Build text prototypes in CLIP space, then encode through SAE.
     text_dict_raw = torch.load(
@@ -99,7 +104,7 @@ def main() -> None:
     protos_clip = _build_class_prototypes_clip(text_dict, args.n_classes, args.n_templates)
 
     logger.info("encoding prototypes through text-side SAE")
-    z_protos = eval_utils.encode_text(model, protos_clip, args.method, device, perm=perm, batch_size=args.batch_size)
+    z_protos = eval_utils.encode_text(model, protos_clip, args.method, device, perm=perm, batch_size=args.batch_size, soft_T=soft_T)
     z_protos = eval_utils.normalize_rows(z_protos)  # cosine prep
 
     # 2) Encode val images

@@ -47,6 +47,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache-dir", type=str, required=True)
     p.add_argument("--split", type=str, default="test")
     p.add_argument("--perm", type=str, default=None)
+    p.add_argument("--soft-map", type=str, default=None,
+                   help="npz with soft assignment 'T' (rebuttal E6); "
+                        "overrides --perm for method='ours'")
     p.add_argument("--output", type=str, required=True)
     p.add_argument("--batch-size", type=int, default=2048)
     p.add_argument("--device", type=str, default="cuda")
@@ -67,10 +70,14 @@ def main() -> None:
     model = eval_utils.load_sae(args.ckpt, args.method)
 
     perm = None
+    soft_T = None
     if args.method == "ours":
-        if args.perm is None:
-            raise SystemExit("--perm required for method='ours'")
-        perm = np.load(args.perm)["perm"]
+        if args.soft_map is not None:
+            soft_T = np.load(args.soft_map)["T"].astype(np.float32)
+        elif args.perm is not None:
+            perm = np.load(args.perm)["perm"]
+        else:
+            raise SystemExit("--perm or --soft-map required for method='ours'")
 
     ds = eval_utils.load_pair_dataset(args.cache_dir, "coco", args.split)
     logger.info("pairs=%d (=%s split)", len(ds), args.split)
@@ -91,7 +98,7 @@ def main() -> None:
 
     logger.info("encoding %d images + %d captions", img.shape[0], txt.shape[0])
     z_img = eval_utils.encode_image(model, img, args.method, device, args.batch_size)
-    z_txt = eval_utils.encode_text(model, txt, args.method, device, perm=perm, batch_size=args.batch_size)
+    z_txt = eval_utils.encode_text(model, txt, args.method, device, perm=perm, batch_size=args.batch_size, soft_T=soft_T)
     z_img = eval_utils.normalize_rows(z_img)
     z_txt = eval_utils.normalize_rows(z_txt)
 

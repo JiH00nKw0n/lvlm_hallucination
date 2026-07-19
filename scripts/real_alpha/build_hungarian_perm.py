@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", type=str, required=True)
-    p.add_argument("--dataset", choices=["coco", "imagenet", "cc3m"], required=True)
+    p.add_argument("--dataset", choices=["coco", "imagenet", "cc3m", "laion"], required=True)
     p.add_argument("--cache-dir", type=str, required=True)
     p.add_argument("--split", type=str, default=None,
                    help="Split to read (default 'train'; falls back to 'val' if "

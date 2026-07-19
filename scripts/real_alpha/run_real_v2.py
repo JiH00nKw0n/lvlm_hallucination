@@ -188,7 +188,7 @@ def _train_cmd(
         "--seed", str(t.seed),
         "--dataloader-num-workers", str(t.dataloader_num_workers),
     ]
-    if cfg.data.dataset == "cc3m" and cfg.data.eval_samples > 0:
+    if cfg.data.dataset in ("cc3m", "laion") and cfg.data.eval_samples > 0:
         cmd += ["--eval-samples", str(cfg.data.eval_samples)]
     if cfg.data.dataset == "imagenet":
         cmd += ["--max-per-class", str(cfg.data.max_per_class)]
@@ -262,6 +262,8 @@ def _zs_cmd(
         "--ckpt", str(ckpt),
         "--method", method_tag,
         "--cache-dir", ev.cache_dir,
+        "--n-classes", str(ev.n_classes),
+        "--n-templates", str(ev.n_templates),
         "--output", str(out_json),
     ]
     if perm is not None:

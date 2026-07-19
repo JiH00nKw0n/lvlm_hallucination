@@ -33,7 +33,10 @@ def _coerce_floats(d: dict[str, Any]) -> dict[str, Any]:
 
 
 _VALID_TASKS = {"recon", "retrieval", "zeroshot_raw", "dead_latents"}
-_VALID_DATASETS = {"cc3m", "coco", "imagenet"}
+# laion: CC3M-style paired web cache (rebuttal E2). flickr30k: COCO-schema
+# retrieval cache. cifar100/food101/pets: ImageNet-schema zero-shot caches.
+_VALID_DATASETS = {"cc3m", "coco", "imagenet", "laion",
+                   "flickr30k", "cifar100", "food101", "pets"}
 _VALID_METHODS = {"shared", "separated", "iso_align", "group_sparse", "ours"}
 _VALID_SAE_CLASSES = {"topk", "batch_topk"}
 
@@ -74,11 +77,13 @@ class MethodConfig:
 
 @dataclass
 class EvalSpec:
-    dataset: str                         # cc3m | coco | imagenet
+    dataset: str                         # see _VALID_DATASETS
     cache_dir: str
     split: str = "test"
     tasks: list[str] = field(default_factory=list)
     max_per_class: int = 1000            # imagenet-only
+    n_classes: int = 1000                # zeroshot_raw: class count in the cache
+    n_templates: int = 80                # zeroshot_raw: templates per class
 
 
 @dataclass

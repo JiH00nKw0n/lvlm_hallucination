@@ -14,8 +14,8 @@ DATASET=${1:?"Usage: $0 <coco|cc3m|cc3m_*> <seed>"}
 SEED=${2:?"Usage: $0 <coco|cc3m|cc3m_*> <seed>"}
 
 case "$DATASET" in
-  coco|cc3m|cc3m_*) ;;
-  *) echo "Unknown dataset: $DATASET (expected: coco, cc3m, or cc3m_<variant>)"; exit 2 ;;
+  coco|cc3m|cc3m_*|laion|laion_*) ;;
+  *) echo "Unknown dataset: $DATASET (expected: coco, cc3m[_<variant>], or laion[_<variant>])"; exit 2 ;;
 esac
 
 # Any cc3m or cc3m_<variant> dataset goes through the post-train evals
