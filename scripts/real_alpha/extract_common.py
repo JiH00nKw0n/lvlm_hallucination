@@ -24,6 +24,12 @@ import torch
 
 logger = logging.getLogger(__name__)
 
+# TF32 tensor-core matmul: ~2-4x faster fp32 forwards on A100 with negligible
+# precision loss (embeddings are L2-normalized downstream anyway). Load-bearing
+# for the heavy AIMv2 ViT-L/14 encoder — plain fp32 is GPU-bound at ~13 img/s.
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 
 @dataclass
 class ModelForwards:
@@ -37,7 +43,7 @@ class ModelForwards:
 
 def load_model_forwards(model_id: str, device: torch.device,
                         backend: str = "transformers",
-                        pretrained: str = "") -> ModelForwards:
+                        pretrained: str = "", half: bool = False) -> ModelForwards:
     if backend == "openclip":
         import open_clip
         logger.info("Loading OpenCLIP %s (pretrained=%s)", model_id, pretrained or None)
@@ -62,8 +68,9 @@ def load_model_forwards(model_id: str, device: torch.device,
         return ModelForwards(oc_fwd_img, oc_fwd_txt, None, emb_dim, "openclip", None)
 
     from transformers import AutoModel, AutoProcessor
-    logger.info("Loading transformers %s", model_id)
-    tmodel = AutoModel.from_pretrained(model_id).to(device).eval()
+    logger.info("Loading transformers %s (half=%s)", model_id, half)
+    dtype = torch.bfloat16 if half else torch.float32
+    tmodel = AutoModel.from_pretrained(model_id, torch_dtype=dtype).to(device).eval()
     tmodel.requires_grad_(False)
     processor = AutoProcessor.from_pretrained(model_id)
     mtype = getattr(tmodel.config, "model_type", "")
@@ -87,6 +94,7 @@ def load_model_forwards(model_id: str, device: torch.device,
 
     @torch.no_grad()
     def fwd_pixels(pixel_values: torch.Tensor) -> torch.Tensor:
+        pixel_values = pixel_values.to(dtype)
         if kind == "aimv2":
             return tmodel.get_image_features(pixel_values=pixel_values).float().cpu()
         v_out = tmodel.vision_model(pixel_values=pixel_values)

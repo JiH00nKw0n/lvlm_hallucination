@@ -68,6 +68,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--no-gpu-decode", action="store_true",
                    help="decode via PIL in DataLoader workers instead of nvJPEG")
+    p.add_argument("--half", action="store_true",
+                   help="run the encoder in bfloat16 (faster on heavy ViT-L; "
+                        "embeddings still stored fp32 after L2-norm)")
     p.add_argument("--no-l2-normalize", action="store_true")
     p.add_argument("--keep-raw", action="store_true",
                    help="keep the raw .f32 memmap files after finalize")
@@ -180,7 +183,8 @@ def extract(args: argparse.Namespace) -> None:
     device = torch.device(args.device if torch.cuda.is_available() or args.device != "cuda" else "cpu")
     gpu_decode = (not args.no_gpu_decode)
 
-    fwd = load_model_forwards(args.model, device, args.backend, args.pretrained)
+    fwd = load_model_forwards(args.model, device, args.backend, args.pretrained,
+                              half=args.half)
     logger.info("model=%s kind=%s dim=%d gpu_decode=%s device=%s",
                 args.model, fwd.kind, fwd.emb_dim, gpu_decode, device)
     prep = None

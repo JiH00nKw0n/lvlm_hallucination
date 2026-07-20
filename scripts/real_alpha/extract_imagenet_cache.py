@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
                    choices=["transformers", "openclip"])
     p.add_argument("--model", type=str, default="openai/clip-vit-base-patch32",
                    help="HF model id (transformers) or OpenCLIP arch name")
+    p.add_argument("--half", action="store_true", help="bfloat16 encoder (heavy ViT-L)")
     p.add_argument("--pretrained", type=str, default="",
                    help="OpenCLIP pretrained tag (only used when --backend openclip)")
     p.add_argument("--cache-dir", type=str, default="cache/clip_b32_imagenet")
@@ -81,7 +82,7 @@ def extract(args: argparse.Namespace) -> None:
     hf_token = os.environ.get("HF_TOKEN")
     logger.info("Device: %s", device)
 
-    fwd = load_model_forwards(args.model, device, args.backend, args.pretrained)
+    fwd = load_model_forwards(args.model, device, args.backend, args.pretrained, half=args.half)
     emb_dim = fwd.emb_dim
     logger.info("Embedding dim: %d (kind=%s)", emb_dim, fwd.kind)
 

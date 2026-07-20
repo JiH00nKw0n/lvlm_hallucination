@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--backend", type=str, default="transformers",
                    choices=["transformers", "openclip"])
     p.add_argument("--model", type=str, default="openai/clip-vit-base-patch32")
+    p.add_argument("--half", action="store_true", help="bfloat16 encoder (heavy ViT-L)")
     p.add_argument("--pretrained", type=str, default="",
                    help="OpenCLIP pretrained tag (e.g. datacomp_xl_s13b_b90k)")
     p.add_argument("--cache-dir", type=str, default="cache/clip_b32_coco")
@@ -151,7 +152,7 @@ def extract(args: argparse.Namespace) -> None:
     logger.info("Device: %s", device)
 
     model_name = args.model
-    fwd = load_model_forwards(model_name, device, args.backend, args.pretrained)
+    fwd = load_model_forwards(model_name, device, args.backend, args.pretrained, half=args.half)
     emb_dim = fwd.emb_dim
     logger.info("Embedding dim: %d (kind=%s)", emb_dim, fwd.kind)
 
