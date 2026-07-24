@@ -1,0 +1,41 @@
+# LLaVA-1.5-7B HACL-embedding experiment (multi-density + Table 1).
+#
+# Build:
+#   docker build -f Dockerfile.llava -t lvlm-llava .
+#
+# Run (smoke — tiny end-to-end validation, ~15 min):
+#   docker run --rm --gpus all -e HF_TOKEN=$HF_TOKEN -e SMOKE=1 \
+#     -v $PWD/hf_cache:/workspace/.hf \
+#     -v $PWD/cache:/workspace/lvlm_hallucination/cache \
+#     -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+#     lvlm-llava
+#
+# Run (full):  same but drop `-e SMOKE=1`.
+#
+# HF_TOKEN: llava-1.5-7b-hf and COCO are public; ImageNet-1k is gated, so the
+# token is required for the zero-shot eval. Pass it via -e (never bake it in).
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    HF_HUB_ENABLE_HF_TRANSFER=1 \
+    HF_HOME=/workspace/.hf \
+    TOKENIZERS_PARALLELISM=false \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git build-essential ca-certificates libgl1 libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/lvlm_hallucination
+
+# Deps first (layer-cached). requirements-server.txt pins torch==2.7.0 (+cu126),
+# transformers==4.57.1 (LLaVA-capable); extras are the LLaMA tokenizer + fast DL.
+COPY requirements-server.txt .
+RUN pip install -r requirements-server.txt && \
+    pip install sentencepiece protobuf hf_transfer accelerate
+
+COPY . .
+RUN mkdir -p /workspace/.hf cache outputs .log
+
+# SMOKE=1 -> tiny validation; unset/0 -> full run. HF_TOKEN via `docker run -e`.
+ENTRYPOINT ["bash", "scripts/run_llava_experiment.sh"]

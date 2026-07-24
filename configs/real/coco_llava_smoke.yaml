@@ -1,0 +1,52 @@
+name: coco_llava_smoke
+
+# SMOKE config: tiny caches + 1 epoch, but the REAL SAE size (latent 65536,
+# k=256, hidden 4096) so it validates memory/ckpt/perm/eval at true scale.
+# Caches: extract_llava_cache.py ... --limit 64 (coco) / --limit 100
+# --n-classes 10 --n-templates 5 (imagenet). Run via run_llava_experiment.sh
+# with SMOKE=1.
+data:
+  dataset: coco
+  cache_dir: cache/llava_coco_smoke
+  split_train: train
+  split_eval: test
+  eval_samples: 0
+
+training:
+  lr: 5.0e-4
+  num_epochs: 1
+  batch_size: 64
+  weight_decay: 1.0e-5
+  max_grad_norm: 1.0
+  warmup_ratio: 0.05
+  k: 256
+  latent_size: 65536
+  hidden_size: 4096
+  seed: 0
+  dataloader_num_workers: 2
+  device: cuda
+
+methods:
+  - name: shared
+  - name: separated
+  - name: iso_align
+    aux_weight: 1.0e-4
+  - name: group_sparse
+    aux_weight: 0.05
+  - name: ours
+    base_method: separated
+
+evaluations:
+  - dataset: coco
+    cache_dir: cache/llava_coco_smoke
+    split: test
+    tasks: [recon, retrieval]
+  - dataset: imagenet
+    cache_dir: cache/llava_imagenet_smoke
+    split: val
+    tasks: [recon, zeroshot_raw]
+    n_classes: 10
+    n_templates: 80   # CachedImageNetPairsDataset (recon task) samples template_idx in [0,80); cache must have all 80
+
+output:
+  root: outputs/real_exp_llava_smoke

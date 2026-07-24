@@ -307,6 +307,13 @@ def main() -> None:
     # HF Trainer needs eval_strategy='no' when no eval dataset is available.
     eval_strategy = "epoch" if eval_ds is not None else "no"
 
+    # A100 TF32: the big 4096 x 65536 SAE matmuls (LLaVA-width dictionaries) are
+    # several x faster with TF32, negligible accuracy impact for SAE recon;
+    # a no-op on non-Ampere GPUs.
+    import torch as _torch
+    _torch.backends.cuda.matmul.allow_tf32 = True
+    _torch.backends.cudnn.allow_tf32 = True
+
     training_args = TrainingArguments(
         output_dir=str(output_dir),
         num_train_epochs=args.epochs,
@@ -321,7 +328,7 @@ def main() -> None:
         optim="adamw_torch",
         eval_strategy=eval_strategy,
         save_strategy="epoch",
-        save_total_limit=3,
+        save_total_limit=int(__import__("os").environ.get("SAE_SAVE_TOTAL_LIMIT", "3")),
         logging_steps=50,
         seed=args.seed,
         fp16=False,

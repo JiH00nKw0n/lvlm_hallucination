@@ -200,6 +200,10 @@ def build_perm(
     C_masked = C.copy()
     C_masked[~alive_i, :] = BIG_NEG
     C_masked[:, ~alive_t] = BIG_NEG
+    # A zero-variance latent (common at small sample counts) yields a NaN Pearson
+    # entry, and scipy's linear_sum_assignment rejects any non-finite cost. Map
+    # non-finite cells to the penalty so they are simply never matched.
+    C_masked = np.nan_to_num(C_masked, nan=BIG_NEG, posinf=1.0, neginf=BIG_NEG)
 
     row_ind, col_ind = linear_sum_assignment(-C_masked)
     perm = np.zeros_like(col_ind)

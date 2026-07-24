@@ -26,3 +26,10 @@ sparse_autoencoder/
 transformers/
 *.tex
 references.bib
+# secrets + big binaries + LLaVA extractor scratch (never ship these)
+.env
+env.sh
+hf_cache/
+.log_venv_install.txt
+**/*.pt
+**/*.f32
