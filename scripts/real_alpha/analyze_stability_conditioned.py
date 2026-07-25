@@ -1,0 +1,218 @@
+"""Is the cross-modal gap still there for concepts that two runs both recover?
+
+If a dictionary direction is an accident of one training run, the distance
+between it and anything in the other modality says nothing about the data. So
+restrict attention to directions that two independently trained image SAEs both
+find, and ask whether the cross-modal distance survives on those.
+
+Reproducibility is scored the way Papadimitriou et al. (arXiv 2504.11695) score
+it, following Fel et al. (2025) and Spielman et al. (2012): align the two
+dictionaries' rows with the assignment that maximizes total similarity, and take
+each concept's matched cosine as its stability. Concepts are then binned by that
+score, from the top 1% down through the full range.
+
+Two things are reported that the headline alone would hide. The first is the
+whole decile curve, because the conclusion moves with the quantile — reporting
+one cut would be choosing the answer. The second is the same measurement
+restricted to pairs that actually co-activate, since a stable direction whose
+cross-modal partner never fires alongside it is not a semantic correspondence
+and should not be read as one.
+
+    python scripts/real_alpha/analyze_stability_conditioned.py \
+        --panel-img-img outputs/rebuttal_EA/coco_k8_r1r2/C_img_img.npz \
+        --panel-img-txt outputs/rebuttal_EA/coco_k8_r1r2/C_img_txt.npz \
+        --ckpt-a outputs/rebuttal_models/coco_k8_r1/final \
+        --ckpt-b outputs/rebuttal_models/coco_k8_r2/final \
+        --out outputs/rebuttal_ED/coco_k8_r1r2
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+
+from pathlib import Path  # noqa: E402
+
+import numpy as np  # noqa: E402
+from scipy.optimize import linear_sum_assignment  # noqa: E402
+
+from rebuttal_common import (  # type: ignore  # noqa: E402
+    alive_masks,
+    describe,
+    hungarian_perm,
+    load_panel,
+    unit_decoder,
+)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+QUANTILES = (0.01, 0.05, 0.10, 0.25, 0.50, 1.00)
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument("--panel-img-img", required=True,
+                   help="only used for its alive masks over the two runs")
+    p.add_argument("--panel-img-txt", required=True,
+                   help="supplies the cross-modal permutation and correlations")
+    p.add_argument("--ckpt-a", required=True)
+    p.add_argument("--ckpt-b", required=True)
+    p.add_argument("--alive-rule", choices=["ever", "density"], default="ever")
+    p.add_argument("--co-activation-min", type=float, default=0.6,
+                   help="correlation above which a cross-modal pair counts as a "
+                        "genuine correspondence")
+    p.add_argument("--out", required=True)
+    return p.parse_args()
+
+
+def geometry_stability(Wa: np.ndarray, Wb: np.ndarray,
+                       alive_a: np.ndarray, alive_b: np.ndarray) -> dict:
+    """Match the two dictionaries by direction similarity and score each concept.
+
+    This is the cited definition: the assignment maximizes total cosine between
+    matched concept vectors, so a concept's stability is the cosine it achieves
+    with its counterpart in the other run.
+    """
+    ra, rb = np.where(alive_a)[0], np.where(alive_b)[0]
+    S = Wa[ra] @ Wb[rb].T
+    row, col = linear_sum_assignment(-S)
+    return {
+        "rows": ra[row],
+        "partner": rb[col],
+        "score": S[row, col],
+        "mean_stability": float(np.mean(S[row, col])),
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    p_ii = load_panel(args.panel_img_img)
+    p_it = load_panel(args.panel_img_txt)
+    alive_a, alive_b = alive_masks(p_ii, args.alive_rule)      # image side, runs A and B
+    alive_i, alive_t = alive_masks(p_it, args.alive_rule)      # image and text, run A
+
+    Wa = unit_decoder(args.ckpt_a, "image")
+    Wb = unit_decoder(args.ckpt_b, "image")
+    Wt = unit_decoder(args.ckpt_a, "text")
+
+    stab = geometry_stability(Wa, Wb, alive_a, alive_b)
+    logger.info("stability over %d matched concepts: mean %.4f",
+                len(stab["rows"]), stab["mean_stability"])
+
+    cross = hungarian_perm(p_it["C"], alive_i, alive_t)
+    perm, usable, matched_c = cross["perm"], cross["usable"], cross["matched_c"]
+
+    # keep concepts that are alive on both sides of both comparisons
+    keep = usable[stab["rows"]]
+    rows = stab["rows"][keep]
+    s = stab["score"][keep]
+    d_same = 1.0 - s
+    d_cross = 1.0 - (Wa[rows] * Wt[perm[rows]]).sum(axis=1)
+    c_match = matched_c[rows]
+    logger.info("concepts usable in both comparisons: %d", len(rows))
+
+    order = np.argsort(-s)                # most reproducible first
+    report = {
+        "ckpt_a": args.ckpt_a, "ckpt_b": args.ckpt_b,
+        "alive_rule": args.alive_rule,
+        "mean_stability": stab["mean_stability"],
+        "n_concepts": int(len(rows)),
+        "same_modality_distance_all": describe(d_same),
+        "cross_modal_distance_all": describe(d_cross),
+        "matched_correlation_all": describe(c_match),
+        "by_stability_quantile": {},
+        "by_decile": {},
+        "co_activating_only": {},
+    }
+
+    for q in QUANTILES:
+        k = max(1, int(round(q * len(rows))))
+        sel = order[:k]
+        report["by_stability_quantile"][f"top_{int(q * 100)}pct"] = {
+            "n": int(k),
+            "stability_median": float(np.median(s[sel])),
+            "same_modality_distance_median": float(np.median(d_same[sel])),
+            "cross_modal_distance_median": float(np.median(d_cross[sel])),
+            "matched_correlation_median": float(np.median(c_match[sel])),
+        }
+
+    for dcl in range(10):
+        lo, hi = int(dcl * len(rows) / 10), int((dcl + 1) * len(rows) / 10)
+        sel = order[lo:hi]
+        if len(sel) == 0:
+            continue
+        report["by_decile"][f"d{dcl + 1}"] = {
+            "n": int(len(sel)),
+            "stability_median": float(np.median(s[sel])),
+            "cross_modal_distance_median": float(np.median(d_cross[sel])),
+        }
+
+    # The cut that matters for the paper's claim: concepts whose cross-modal
+    # partner genuinely co-activates with them.
+    co = c_match >= args.co_activation_min
+    if co.sum() >= 5:
+        s_co, d_co = s[co], d_cross[co]
+        o_co = np.argsort(-s_co)
+        entry = {
+            "threshold": args.co_activation_min,
+            "n": int(co.sum()),
+            "cross_modal_distance": describe(d_co),
+            "same_modality_distance": describe(d_same[co]),
+        }
+        for q in (0.10, 0.25, 0.50, 1.00):
+            k = max(1, int(round(q * len(s_co))))
+            sel = o_co[:k]
+            entry[f"top_{int(q * 100)}pct_by_stability"] = {
+                "n": int(k),
+                "stability_median": float(np.median(s_co[sel])),
+                "cross_modal_distance_median": float(np.median(d_co[sel])),
+            }
+        report["co_activating_only"] = entry
+    else:
+        report["co_activating_only"] = {
+            "threshold": args.co_activation_min, "n": int(co.sum()),
+            "note": "too few co-activating pairs to condition on",
+        }
+
+    (out / "stability_conditioned.json").write_text(json.dumps(report, indent=2))
+
+    print()
+    print(f"concepts compared: {len(rows)}   mean stability {stab['mean_stability']:.4f}")
+    print()
+    print(f"{'stability cut':<16}{'n':>6}{'stability':>12}{'d same-mod':>13}"
+          f"{'d cross-mod':>13}{'match corr':>12}")
+    for name, e in report["by_stability_quantile"].items():
+        print(f"{name:<16}{e['n']:>6}{e['stability_median']:>12.3f}"
+              f"{e['same_modality_distance_median']:>13.3f}"
+              f"{e['cross_modal_distance_median']:>13.3f}"
+              f"{e['matched_correlation_median']:>12.3f}")
+    print()
+    print("decile curve (most reproducible first):")
+    print("  " + "  ".join(f"{e['cross_modal_distance_median']:.2f}"
+                           for e in report["by_decile"].values()))
+    co_e = report["co_activating_only"]
+    if co_e.get("n", 0) >= 5:
+        print()
+        print(f"restricted to pairs with correlation >= {args.co_activation_min} "
+              f"(n={co_e['n']}):")
+        print(f"  cross-modal distance median {co_e['cross_modal_distance']['median']:.3f}")
+        for q in (10, 25, 50, 100):
+            k = co_e.get(f"top_{q}pct_by_stability")
+            if k:
+                print(f"    top {q:>3}% by stability (n={k['n']:>4}): "
+                      f"stability {k['stability_median']:.3f}, "
+                      f"cross-modal distance {k['cross_modal_distance_median']:.3f}")
+    print(f"\nwrote {out / 'stability_conditioned.json'}")
+
+
+if __name__ == "__main__":
+    main()
