@@ -145,6 +145,101 @@ def coco80_baselines(root: Path, s: str) -> list[str]:
     return L
 
 
+def coco80_heterogeneity(root: Path, s: str, r: str) -> list[str]:
+    """Reviewer PBPC weakness 3 — heterogeneity measured from labels, not co-activation."""
+    if s != "cc3m_k32":
+        return []
+    j = load(root / "rebuttal_EG" / f"{s}_{r}" / "coco80_heterogeneity.json")
+    if j is None:
+        return []
+    R = j["result"]
+
+    def g(key: str, field: str = "cos_median"):
+        return R.get(key, {}).get(field)
+
+    L = ["### 이 격차를 co-activation 없이 재면 얼마인가", ""]
+    L.append("> 리뷰어: \"heterogeneous한 cross-modal latent space에서 직접 추론한 co-activation")
+    L.append("> 패턴에 의존하면 잡음이 섞이고 오차가 누적될 수 있음. 더 안정적이고 믿을 만한")
+    L.append("> ground truth를 쓰면 cross-modal heterogeneity 정량화가 더 설득력 있을 것.\"")
+    L.append("")
+    L.append("**지적이 겨냥하는 곳.** 우리 대표 수치는 co-activation 상관으로 짝을 지은 다음 그")
+    L.append("짝의 각도를 잼. 상관을 읽어내는 공간이 바로 heterogeneity를 주장하는 그 공간이라,")
+    L.append("공간의 잡음이 격차를 만들어내고 있을 수 있음. 순환이 아니라는 걸 보이려면 짝을")
+    L.append("모델 바깥에서 지어야 함.")
+    L.append("")
+    L.append("**설계.** 위 COCO-80 검정에서 이미 양쪽이 라벨만 보고 좌표를 하나씩 고름. 거기서")
+    L.append("한 걸음 더 나가, 그 두 좌표의 **decoder 방향 사이 cosine을 직접 잼**. 상관행렬은")
+    L.append("한 번도 쓰지 않음 — 후보 좌표조차 permutation이 아니라 \"라벨 데이터에서 한 번이라도")
+    L.append("켜졌는가\"로 정함.")
+    L.append("")
+    L.append("**각도 하나만으로는 아무 의미가 없으므로 같은 절차를 모달리티 안에서 반복함.**")
+    L.append("이미지 쪽이 사진의 절반에서 좌표를 고르고, 나머지 절반에서 또 고름. 이 쌍은")
+    L.append("라벨 잡음·AUC 추정 잡음·표본 잡음을 cross-modal 쌍과 똑같이 겪고, 딱 하나만 다름 —")
+    L.append("모달리티 경계를 넘지 않음. 두 수치의 차이가 heterogeneity로만 설명되는 몫임.")
+    L.append("")
+    L.append(f"CC3M으로 학습한 modality-specific SAE에서 잼. COCO로 학습한 모델을 쓰면 그 사진들이")
+    L.append("학습에 들어갔던 것이라 라벨 기반 검정이 오염됨 — 그래서 이 측정은 CC3M 쪽에만 있음.")
+    L.append(f"카테고리 {j['n_categories']}개, 후보 좌표는 이미지 "
+             f"{j['n_candidates_image']}개 / 텍스트 {j['n_candidates_text']}개임.")
+    L.append("")
+    L.append("| 무엇을 짝지었는가 | cosine 중앙값 | cosine 평균 | 95% 신뢰구간 | n |")
+    L.append("|---|---|---|---|---|")
+    for key, lab in (
+        ("within_image_two_halves", "이미지 쪽, 사진 절반 대 나머지 절반"),
+        ("within_text_two_halves", "텍스트 쪽, 캡션 절반 대 나머지 절반"),
+        ("cross_modal_matched_category", "**이미지 대 텍스트, 같은 카테고리**"),
+        ("cross_modal_mismatched_category", "이미지 대 텍스트, 다른 카테고리"),
+        ("random_unit_vectors", "무작위 단위벡터"),
+    ):
+        d = R.get(key)
+        if not d:
+            continue
+        ci = d["cos_mean_ci95"]
+        L.append(f"| {lab} | {num(d['cos_median'])} | {num(d['cos_mean'])} | "
+                 f"[{num(ci[0])}, {num(ci[1])}] | {d['n']} |")
+    L.append("")
+    p = R.get("within_image_minus_cross_modal")
+    if p:
+        L.append(f"**읽는 법.** 같은 절차를 이미지 안에서 두 번 돌리면 방향이 거의 그대로 다시")
+        L.append(f"나옴 (중앙값 {num(g('within_image_two_halves'))}). 즉 라벨 잡음과 추정 잡음이")
+        rows = j.get("per_category", [])
+        same = sum(x["image_latent"] == x["image_latent_other_half"] for x in rows)
+        L.append(f"만들어내는 흔들림은 무시할 수준임 — {same}/{len(rows)} 카테고리에서는 두 절반이")
+        L.append("아예 같은 좌표를 골랐음. 그런데 같은 절차로 모달리티를 건너면")
+        L.append(f"{num(g('cross_modal_matched_category'))}로 떨어짐. 카테고리별로 짝지어 보면")
+        L.append(f"차이가 평균 {num(p['mean'])} "
+                 f"[{num(p['mean_ci95'][0])}, {num(p['mean_ci95'][1])}], "
+                 f"Wilcoxon p={p['wilcoxon_p']:.1e}, "
+                 f"{pct(p['share_within_image_greater'])}의 카테고리에서 같은 방향임.")
+        L.append("")
+    rows = j.get("per_category", [])
+    cs = sorted(rows, key=lambda x: -x["cross_modal_cos"])
+    hi = sum(1 for x in rows if x["cross_modal_cos"] > 0.9)
+    lo = sum(1 for x in rows if x["cross_modal_cos"] < 0.3)
+    L.append(f"동시에 {num(g('cross_modal_matched_category'))}는 다른 카테고리끼리 짝지었을 때의 "
+             f"{num(g('cross_modal_mismatched_category'))}보다 훨씬 큼. 두 방향이 무관하지는")
+    L.append("않다는 뜻임 — 같은 개념을 가리키되 같은 방향은 아님. 이게 논문이 주장하는 바로")
+    L.append("그 상태임.")
+    L.append("")
+    if cs:
+        L.append(f"cosine이 0.9를 넘는 카테고리는 {hi}개, 0.3 아래가 {lo}개임. 가장 정렬된 쪽은 "
+                 + ", ".join(f"{x['category']} {x['cross_modal_cos']:.2f}" for x in cs[:4]) + "이고,")
+        L.append("가장 어긋난 쪽은 "
+                 + ", ".join(f"{x['category']} {x['cross_modal_cos']:.2f}" for x in cs[-4:][::-1])
+                 + "임. 잘 맞는 쪽은 사진의 주 피사체로 오는 개체이고 어긋나는 쪽은 장면의")
+        L.append("일부로 들어가는 개체인데, 이건 눈으로 본 패턴이지 따로 검정한 것은 아님.")
+        L.append("")
+    b = R.get("coactivation_partner_of_the_same_image_latent")
+    if b:
+        L.append("**co-activation 지표가 격차를 만들어낸 것이 아님.** 같은 이미지 좌표를 두고,")
+        L.append("파트너를 라벨 대신 상관으로 고르면 cosine 중앙값이")
+        L.append(f"{num(b['cos_median'])}임 (라벨로 고르면 {num(g('cross_modal_matched_category'))}).")
+        L.append("두 경로가 거의 같은 답을 내므로, 상관 기반 측정이 잡음 때문에 격차를 부풀린")
+        L.append("것이라는 해석은 지지되지 않음.")
+        L.append("")
+    return L
+
+
 ALIGN_METHOD_LABELS = {
     "hungarian (ours)": "Hungarian (ours)",
     "greedy 1:1": "greedy 1:1",
@@ -485,6 +580,7 @@ def build(root: Path, s: str, r: str, pair: str) -> list[str]:
             L.append("")
 
         L.extend(coco80_baselines(root, s))
+        L.extend(coco80_heterogeneity(root, s, r))
 
     # ---- match confidence ----------------------------------------------------
     L.append("## 매칭이 얼마나 강하고 얼마나 분명한가")
