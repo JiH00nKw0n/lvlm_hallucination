@@ -27,7 +27,8 @@ SETTING_NAME = {
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--root", default="outputs")
-    p.add_argument("--setting", default="coco_k8", help="coco_k8 또는 cc3m_k32")
+    p.add_argument("--setting", default="coco_k8,cc3m_k32",
+                   help="쉼표로 구분. 나열한 순서대로 문서에 실린다.")
     p.add_argument("--run", default="r1")
     p.add_argument("--pair", default="r1r2")
     p.add_argument("--out", default=None)
@@ -57,10 +58,7 @@ def num(x: float | None, nd: int = 3) -> str:
     return "--" if x is None else f"{x:.{nd}f}"
 
 
-def main() -> None:
-    args = parse_args()
-    root = Path(args.root)
-    s, r, pair = args.setting, args.run, args.pair
+def build(root: Path, s: str, r: str, pair: str) -> list[str]:
 
     ea = load(root / "rebuttal_EA" / f"{s}_{pair}" / "fig_same_modality.json")
     ec = load(root / "rebuttal_EC" / f"{s}_{r}" / "match_confidence.json")
@@ -467,6 +465,16 @@ def main() -> None:
             L.append("")
             L.append("| 조건 | 쌍 수 | cosine | 거리 | 매칭 상관 |")
             L.append("|---|---|---|---|---|")
+            cmin = sc.get("co_activation_min", 0.6)
+            for k, e in sc.get("by_stability_quantile_corresponding", {}).items():
+                q = k.replace("top_", "").replace("pct", "%")
+                if q == "100%":
+                    lab = f"대응 조건 상관 ≥ {cmin} 전체"
+                else:
+                    lab = f"대응 조건 상관 ≥ {cmin} 중 안정성 상위 {q}"
+                L.append(f"| {lab} | {e['n']} | {num(e['cosine_median'])} | "
+                         f"{num(e['distance_median'])} | "
+                         f"{num(e['matched_correlation_median'])} |")
             for k, e in sc.get("by_stability_quantile", {}).items():
                 q = k.replace("top_", "").replace("pct_by_stability", "%")
                 L.append(f"| 안정성 상위 {q} (대응 조건 없음) | {e['n']} | "
@@ -486,10 +494,10 @@ def main() -> None:
                          f"{num(e['distance_median'])} | "
                          f"{num(e['matched_correlation_median'])} |")
             L.append("")
-            L.append("두 조건을 함께 걸면 cosine이 0.55~0.62에서 안정적으로 수렴한다. 표본도 충분하고,")
-            L.append("매칭 상관 0.68 이상이라 실제로 함께 켜지는 쌍이며, 양쪽 안정성 0.9 이상이라")
-            L.append("학습 잡음도 아니다. 그런데도 1에서 멀다. 이것이 이 절에서 방어 가능한 형태의")
-            L.append("결론이다.")
+            L.append("분위수로 자른 위쪽 두 행은 표본이 한 자릿수라 값이 흔들린다. 임계값으로 자른")
+            L.append("아래쪽 행들이 같은 조건을 표본을 확보한 채로 본 것이고, cosine이 0.55~0.62에서")
+            L.append("수렴한다. 매칭 상관 0.68 이상이라 실제로 함께 켜지는 쌍이며, 양쪽 안정성 0.9")
+            L.append("이상이라 학습 잡음도 아니다. 그런데도 1에서 멀다.")
             L.append("")
 
         co = ed.get("co_activating_only", {})
@@ -508,6 +516,20 @@ def main() -> None:
                              f"{num(k['cross_modal_distance_median'])} |")
         L.append("")
 
+    return L
+
+
+def main() -> None:
+    args = parse_args()
+    root = Path(args.root)
+    settings = [x.strip() for x in args.setting.split(",") if x.strip()]
+    L: list[str] = []
+    for i, s in enumerate(settings):
+        if i:
+            L.append("")
+            L.append("---")
+            L.append("")
+        L.extend(build(root, s, args.run, args.pair))
     text = "\n".join(L) + "\n"
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)

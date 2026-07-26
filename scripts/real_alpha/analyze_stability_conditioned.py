@@ -271,7 +271,29 @@ def main() -> None:
                 "matched_correlation_median": float(np.median(c_ok[sel])),
             }
 
+        # The requested cut: keep only pairs that genuinely correspond, then take
+        # the most reproducible 1% and 5% of those.
+        quant_corr = {}
+        corr = finite & (pair_c >= args.co_activation_min)
+        sp_c, cos_c, c_c = pair_stab[corr], pair_cos[corr], pair_c[corr]
+        order_c = np.argsort(-sp_c)
+        for q in (0.01, 0.05, 1.00):
+            if len(sp_c) == 0:
+                break
+            k = max(1, int(round(q * len(sp_c))))
+            sel = order_c[:k]
+            quant_corr[f"top_{int(q * 100)}pct"] = {
+                "n": int(k),
+                "pool_size": int(len(sp_c)),
+                "pair_stability_median": float(np.median(sp_c[sel])),
+                "cosine_median": float(np.median(cos_c[sel])),
+                "distance_median": float(np.median(1.0 - cos_c[sel])),
+                "matched_correlation_median": float(np.median(c_c[sel])),
+            }
+
         report["stable_and_corresponding"] = {
+            "co_activation_min": args.co_activation_min,
+            "by_stability_quantile_corresponding": quant_corr,
             "by_stability_quantile": quant,
             "text_mean_stability": stab_t["mean_stability"],
             "n_pairs_scored": int(finite.sum()),
@@ -320,6 +342,9 @@ def main() -> None:
         print(f"\nour Hungarian pairs, filtered by both-endpoint stability and by "
               f"co-activation ({b['n_pairs_scored']} pairs scored)")
         print(f"  {'condition':<28}{'n':>7}{'cosine':>9}{'distance':>10}{'matched c':>11}")
+        for k, e in b.get("by_stability_quantile_corresponding", {}).items():
+            print(f"  {'corresponding, ' + k:<28}{e['n']:>7}{e['cosine_median']:>9.3f}"
+                  f"{e['distance_median']:>10.3f}{e['matched_correlation_median']:>11.3f}")
         for k, e in b.get("by_stability_quantile", {}).items():
             print(f"  {k:<28}{e['n']:>7}{e['cosine_median']:>9.3f}"
                   f"{e['distance_median']:>10.3f}{e['matched_correlation_median']:>11.3f}")
