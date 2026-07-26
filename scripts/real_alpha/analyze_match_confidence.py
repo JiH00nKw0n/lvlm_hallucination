@@ -5,8 +5,9 @@ the percentage of low-confidence ones. "Low confidence" has no standard
 definition, so this reports three readings of it and says which one carries the
 argument.
 
-Strength is the primary reading: the correlation of a matched pair, and the
-share of pairs below interpretable absolute levels. Statistical significance is
+Strength is the primary reading: the correlation of each matched pair, reported
+as the full histogram in bands of 0.1 rather than as a handful of percentiles,
+so the length of the weak tail is visible. Statistical significance is
 deliberately not the headline — with millions of paired samples almost any
 non-zero correlation clears a significance bar, so it would answer a question
 nobody is asking.
@@ -62,8 +63,6 @@ from rebuttal_common import (  # type: ignore  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-THRESHOLDS = (0.05, 0.1, 0.2, 0.3, 0.4, 0.6)
-
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
@@ -105,7 +104,24 @@ def main() -> None:
     d_matched = matched_distance(Wi, Wt, match["perm"], match["usable"])
 
     # --- strength -------------------------------------------------------------
-    below = {f"c<{t}": float(np.mean(c_matched < t)) for t in THRESHOLDS}
+    # Reported as a histogram in bands of 0.1 rather than as a set of cumulative
+    # thresholds: the thresholds were arbitrary, and the bands show the whole
+    # shape, including how much mass sits at the weak end.
+    bands = []
+    for lo in np.arange(0.9, -0.1, -0.1):
+        hi = lo + 0.1
+        sel = (c_matched >= lo) & (c_matched < hi) if hi < 1.0 else (c_matched >= lo)
+        bands.append({
+            "range": f"[{lo:.1f}, {min(hi, 1.0):.1f}{']' if hi >= 1.0 else ')'}",
+            "count": int(sel.sum()),
+            "share": float(sel.mean()),
+        })
+    neg = c_matched < 0
+    bands.append({"range": "negative", "count": int(neg.sum()), "share": float(neg.mean())})
+    running = 0.0
+    for b in bands:
+        running += b["share"]
+        b["cumulative_from_top"] = running
 
     # --- ambiguity ------------------------------------------------------------
     t1, t2 = top_two(C, usable, cols_alive)
@@ -124,7 +140,7 @@ def main() -> None:
         "n_alive_image": int(len(rows_alive)), "n_alive_text": int(len(cols_alive)),
         "n_matched_usable": int(len(usable)),
         "matched_correlation": describe(c_matched),
-        "share_below_threshold": below,
+        "correlation_bands": bands,
         "matched_cosine_distance": describe(d_matched),
         "ambiguity": {
             "top1_minus_top2": describe(margin),
@@ -196,7 +212,10 @@ def main() -> None:
     print(f"correlation   median {mc['median']:.3f}   "
           f"quartiles [{mc['p25']:.3f}, {mc['p75']:.3f}]   "
           f"5-95% [{mc['p05']:.3f}, {mc['p95']:.3f}]")
-    print("share below   " + "   ".join(f"{k} {100 * v:.1f}%" for k, v in below.items()))
+    print(f"{'correlation':<16}{'count':>8}{'share':>9}{'cumulative':>12}")
+    for b in report["correlation_bands"]:
+        print(f"{b['range']:<16}{b['count']:>8}{100 * b['share']:>8.1f}%"
+              f"{100 * b['cumulative_from_top']:>11.1f}%")
     amb = report["ambiguity"]
     print(f"runner-up within 10% of the winner: "
           f"{100 * amb['share_runner_up_within_10pct']:.1f}%   "

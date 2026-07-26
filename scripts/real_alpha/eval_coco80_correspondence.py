@@ -170,7 +170,15 @@ def auc_matrix(samp: np.ndarray, lat: np.ndarray, val: np.ndarray,
 
 
 def rank_of(values: np.ndarray, target: int) -> int:
-    """1-based rank of ``target`` when ``values`` is sorted descending."""
+    """1-based rank of ``target`` when ``values`` is sorted descending.
+
+    Used in both directions. Asking where the image side's pick lands in the
+    text side's ranking is a different question from asking where the text
+    side's pick lands in the image side's, and the two need not agree, so both
+    are reported rather than one standing in for the other. At rank 1 they
+    describe the same event: the two sides chose permutation-matched
+    coordinates.
+    """
     return int((values > values[target]).sum()) + 1
 
 
@@ -271,8 +279,7 @@ def main() -> None:
 
     # ---- the test ------------------------------------------------------------
     rows = []
-    hit1 = hit5 = hit10 = 0
-    ranks, agree_img, agree_txt = [], [], []
+    ranks_in_text, ranks_in_image, agree_img, agree_txt = [], [], [], []
     for c in usable_cat:
         a_img = auc_img[M_img, c]
         a_txt = auc_txt[M_txt, c]
@@ -280,16 +287,15 @@ def main() -> None:
             continue
         i_star_pos = int(np.argmax(a_img))
         j_star_pos = int(np.argmax(a_txt))
-        top_img = np.argsort(-a_img)
 
-        h1 = int(i_star_pos == j_star_pos)
-        h5 = int(j_star_pos in top_img[:5])
-        h10 = int(j_star_pos in top_img[:10])
-        r = rank_of(a_txt, i_star_pos)
-        hit1 += h1
-        hit5 += h5
-        hit10 += h10
-        ranks.append(r)
+        # Two directions of the same question, both reported.
+        #   r_text  — where the image side's pick sits in the text side's ranking
+        #   r_image — where the text side's pick sits in the image side's ranking
+        # Both equal 1 exactly when the two sides agree on a matched pair.
+        r_text = rank_of(a_txt, i_star_pos)
+        r_image = rank_of(a_img, j_star_pos)
+        ranks_in_text.append(r_text)
+        ranks_in_image.append(r_image)
 
         ai_o = auc_img_other[M_img, c]
         at_o = auc_txt_other[M_txt, c]
@@ -302,14 +308,18 @@ def main() -> None:
             "image_latent": int(M_img[i_star_pos]),
             "text_latent_via_perm": int(M_txt[i_star_pos]),
             "text_latent_chosen": int(M_txt[j_star_pos]),
-            "hit1": h1, "hit5": h5, "hit10": h10,
-            "rank": r, "rank_pct": float(1.0 - (r - 1) / max(m_eff - 1, 1)),
+            "rank_in_text": r_text, "rank_in_image": r_image,
+            "rank_pct_in_text": float(1.0 - (r_text - 1) / max(m_eff - 1, 1)),
             "auc_image": float(a_img[i_star_pos]), "auc_text": float(a_txt[j_star_pos]),
             "image_self_agreement": agree_img[-1], "text_self_agreement": agree_txt[-1],
         })
 
     n = len(rows)
-    ranks_arr = np.array(ranks, dtype=np.float64)
+    r_text_arr = np.array(ranks_in_text, dtype=np.float64)
+    r_image_arr = np.array(ranks_in_image, dtype=np.float64)
+
+    def at_k(ranks: np.ndarray, k: int) -> float:
+        return float(np.mean(ranks <= k)) if ranks.size else float("nan")
 
     # ---- controls ------------------------------------------------------------
     scored = [c for c in usable_cat
@@ -337,19 +347,32 @@ def main() -> None:
         "alive_rule": args.alive_rule, "min_support": args.min_support,
         "m_eff": int(m_eff), "n_categories": int(n),
         "categories_dropped": [COCO_80[c] for c in range(80) if c not in usable_cat],
+        "ranking_criterion": (
+            "AUC of the latent's activation separating a category's positives "
+            "from its negatives, computed independently on each side. The "
+            "co-activation correlation is used only to build the permutation, "
+            "never to rank."
+        ),
         "result": {
-            "hit@1": hit1 / max(n, 1),
-            "hit@5": hit5 / max(n, 1),
-            "hit@10": hit10 / max(n, 1),
-            "median_rank": float(np.median(ranks_arr)) if n else float("nan"),
-            "median_rank_pct": float(np.median(1.0 - (ranks_arr - 1) / max(m_eff - 1, 1))) if n else float("nan"),
-            "mrr": float(np.mean(1.0 / ranks_arr)) if n else float("nan"),
+            "agree@1": at_k(r_text_arr, 1),
+            "image_pick_in_text_ranking": {
+                "top1": at_k(r_text_arr, 1), "top5": at_k(r_text_arr, 5),
+                "top10": at_k(r_text_arr, 10),
+                "median_rank": float(np.median(r_text_arr)) if n else float("nan"),
+                "mrr": float(np.mean(1.0 / r_text_arr)) if n else float("nan"),
+            },
+            "text_pick_in_image_ranking": {
+                "top1": at_k(r_image_arr, 1), "top5": at_k(r_image_arr, 5),
+                "top10": at_k(r_image_arr, 10),
+                "median_rank": float(np.median(r_image_arr)) if n else float("nan"),
+                "mrr": float(np.mean(1.0 / r_image_arr)) if n else float("nan"),
+            },
         },
         "controls": {
             "chance_hit@1": 1.0 / m_eff,
             "random_permutation_hit@1_mean": float(null_hits.mean()),
             "random_permutation_hit@1_p95": float(np.percentile(null_hits, 95)),
-            "p_value_vs_random_permutation": float(np.mean(null_hits >= hit1 / max(n, 1))),
+            "p_value_vs_random_permutation": float(np.mean(null_hits >= at_k(r_text_arr, 1))),
             "label_shuffle_hit@1": lab_shuffle_hit,
             "image_self_agreement": float(np.mean(agree_img)) if n else float("nan"),
             "text_self_agreement": float(np.mean(agree_txt)) if n else float("nan"),
@@ -369,11 +392,14 @@ def main() -> None:
     res, ctl = report["result"], report["controls"]
     print()
     print(f"categories scored {n}/80, candidate coordinates {m_eff}")
-    print(f"  hit@1  {100 * res['hit@1']:5.1f}%    hit@5 {100 * res['hit@5']:5.1f}%"
-          f"    hit@10 {100 * res['hit@10']:5.1f}%")
-    print(f"  median rank {res['median_rank']:.0f} of {m_eff}"
-          f"  (top {100 * (1 - res['median_rank_pct']):.1f}%),  MRR {res['mrr']:.4f}")
-    print("  against")
+    print("ranking criterion: per-side AUC on the category's positives vs negatives")
+    print(f"  {'direction':<34}{'top1':>8}{'top5':>8}{'top10':>8}{'median rank':>13}{'MRR':>8}")
+    for key, label in (("image_pick_in_text_ranking", "image pick, in text ranking"),
+                       ("text_pick_in_image_ranking", "text pick, in image ranking")):
+        d = res[key]
+        print(f"  {label:<34}{100 * d['top1']:>7.1f}%{100 * d['top5']:>7.1f}%"
+              f"{100 * d['top10']:>7.1f}%{d['median_rank']:>10.0f} of {m_eff}{d['mrr']:>8.3f}")
+    print("  against (agreement at rank 1)")
     print(f"    chance                       {100 * ctl['chance_hit@1']:.3f}%")
     print(f"    random permutation           {100 * ctl['random_permutation_hit@1_mean']:.3f}%"
           f"   (p={ctl['p_value_vs_random_permutation']:.4f})")

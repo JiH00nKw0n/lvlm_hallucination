@@ -1,81 +1,154 @@
-# Rebuttal measurements — coco_k8, runs r1r2
+# 리부탈 측정 결과 — COCO 학습, L=8192(한쪽당 4096), K=8, 30 epoch — 논문 Figure 2 조건
 
-All numbers come from SAEs trained for this response; no checkpoint from the
-submitted work is reused. Runs differ only by seed, and the seed controls the
-initialization as well as the data order.
+여기 있는 모든 수치는 이번 응답을 위해 새로 학습한 SAE에서 나왔다. 제출본의
+체크포인트는 하나도 재사용하지 않았고, seed가 데이터 순서뿐 아니라 초기
+가중치까지 통제하도록 학습 코드를 고쳤다. 각 run의 초기 가중치 해시를 파일로
+남겨 세 run이 실제로 서로 다르게 시작했음을 확인할 수 있다.
 
-The correlation matrices come from the same function that produced the
-submitted paper's figure. Re-running it through the new code path on the
-original checkpoint reproduced the stored matrix to a maximum absolute
-difference of 3e-4, which is the rounding from storing it in half precision.
+상관행렬은 제출본 그림을 만든 함수를 그대로 쓴다. 새 코드 경로로 원래
+체크포인트를 다시 돌려 저장된 행렬과 비교했을 때 최대 절대 오차가 3e-4로,
+half precision 저장에서 오는 반올림 수준이었다.
 
-## Is the reported gap larger than ordinary training variability?
+## 보고된 격차가 통상적인 학습 변동보다 큰가
 
-*Reviewer PBPC Q1; AC's first concern.*
+*Reviewer PBPC Q1, AC의 첫 번째 우려.*
 
-Cosine distance between matched feature directions, restricted to pairs whose
-co-activation correlation clears the threshold. Each latent contributes one
-value (the median over its own qualifying pairs) so that frequently firing
-latents cannot dominate.
+> 리뷰어: "같은 모달리티에서 독립적으로 학습한 SAE 사이의 feature 방향 거리를
+> image SAE seed 1 대 seed 2처럼 재서, 보고된 heterogeneity가 통상적인 SAE 학습
+> 변동보다 큰지 확인해달라."
 
-| comparison | alive | pairs at c>=0.6 | median distance | 95% CI |
+리뷰어가 제안한 비교를 그대로 한다. 확인하려는 것은 하나다 — 우리가 모달리티
+차이라고 부른 것이 사실은 SAE를 두 번 학습하면 어차피 생기는 변동인가. 다만
+리뷰어 제안을 곧이곧대로만 하면 우리에게 유리한 쪽으로 편향되므로, 같은
+모달리티에 입력 불일치만 넣은 조건을 하나 더 두어 두 성분을 분리한다.
+
+co-activation 상관이 기준을 넘는 쌍에 한정해, 두 feature 방향 사이의 cosine
+distance를 잰다. 자주 켜지는 latent 하나가 수백 개의 셀을 만들어 중앙값을
+지배하지 못하도록, latent마다 자기 쌍들의 중앙값을 먼저 구하고 그 값들의
+중앙값을 보고한다.
+
+| 비교 | 살아있는 latent | 상관 0.6 이상 쌍 | 거리 중앙값 | 95% 신뢰구간 |
 |---|---|---|---|---|
-| image SAE, two runs | 849/850 | 513 | 0.082 | [0.076, 0.091] |
-| text SAE, two runs, same caption | 436/425 | 370 | 0.070 | [0.065, 0.073] |
-| text SAE, two runs, different captions | 436/425 | 103 | 0.067 | [0.061, 0.072] |
-| image vs text (the paper's measurement) | 849/436 | 73 | 0.495 | [0.451, 0.539] |
-| random directions | -- | -- | 1.00 | -- |
+| image SAE, 두 run | 849/850 | 513 | 0.082 | [0.076, 0.091] |
+| text SAE, 두 run, 같은 캡션 | 436/425 | 370 | 0.070 | [0.065, 0.073] |
+| text SAE, 두 run, 다른 캡션 | 436/425 | 103 | 0.067 | [0.061, 0.072] |
+| image 대 text (논문이 재는 것) | 849/436 | 73 | 0.495 | [0.451, 0.539] |
+| 무작위 방향 | -- | -- | 1.00 | -- |
 
-Taken latent by latent over the 68 image latents that clear the
-threshold in both comparisons, crossing modality costs 0.403 more distance than a second training run does (95% CI [0.380, 0.427], Wilcoxon p=7.6e-13).
+다른 캡션 조건이 왜 필요한지 짚어둘 필요가 있다. 두 image SAE는 완전히 같은
+벡터를 읽으므로 입력이 달라서 생기는 잡음이 아예 없는 반면, image 대 text는
+한쪽이 사진을 다른 쪽이 그 사진에 대한 문장을 읽는다. 두 dictionary가
+기하적으로 동일하더라도 이 불일치만으로 거리가 벌어질 수 있다. 다른 캡션
+조건은 모달리티는 같게 두고 입력 불일치만 넣은 것이라, 두 성분을 분리해준다.
 
-Repeating the whole comparison for each pairing of the three runs:
+두 비교 모두에서 기준을 넘는 image latent 68개를 하나씩 짝지어
+보면, 모달리티를 건너는 데 드는 추가 거리가 0.403이다 
+(95% 신뢰구간 [0.380, 0.427], Wilcoxon p=7.6e-13).
 
-| runs | img x img | txt x txt | txt, different captions | img x txt | paired difference |
+세 run의 모든 조합에 대해 같은 비교를 반복한 결과:
+
+| run 조합 | image×image | text×text | text, 다른 캡션 | image×text | 짝비교 차이 |
 |---|---|---|---|---|---|
 | r1r2 | 0.082 | 0.070 | 0.067 | 0.495 | 0.403 |
 | r1r3 | 0.059 | 0.058 | 0.055 | 0.495 | 0.432 |
 | r2r3 | 0.081 | 0.013 | 0.008 | 0.519 | 0.463 |
 
-## Do matched latents stand for the same concept?
+## 매칭된 latent가 정말 같은 개념을 가리키는가
 
-*Reviewer PBPC Q2; AC on match quality.*
+*Reviewer PBPC Q2, AC의 매칭 품질 지적.*
 
-Across 65 COCO object categories with enough annotated
-examples, the image latent and the text latent chosen independently from
-disjoint halves of the photographs land on permutation-matched coordinates:
+> 리뷰어: "activation correlation이 찾아낸 의미 대응이 얼마나 정확한가? 매칭된
+> image/text latent가 단지 상관된 개념이 아니라 같은 개념을 나타내는지, 객체나
+> 속성 어노테이션 또는 top-activating 예시의 수동 평가로 정량 검증해달라."
 
-| | hit@1 | hit@5 | hit@10 | median rank | MRR |
+함께 켜진다는 것이 같은 개념이라는 뜻인지, 아니면 사진에서 자주 같이 등장하는
+별개 개념일 뿐인지를 가른다. 의자와 식탁은 함께 나타나지만 같은 개념이 아니다.
+그래서 판단 기준을 우리 모델 바깥에서 가져온다 — COCO가 사람 손으로 달아둔 객체
+어노테이션이다.
+
+COCO 객체 카테고리 중 표본이 충분한 65개에 대해, 각 모달리티가
+자기 쪽에서만 계산한 AUC로 그 카테고리를 가장 잘 구분하는 좌표를 하나씩 고른다.
+AUC는 그 객체가 있는 샘플에서의 활성이 없는 샘플에서의 활성보다 클 확률이다.
+이미지 쪽은 사진의 한쪽 절반만, 텍스트 쪽은 나머지 절반의 캡션만 보므로 두
+선택이 서로에게 영향을 줄 수 없다. 그러고 나서야 학습된 permutation을 꺼내,
+두 선택이 서로 매칭된 좌표인지 묻는다. **순위는 AUC로 매기며 co-activation
+상관은 permutation을 만들 때만 쓰인다** — 순위까지 상관으로 매기면 순환 논증이
+된다.
+
+순위는 양방향으로 보고한다. 이미지 쪽 선택이 텍스트 쪽 순위에서 몇 위인지와,
+텍스트 쪽 선택이 이미지 쪽 순위에서 몇 위인지는 서로 다른 질문이기 때문이다.
+1위에서는 두 질문이 같은 사건이 된다 — 양쪽이 매칭된 좌표를 골랐다는 뜻이다.
+
+| 방향 | 1위 | 5위 이내 | 10위 이내 | 순위 중앙값 | MRR |
 |---|---|---|---|---|---|
-| learned permutation | 69.2% | 90.8% | 95.4% | 1 of 499 | 0.7715 |
-| random permutation | 0.2% | -- | -- | -- | -- |
-| category labels shuffled | 1.5% | -- | -- | -- | -- |
-| chance | 0.2% | -- | -- | -- | -- |
-| image side vs its other half (ceiling) | 95.4% | -- | -- | -- | -- |
+| 이미지 쪽 선택을 텍스트 쪽 순위에서 | 69.2% | 89.2% | 92.3% | 1 / 499 | 0.771 |
+| 텍스트 쪽 선택을 이미지 쪽 순위에서 | 69.2% | 90.8% | 95.4% | 1 / 499 | 0.789 |
 
-p against the random permutation: 0.0000. 54 distinct image latents were chosen across 65 categories, so the result is not a few busy latents winning everything.
+1위 일치율을 모든 기준선과 비교하면:
 
-## How strong and how unambiguous are the matches?
+| | 일치율 |
+|---|---|
+| 학습된 permutation | **69.2%** |
+| 무작위 permutation | 0.211% |
+| 카테고리 라벨을 섞은 경우 | 1.5% |
+| 우연 (499개 중 하나) | 0.200% |
+| 이미지 쪽이 자기 나머지 절반과 (달성 가능한 천장) | 95.4% |
+| 텍스트 쪽이 자기 나머지 절반과 | 95.4% |
+
+무작위 permutation 대비 p = 0.0000. 65개 카테고리에서 서로 다른 image latent가 54개 선택됐으므로, 자주 켜지는 latent 몇 개가 전부를 이기는 퇴화 현상은 아니다.
+
+표본이 부족해 빠진 15개 카테고리: frisbee, skis, snowboard, sports ball, baseball bat, baseball glove, skateboard, fork, knife, spoon, mouse, toaster, scissors, hair drier, toothbrush. 모두 사진에서 작게 나오는 물체이고, 객체가 화면 면적의 5% 이상을 차지해야 양성으로 치는 조건에서 걸러진다. CLIP 이미지 임베딩은 사진 전체를 벡터 하나로 요약하므로, 구석에 작게 있는 물체를 그 사진의 개념으로 보기는 어렵다는 판단이다.
+
+면적 조건을 아예 걸지 않았을 때의 민감도:
+
+| 면적 조건 | 카테고리 | 1위 일치 | 천장 | 라벨 섞기 |
+|---|---|---|---|---|
+| 5% 이상 | 65 | 69.2% | 95.4% | 1.5% |
+| 조건 없음 | 78 | 59.0% | 93.6% | 3.8% |
+
+조건을 풀면 카테고리는 늘지만 라벨 자체가 시끄러워져 천장도 함께 내려간다.
+결론의 방향은 두 경우 모두 같다.
+
+## 매칭이 얼마나 강하고 얼마나 분명한가
 
 *Reviewer PBPC Q3.*
 
-Over 499 matched pairs, the co-activation correlation has
-median 0.242, quartiles [0.097, 0.432], and
-5th-95th percentile [0.019, 0.767].
+> 리뷰어: "이 방법은 feature splitting, merging, 양쪽 활성 latent 수가 다른 경우,
+> 모달리티 고유 feature를 어떻게 다루는가? Hungarian 매칭의 correlation 분포와
+> low-confidence 매칭의 비율을 보고해달라."
 
-| share of matches below | c<0.05 | c<0.1 | c<0.2 | c<0.3 | c<0.4 | c<0.6 |
-|---|---|---|---|---|---|---|
-| | 14.4% | 25.5% | 44.1% | 60.7% | 73.3% | 87.0% |
+분포와 비율은 요청 그대로 보고한다. "low-confidence"는 표준 정의가 없어서 우리가
+정해야 했다. 세 가지로 나눠 읽되 무게를 다르게 뒀다. 상관의 절대 크기가 주
+지표다 — 샘플이 수백만 개라 통계적 유의성은 거의 모든 매칭이 통과하므로 아무도
+묻지 않은 질문에 답하는 셈이 된다. 보조로 2등 후보와의 차이(다른 데로 갔어도
+이상하지 않았는가)와 상호 1순위 여부를 본다. 마지막으로 짝을 실제로 파괴해
+잡음 바닥을 깐다.
 
-The runner-up is within 10% of the assigned partner for 18.0% of matches. 42.5% of pairs are each other's first choice.
+매칭된 499쌍의 co-activation 상관을 0.1 구간으로 나누면:
 
-Destroying the image-caption pairing and recomputing puts the noise floor at correlation 0.0295 (99th percentile of matches found in noise); 8.8% of real matches fall below it.
+| 상관계수 | 쌍 수 | 비율 | 누적 |
+|---|---|---|---|
+| [0.9, 1.0] | 7 | 1.4% | 1.4% |
+| [0.8, 0.9) | 12 | 2.4% | 3.8% |
+| [0.7, 0.8) | 21 | 4.2% | 8.0% |
+| [0.6, 0.7) | 25 | 5.0% | 13.0% |
+| [0.5, 0.6) | 29 | 5.8% | 18.8% |
+| [0.4, 0.5) | 39 | 7.8% | 26.7% |
+| [0.3, 0.4) | 63 | 12.6% | 39.3% |
+| [0.2, 0.3) | 83 | 16.6% | 55.9% |
+| [0.1, 0.2) | 93 | 18.6% | 74.5% |
+| [0.0, 0.1) | 127 | 25.5% | 100.0% |
+| negative | 0 | 0% | 100.0% |
 
-Weak matches are not merely noted, they are identifiable and worth removing.
-Keeping only matches above a correlation cutoff and rerunning cross-modal
-retrieval on the held-out split:
+배정된 파트너와 2등 후보의 차이가 10% 이내인 경우가 18.0%다. 이런 쌍은 매칭이 다른 곳으로 갔어도 목적함수가 크게 달라지지 않았을 것이다. 두 latent가 서로를 1순위로 꼽는 경우는 42.5%다.
 
-| kept | coordinates | I->T R@1 | I->T R@5 | T->I R@1 | partners shuffled, I->T R@1 |
+이미지와 캡션의 짝을 실제로 뒤섞고 상관행렬을 다시 계산한 뒤 같은 Hungarian을 돌리면, 그 절차가 순수한 잡음에서 찾아내는 상관의 99분위가 0.0295다. 실제 매칭의 8.8%가 그 아래에 있다. 상관행렬의 열만 섞는 값싼 방법은 각 행의 최댓값이 보존되어 Hungarian이 같은 값을 다시 고르므로 쓸 수 없다.
+
+약한 매칭이 실제로 손해를 끼치는지는 그 비율이 얼마인지와는 다른 질문이다.
+상관이 컷오프 이상인 매칭만 남기고 나머지 좌표를 0으로 만든 뒤, 학습에 쓰지
+않은 split에서 이미지와 캡션을 서로 검색하게 하면:
+
+| 남긴 매칭 | 좌표 수 | I→T R@1 | I→T R@5 | T→I R@1 | 파트너를 섞었을 때 I→T R@1 |
 |---|---|---|---|---|---|
 | c>=0.0 | 499 | 3.48 | 9.82 | 1.18 | 0.02 |
 | c>=0.1 | 372 | 10.22 | 25.04 | 8.38 | 0.02 |
@@ -84,62 +157,106 @@ retrieval on the held-out split:
 | c>=0.4 | 133 | 5.56 | 12.36 | 4.59 | 0.00 |
 | c>=0.6 | 65 | 2.48 | 5.54 | 1.82 | 0.00 |
 
-The shuffle keeps the same coordinates and only breaks which text latent each
-is paired with, so its collapse to near zero shows the retrieval is carried by
-the correspondence rather than by how much those coordinates activate.
+마지막 열은 좌표는 그대로 두고 각 좌표가 어느 text latent와 짝지어지는지만
+망가뜨린 조건이다. 여기서 성능이 0 근처로 무너진다는 것은, 검색을 떠받치는
+것이 그 좌표들이 얼마나 활성화되느냐가 아니라 대응 관계 자체라는 뜻이다.
 
-## Is the gap just feature splitting?
+## 이 격차가 그냥 feature splitting 때문 아닌가
 
-*AC's third concern.*
+*AC의 세 번째 우려.*
 
-One-to-many groups — an image latent correlating above 0.4 with two or
-more text latents — cover 3.9% of alive image
-latents (36 groups). Share of the image direction's energy that the
-text partners explain:
+> 요청: 1:N인 경우를 찾아, 1에 해당하는 image column vector와 N에 해당하는 text
+> column vector들이 펼치는 span 사이의 직교 거리, 즉 span에 직교하는 성분의 크기를
+> 구해볼 것.
 
-| subspace | median explained |
+측정된 거리가 사실은 splitting의 부산물이라는 반론을 검정한다. image 쪽 개념
+하나가 text 쪽에서 N개로 쪼개진 것뿐이라면, 그 N개를 다 합친 공간은 image 방향을
+설명할 수 있어야 한다. decoder 행은 학습 시점에 이미 단위벡터로 정규화되어
+있으므로, 사영 성분과 직교 잔차의 제곱합이 정확히 1이 되고 설명 비율을 1 − r²로
+읽을 수 있다.
+
+하나의 image latent가 상관 0.4 이상으로 둘 이상의 text latent와 이어지는
+1:N 그룹은 살아있는 image latent의 3.9%를 차지한다
+(36개 그룹). image 방향을 그 text 파트너들이 펼치는 부분공간에
+사영했을 때 설명되는 에너지 비율은 다음과 같다.
+
+| 부분공간 | 설명 비율 중앙값 |
 |---|---|
-| all partners | 0.231 |
-| strongest partner alone | 0.192 |
-| strongest partner + random text atoms | 0.195 |
-| random text atoms | 0.006 |
-| random directions | 0.004 (analytic 0.005) |
+| 모든 파트너 | 0.231 |
+| 가장 강한 파트너 하나 | 0.192 |
+| 가장 강한 파트너 + 무작위 text atom | 0.195 |
+| 무작위 text atom | 0.006 |
+| 무작위 방향 | 0.004 (이론값 0.005) |
 
-The split partners add 0.025 beyond the
-strongest one, against 0.003 for the control, so
-the effect is real but small: 76.9% of the image
-direction stays unexplained. 0.0% of groups exceed half explained.
+N차원 부분공간은 어떤 방향이든 우연히 N/d 정도는 설명하므로, 설명 비율만
+단독으로 보면 의미가 없다. splitting 가설을 실제로 검정하는 비교는 가장 강한
+파트너를 남기고 나머지를 무작위 atom으로 바꾼 조건이다.
 
-## Could any matching, or one global transform, close the gap?
+쪼개진 나머지 파트너들이 더하는 몫은 0.025이고 대조군은 0.003이다. 효과는 실재하지만 작고, image 방향의 76.9%는 어떤 splitting 조합으로도 설명되지 않는다. 설명 비율이 0.5를 넘는 그룹은 0%다.
 
-Ignoring the matching entirely and taking each image direction's closest text
-direction anywhere in the dictionary gives median cosine 0.281 (distance 0.719). The same search over random directions gives 0.132, and the analytic value for a maximum over that many candidates is 0.156. No assignment procedure can do better than the oracle.
+## 더 좋은 매칭이나 전역 변환으로 격차를 없앨 수 있나
 
-Fitting one transform on half the matched pairs and scoring it on the other half:
+*요청 범위 밖에서 추가한 검정. 리뷰어가 낼 수 있는 가장 강한 반론 두 개를 미리
+막는다 — 매칭 알고리즘이 나빠서 거리가 큰 것 아니냐, 그리고 두 공간이 통째로
+회전만큼 어긋난 것 아니냐. Reviewer 3VJU가 요청한 "CCA나 Procrustes, optimal
+transport 같은 다른 정렬 방법과 비교해달라"에도 부분적으로 답이 된다.*
+
+매칭을 아예 버리고, 각 image 방향에 대해 dictionary 전체에서 가장 가까운 text
+방향을 신이 골라준다고 하면 cosine 중앙값이 0.281이다 (거리 0.719). 같은 탐색을 무작위 방향에 대고 하면 0.132이고, 그만큼의 후보 중 최댓값의 이론값은 0.156이다. 어떤 매칭 절차도 이 상한을 넘을 수 없으므로, 거리가 큰 이유를 매칭 알고리즘 탓으로 돌릴 수 없다.
+
+매칭된 쌍의 절반으로 전역 변환 하나를 적합하고 나머지 절반에서 평가하면:
 
 | | held-out cosine |
 |---|---|
-| identity | 0.306 |
-| best rotation | 0.176 |
-| best linear map | 0.142 |
-| rotation fitted on shuffled pairs | 0.010 |
+| 변환 없음 | 0.306 |
+| 최적 회전 | 0.176 |
+| 최적 선형변환 | 0.142 |
+| 짝을 섞어 적합한 회전 | 0.010 |
 
-## Does the gap survive on concepts both runs reproduce?
+회전을 맞출수록 오히려 나빠지므로, 두 dictionary의 차이는 하나의 전역 회전으로
+설명되지 않는다. 짝을 섞어 적합한 회전이 바닥에 붙는 것은 이 검정에 자유
+파라미터로 인한 누수가 없음을 보여준다.
 
-*AC on dictionary non-identifiability.*
+## 두 run이 모두 재현해내는 개념에서도 격차가 남는가
 
-Mean stability between the two runs' image dictionaries: 0.718 over 499 concepts.
+*AC의 dictionary non-identifiability 우려.*
 
-| stability cut | n | stability | same-modality distance | cross-modal distance | matched correlation |
+> 요청: Papadimitriou et al. (arXiv 2504.11695)의 stability 지표를 써서, 두 모델의
+> 안정성에 가장 크게 기여하는 상위 1% concept을 구하고, 그 concept들에 대해서마저도
+> image column vector와 text column vector의 cosine이 1이 아님을 보일 것.
+
+한 번의 학습에서만 나오는 방향이라면 그것과 다른 모달리티 사이의 거리는 데이터에
+대해 아무것도 말해주지 않는다. 그래서 두 번 독립적으로 학습해도 거의 그대로 다시
+나오는 concept, 즉 학습 잡음이라고 보기 어려운 것들만 골라 거리를 다시 잰다.
+안정성 정의는 인용 논문 그대로다 — 두 dictionary의 행을 총 유사도가 최대가 되도록
+Hungarian으로 정렬한 뒤, 각 concept의 매칭된 cosine을 그 concept의 안정성으로 본다.
+
+두 run의 image dictionary 사이 평균 안정성은 0.718이고 비교된 concept은 499개다.
+
+| 안정성 상위 | 개수 | 안정성 | 같은 모달리티 거리 | cross-modal 거리 | 매칭 상관 |
 |---|---|---|---|---|---|
-| top_1pct | 5 | 0.992 | 0.008 | 0.363 | 0.603 |
-| top_5pct | 25 | 0.982 | 0.018 | 0.446 | 0.524 |
-| top_10pct | 50 | 0.975 | 0.025 | 0.480 | 0.486 |
-| top_25pct | 125 | 0.965 | 0.035 | 0.511 | 0.439 |
-| top_50pct | 250 | 0.941 | 0.059 | 0.567 | 0.381 |
-| top_100pct | 499 | 0.862 | 0.138 | 0.697 | 0.242 |
+| 1% | 5 | 0.992 | 0.008 | 0.363 | 0.603 |
+| 5% | 25 | 0.982 | 0.018 | 0.446 | 0.524 |
+| 10% | 50 | 0.975 | 0.025 | 0.480 | 0.486 |
+| 25% | 125 | 0.965 | 0.035 | 0.511 | 0.439 |
+| 50% | 250 | 0.941 | 0.059 | 0.567 | 0.381 |
+| 100% | 499 | 0.862 | 0.138 | 0.697 | 0.242 |
 
-Decile curve, most reproducible first: 0.47 0.54 0.60 0.64 0.61 0.79 0.84 0.81 0.82 0.81
+재현이 잘 되는 순서로 십분위를 나눈 cross-modal 거리: 0.47 0.54 0.60 0.64 0.61 0.79 0.84 0.81 0.82 0.81
 
-Restricted to the 65 pairs that genuinely co-activate (correlation >= 0.6), the cross-modal distance is 0.487.
+이 곡선은 단조 증가한다. 즉 안정적인 concept일수록 cross-modal 정렬이 오히려
+좋다. 따라서 "가장 안정적인 concept마저 어긋나 있다"는 주장은 이 데이터가
+지지하지 않는다. 대신 성립하는 것은 학습 변동으로 잔차를 설명할 수 없다는
+쪽이다 — 두 run이 거의 완전히 재현해내는 concept에서도 cross-modal 거리는 두
+자릿수 배로 크게 남는다. 분위수 선택이 결론을 바꾸는 손잡이가 되지 않도록
+1%, 5%, 10%를 미리 정해 전부 보고한다.
+
+실제로 함께 켜지는 쌍(상관 0.6 이상) 65개로 한정하면 cross-modal 거리는 0.487다. 안정성 상위만 골라도 다음과 같다.
+
+| 안정성 상위 | 개수 | 안정성 | cross-modal 거리 |
+|---|---|---|---|
+| 10% | 6 | 0.987 | 0.368 |
+| 25% | 16 | 0.980 | 0.420 |
+| 50% | 32 | 0.973 | 0.445 |
+| 100% | 65 | 0.955 | 0.487 |
 
