@@ -260,7 +260,7 @@ def main() -> None:
         cos_ok = pair_cos[finite]
         c_ok = pair_c[finite]
         order_s = np.argsort(-sp_ok)
-        for q in (0.01, 0.05):
+        for q in (0.01, 0.05, 0.10):
             k = max(1, int(round(q * len(sp_ok))))
             sel = order_s[:k]
             quant[f"top_{int(q * 100)}pct_by_stability"] = {
@@ -277,7 +277,7 @@ def main() -> None:
         corr = finite & (pair_c >= args.co_activation_min)
         sp_c, cos_c, c_c = pair_stab[corr], pair_cos[corr], pair_c[corr]
         order_c = np.argsort(-sp_c)
-        for q in (0.01, 0.05, 1.00):
+        for q in (0.01, 0.05, 0.10, 1.00):
             if len(sp_c) == 0:
                 break
             k = max(1, int(round(q * len(sp_c))))

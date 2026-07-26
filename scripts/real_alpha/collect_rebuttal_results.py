@@ -494,7 +494,9 @@ def build(root: Path, s: str, r: str, pair: str) -> list[str]:
                          f"{num(e['distance_median'])} | "
                          f"{num(e['matched_correlation_median'])} |")
             L.append("")
-            L.append("분위수로 자른 위쪽 두 행은 표본이 한 자릿수라 값이 흔들린다. 임계값으로 자른")
+            L.append("분위수 상위 1%와 5%는 표본이 한 자릿수라 값이 흔들린다. 상위 10%부터 안정되고,")
+            L.append("대응 문턱을 0.6에서 0.4로 낮춰도 COCO 0.562→0.557, CC3M 0.651→0.621로 거의")
+            L.append("움직이지 않는다. 임계값으로 자른")
             L.append("아래쪽 행들이 같은 조건을 표본을 확보한 채로 본 것이고, cosine이 0.55~0.62에서")
             L.append("수렴한다. 매칭 상관 0.68 이상이라 실제로 함께 켜지는 쌍이며, 양쪽 안정성 0.9")
             L.append("이상이라 학습 잡음도 아니다. 그런데도 1에서 멀다.")
