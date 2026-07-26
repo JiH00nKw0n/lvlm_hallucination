@@ -58,6 +58,177 @@ def num(x: float | None, nd: int = 3) -> str:
     return "--" if x is None else f"{x:.{nd}f}"
 
 
+# The COCO-80 test needs a per-coordinate concept identity, so it only runs on
+# methods that keep one. The baselines below are the paper's own §5 arms.
+EB_BASELINES = [
+    ("", "Post-hoc Alignment (ours)"),
+    ("isoalign", "Iso-Energy Alignment"),
+    ("shared", "Shared SAE"),
+    ("groupsparse", "Group-Sparse"),
+    ("noalign", "정렬 없음 (permutation을 항등으로)"),
+]
+
+
+def coco80_baselines(root: Path, s: str) -> list[str]:
+    """Same COCO-80 test run on the paper's baselines. CC3M only."""
+    if s != "cc3m_k32":
+        return []
+
+    def arm(tag: str, suffix: str = "") -> dict | None:
+        name = f"{s}_{tag}_r1{suffix}" if tag else f"{s}_r1{suffix}"
+        return load(root / "rebuttal_EB" / name / "coco80_correspondence.json")
+
+    got = [(tag, lab, arm(tag)) for tag, lab in EB_BASELINES]
+    got = [(t, lab, j) for t, lab, j in got if j is not None]
+    if len(got) < 2:
+        return []
+
+    L = ["### 논문의 다른 방법들은 같은 검정에서 어떻게 나오는가", ""]
+    L.append("위 검정은 좌표마다 개념 정체성이 있는 방법에만 돌릴 수 있음. 논문 §5의 arm 중")
+    L.append("그 조건을 만족하는 것 전부에 똑같이 돌림. 학습 데이터·latent 크기·sparsity·")
+    L.append("epoch을 전부 맞췄고 바뀐 것은 손실 함수뿐임. 검정 코드도 같은 파일임.")
+    L.append("")
+    L.append("맨 아래 줄이 핵심 대조군임 — 우리 모델을 그대로 두고 **permutation만 항등으로**")
+    L.append("바꿈. 두 dictionary가 분리되어 있다는 사실은 유지되고 좌표를 잇는 학습된 대응만")
+    L.append("사라짐. 이게 0%로 나오면 위의 수치가 dictionary가 좋아서가 아니라 permutation이")
+    L.append("일을 해서 나온 것임.")
+    L.append("")
+    L.append("| 방법 | 1위 일치 | 5위 이내 | 10위 이내 | MRR | 후보 좌표 | 천장 | 우연 |")
+    L.append("|---|---|---|---|---|---|---|---|")
+    for _tag, lab, j in got:
+        d = j["result"]["image_pick_in_text_ranking"]
+        c = j["controls"]
+        star = "**" if _tag == "" else ""
+        L.append(f"| {star}{lab}{star} | {star}{pct(d['top1'])}{star} | {pct(d['top5'])} | "
+                 f"{pct(d['top10'])} | {d['mrr']:.3f} | {j['m_eff']} | "
+                 f"{pct(c['image_self_agreement'])} | {pct(c['chance_hit@1'])} |")
+    L.append("")
+
+    ours = next((j for tag, _lab, j in got if tag == ""), None)
+    noal = next((j for tag, _lab, j in got if tag == "noalign"), None)
+    if ours and noal:
+        p = noal["controls"]["p_value_vs_random_permutation"]
+        L.append(f"정렬을 빼면 {pct(ours['result']['agree@1'])}에서 "
+                 f"{pct(noal['result']['agree@1'])}로 떨어지고, 무작위 permutation과 구별되지")
+        L.append(f"않음 (p = {p:.2f}). 두 dictionary를 따로 학습하는 것만으로는 좌표가 서로")
+        L.append("아무 관계도 갖지 않는다는 뜻이고, 개념 대응은 전적으로 post-hoc 매칭에서 나옴.")
+        L.append("")
+
+    L.append("천장 열은 이미지 쪽이 자기 나머지 절반과 얼마나 일치하는지로, 그 방법이 라벨을")
+    L.append("얼마나 잘 잡아내는지의 상한임. 전부 89% 이상이므로 순위 차이가 특정 방법의")
+    L.append("라벨이 유난히 어려워서 생긴 것은 아님. 후보 좌표 수도 실었음 — Group-Sparse가")
+    L.append("4903개로 가장 많아 우연 수준이 가장 낮은데도 1위 일치가 가장 낮으므로, 후보가")
+    L.append("많아서 불리했다는 설명은 성립하지 않음.")
+    L.append("")
+
+    na = [(lab, arm(t), arm(t, "_noarea")) for t, lab in EB_BASELINES]
+    na = [(lab, a, b) for lab, a, b in na if a is not None and b is not None]
+    if len(na) >= 2:
+        L.append("면적 조건을 뺐을 때 (카테고리 65 → 78개):")
+        L.append("")
+        L.append("| 방법 | 5% 이상 | 조건 없음 |")
+        L.append("|---|---|---|")
+        for lab, a, b in na:
+            L.append(f"| {lab} | {pct(a['result']['agree@1'])} | "
+                     f"{pct(b['result']['agree@1'])} |")
+        L.append("")
+        L.append("순서가 바뀌지 않음.")
+        L.append("")
+    return L
+
+
+ALIGN_METHOD_LABELS = {
+    "hungarian (ours)": "Hungarian (ours)",
+    "greedy 1:1": "greedy 1:1",
+    "sinkhorn eps=0.01": "Sinkhorn, ε=0.01",
+    "sinkhorn eps=0.05": "Sinkhorn, ε=0.05",
+    "sinkhorn eps=0.1": "Sinkhorn, ε=0.1",
+    "hungarian on decoder cosine": "Hungarian, 비용을 decoder cosine으로",
+    "procrustes (rotation)": "Procrustes (회전)",
+}
+
+
+def alignment_methods(root: Path, s: str, r: str) -> list[str]:
+    """Reviewer 3VJU Q1 — swap the matching operator, keep everything else."""
+    if s != "cc3m_k32":
+        return []
+    j = load(root / "rebuttal_align" / f"{s}_{r}" / "alignment_methods.json")
+    if j is None:
+        return []
+
+    L = ["## 다른 post-hoc 정렬 방법을 쓰면 더 나은가", ""]
+    L.append("*Reviewer 3VJU Q1.*")
+    L.append("")
+    L.append("> 리뷰어: \"post-hoc alignment를 CCA, Procrustes alignment, optimal transport 같은")
+    L.append("> 다른 post-hoc 정렬 방법과 비교할 수 있는가?\"")
+    L.append("")
+    L.append("**왜 이렇게 설계했는가.** 우리 방법에서 갈아끼울 수 있는 부품은 하나임 —")
+    L.append("co-activation 통계를 받아 image 좌표를 text 좌표로 보내는 연산자. 우리는 거기에")
+    L.append("Hungarian을 넣어 permutation을 얻음. 리뷰어가 물은 것은 그 자리에 다른 걸 넣으면")
+    L.append("어떻게 되냐는 것이므로, 연산자만 바꾸고 SAE·데이터·평가를 전부 고정함.")
+    L.append("")
+    L.append("**공정하게 만들기 위한 조건.** Procrustes와 CCA는 자유 파라미터가 있어서 같은")
+    L.append(f"데이터에서 적합하고 평가하면 당연히 이김. 그래서 모든 연산자를 학습셋 "
+             f"{j['n_fit_pairs']:,}쌍에서 적합하고 건드리지 않은 COCO test에서 retrieval로")
+    L.append("평가함. 적합에 쓰는 통계는 스트리밍으로 모은 2차 모멘트뿐이라 모든 방법이 같은")
+    L.append("정보를 봄.")
+    L.append("")
+    L.append("**각 방법이 뭔지.**")
+    L.append("")
+    L.append("- *Hungarian (ours)*: 상관 합을 최대화하는 1:1 대응. 좌표 하나가 좌표 하나로 감.")
+    L.append("- *greedy 1:1*: 상관 큰 순서대로 집어가는 근사. Hungarian의 전역 최적성이 실제로")
+    L.append("  필요한지 보는 대조군임.")
+    L.append("- *비용을 decoder cosine으로*: 같은 Hungarian인데 비용행렬을 co-activation이 아니라")
+    L.append("  decoder 방향의 cosine으로 씀. 어느 신호가 더 나은 짝을 만드는지 가름.")
+    L.append("- *Sinkhorn (entropic OT)*: permutation 제약을 풀어 확률적 수송계획을 허용함. ε가")
+    L.append("  0으로 가면 Hungarian에 수렴하고 크면 질량이 여러 좌표로 퍼짐. 1:N 대응을 허용하는")
+    L.append("  가장 자연스러운 완화라 feature splitting 지적에 직접 대응됨.")
+    L.append("- *Procrustes (회전)*: ‖Z_I R − Z_T‖를 최소화하는 직교행렬 R. 짝지어진 두 점")
+    L.append("  집합을 회전만으로 겹치게 하는 고전적 방법이고, 교차 2차 모멘트를 SVD하면 닫힌")
+    L.append("  해가 나옴. permutation도 직교행렬이므로 같은 족에서 제약만 푼 것임.")
+    L.append("- *CCA*: 두 공간의 상관을 최대화하는 부분공간 쌍을 찾아 d차원으로 사영함. d는")
+    L.append("  남길 차원 수이고 두 값을 봄.")
+    L.append("")
+    L.append(f"살아있는 좌표는 image {j['n_alive_image']}개, text {j['n_alive_text']}개임.")
+    L.append("")
+    L.append("| 정렬 방법 | I→T R@1 | I→T R@5 | I→T R@10 | T→I R@1 | T→I R@10 |")
+    L.append("|---|---|---|---|---|---|")
+    best = max(v["I2T R@1"] for v in j["results"].values())
+    for k, v in j["results"].items():
+        lab = ALIGN_METHOD_LABELS.get(k, k)
+        if k.startswith("hungarian, matches"):
+            thr, n = k.split("c>=")[1].split(" (")
+            lab = f"Hungarian, 상관 {thr} 이상 매칭만 ({n.split()[0]}좌표)"
+        star = "**" if v["I2T R@1"] == best else ""
+        L.append(f"| {lab} | {star}{pct(v['I2T R@1'])}{star} | {pct(v['I2T R@5'])} | "
+                 f"{pct(v['I2T R@10'])} | {pct(v['T2I R@1'])} | {pct(v['T2I R@10'])} |")
+    L.append("")
+    L.append("**읽는 법.** Procrustes가 retrieval 1위임. 숨길 이유가 없고 숨기면 리뷰어가 직접")
+    L.append("돌려서 발견함. 다만 이 표는 정렬 품질의 한 측면만 잼.")
+    L.append("")
+    L.append("Procrustes와 CCA는 좌표의 정체성을 없앰. permutation은 \"image 좌표 137번이 text")
+    L.append("좌표 2891번\"이라는 문장을 만들어내고, 그래서 위의 COCO-80 검정을 돌릴 수 있음.")
+    L.append("회전을 거치면 출력 좌표 하나가 입력 좌표 수천 개 전부의 조밀한 선형결합이 되어,")
+    L.append("\"이 좌표가 무슨 개념이다\"라고 물을 대상 자체가 사라짐. COCO-80 검정을 Procrustes에")
+    L.append("돌릴 수 없는 이유가 그것임 — 비교할 좌표가 없음.")
+    L.append("")
+    L.append("그래서 두 결과를 같이 읽어야 함. 임베딩을 잘 맞추는 것이 목적이면 회전이 더 나음.")
+    L.append("좌표별 개념 대응이 목적이면 회전은 그 대상을 애초에 만들지 않음. 우리 논문의")
+    L.append("주장은 후자에 있음.")
+    L.append("")
+    sk = {k: v for k, v in j["results"].items() if k.startswith("sinkhorn")}
+    if len(sk) >= 2:
+        lo = min(sk.items(), key=lambda kv: float(kv[0].split("=")[1]))
+        hi = max(sk.items(), key=lambda kv: float(kv[0].split("=")[1]))
+        L.append(f"한 가지 더. Sinkhorn의 ε를 키우면 성능이 떨어짐 "
+                 f"({lo[0].split('=')[1]}에서 {pct(lo[1]['I2T R@1'])}, "
+                 f"{hi[0].split('=')[1]}에서 {pct(hi[1]['I2T R@1'])}). 질량을 여러 좌표로")
+        L.append("퍼뜨릴 자유를 줘도 이득이 없다는 뜻이고, 1:N 그룹에서 가장 강한 파트너 하나가")
+        L.append("대부분을 설명한다는 위 결과와 같은 방향임.")
+        L.append("")
+    return L
+
+
 def build(root: Path, s: str, r: str, pair: str) -> list[str]:
 
     ea = load(root / "rebuttal_EA" / f"{s}_{pair}" / "fig_same_modality.json")
@@ -184,27 +355,64 @@ def build(root: Path, s: str, r: str, pair: str) -> list[str]:
     L.append("> image/text latent가 단지 상관된 개념이 아니라 같은 개념을 나타내는지, 객체나")
     L.append("> 속성 어노테이션 또는 top-activating 예시의 수동 평가로 정량 검증해달라.\"")
     L.append("")
-    L.append("함께 켜진다는 것이 같은 개념이라는 뜻인지, 아니면 사진에서 자주 같이 등장하는")
-    L.append("별개 개념일 뿐인지를 가른다. 의자와 식탁은 함께 나타나지만 같은 개념이 아니다.")
-    L.append("그래서 판단 기준을 우리 모델 바깥에서 가져온다 — COCO가 사람 손으로 달아둔 객체")
-    L.append("어노테이션이다.")
+    L.append("**왜 이렇게 설계했는가.** 리뷰어가 짚은 구멍은 이것임 — 우리 방법은 두 latent가")
+    L.append("함께 켜진다는 사실만 보고 짝을 지음. 그런데 함께 켜지는 데는 이유가 두 가지임.")
+    L.append("같은 개념이라서일 수도 있고, 사진에 자주 같이 등장하는 별개 개념이라서일 수도")
+    L.append("있음. 의자와 식탁이 후자임. 우리 데이터 안에서는 둘을 구별할 방법이 없음. 상관이")
+    L.append("높다는 것을 근거로 상관이 개념 대응이라고 말하면 순환 논증이 됨. 그래서 판단")
+    L.append("기준을 모델 바깥에서 가져와야 하고, 리뷰어가 제안한 객체 어노테이션이 정확히")
+    L.append("그 역할을 함. COCO에 사람이 직접 단 80개 객체 카테고리가 있으므로 그걸 씀.")
+    L.append("")
+    L.append("**설계의 뼈대.** 카테고리 하나를 잡으면 그 객체가 든 사진 집합과 그 객체를 말하는")
+    L.append("캡션 집합이 생김. 이미지 쪽이 자기 데이터만 보고 그 카테고리를 가장 잘 대표하는")
+    L.append("좌표를 하나 고름. 텍스트 쪽도 자기 데이터만 보고 하나 고름. 두 선택은 서로를")
+    L.append("참조하지 않고 permutation도 보지 않음. 그러고 나서야 학습된 permutation을 꺼내")
+    L.append("\"이 둘이 매칭된 쌍인가\"를 물음. 맞으면 co-activation이 찾아낸 것이 같은")
+    L.append("개념이었다는 뜻임.")
+    L.append("")
+    L.append("**깔고 들어가는 가정 세 개.** 셋 다 이 설계가 성립하는 데 필요하고, 틀리면 결과가")
+    L.append("무효가 됨.")
+    L.append("")
+    L.append("1. *객체가 화면 면적의 5% 이상을 차지해야 그 사진이 그 개념을 표현한다고 봄.*")
+    L.append("   CLIP 이미지 임베딩은 사진 전체를 512차원 벡터 하나로 요약함. 구석의 20픽셀짜리")
+    L.append("   물체는 그 벡터에 거의 흔적을 안 남기므로, 어노테이션이 달려 있다고 양성으로")
+    L.append("   치면 라벨 자체가 시끄러워짐. 이 조건을 뺀 결과도 아래에 같이 실음.")
+    L.append("2. *이미지 쪽과 텍스트 쪽이 서로 다른 사진을 봐야 함.* 같은 사진의 (이미지, 캡션)을")
+    L.append("   양쪽이 함께 보면 일치가 개념 대응이 아니라 짝 자체에서 나올 수 있음. image_id의")
+    L.append("   md5로 절반씩 갈라 겹치지 않게 함.")
+    L.append("3. *순위는 AUC로만 매김.* co-activation 상관은 permutation을 만들 때만 씀. 순위까지")
+    L.append("   상관으로 매기면 상관으로 만든 답을 상관으로 채점하는 셈이 됨.")
+    L.append("")
+    L.append("**AUC가 뭔지.** 그 카테고리에 해당하는 샘플 하나와 해당하지 않는 샘플 하나를")
+    L.append("무작위로 뽑았을 때, 앞쪽에서의 활성이 뒤쪽에서의 활성보다 클 확률임. 0.5면 그")
+    L.append("좌표가 카테고리와 무관하고 1이면 완벽히 가름. Top-K SAE 출력은 99%가 0이라 동점이")
+    L.append("대량으로 생기는데, 동점을 0.5로 세는 표준 정의를 희소 표현 위에서 그대로 정확히")
+    L.append("계산함 (샘플링 근사 아님).")
+    L.append("")
+    L.append("**왜 AUC를 골랐는지.** 후보 두 개를 버렸음.")
+    L.append("")
+    L.append("- *양성에서의 평균 활성*: 아무 입력에나 켜지는 흔한 좌표가 여러 카테고리에서")
+    L.append("  동시에 1등을 차지함. 개념을 고르는 게 아니라 발화 빈도를 고르게 됨.")
+    L.append("- *t-통계*: 반대쪽으로 망가짐. 양성 3장에만 켜지고 음성에 한 번도 안 켜지면 분모가")
+    L.append("  0으로 가서 값이 발산함. Top-K SAE에서 좌표 하나의 발화율이 1% 미만이라 이 상황이")
+    L.append("  드물지 않음.")
+    L.append("")
+    L.append("AUC는 [0,1]로 유계라 발산하지 않고, 활성 스케일에 무관해서 두 모달리티 사이에")
+    L.append("그대로 비교되며, 순위만 쓰므로 이상치에 둔감함. 여기에 \"양성의 5% 이상에서")
+    L.append("켜져야 한다\"는 최소 지지 조건을 붙여 초희소 좌표가 우연히 완벽한 AUC를 받는")
+    L.append("경우를 막음.")
     L.append("")
     if eb is None:
         L.append("**측정 없음** — `eval_coco80_correspondence.py`를 실행할 것.")
     else:
         res, ctl = eb["result"], eb["controls"]
-        L.append(f"COCO 객체 카테고리 중 표본이 충분한 {eb['n_categories']}개에 대해, 각 모달리티가")
-        L.append("자기 쪽에서만 계산한 AUC로 그 카테고리를 가장 잘 구분하는 좌표를 하나씩 고른다.")
-        L.append("AUC는 그 객체가 있는 샘플에서의 활성이 없는 샘플에서의 활성보다 클 확률이다.")
-        L.append("이미지 쪽은 사진의 한쪽 절반만, 텍스트 쪽은 나머지 절반의 캡션만 보므로 두")
-        L.append("선택이 서로에게 영향을 줄 수 없다. 그러고 나서야 학습된 permutation을 꺼내,")
-        L.append("두 선택이 서로 매칭된 좌표인지 묻는다. **순위는 AUC로 매기며 co-activation")
-        L.append("상관은 permutation을 만들 때만 쓰인다** — 순위까지 상관으로 매기면 순환 논증이")
-        L.append("된다.")
+        L.append(f"COCO 80개 카테고리 중 양쪽 절반 모두에서 양성이 50장 이상인 "
+                 f"{eb['n_categories']}개가 검정에 들어감. 후보 좌표는 살아있는 "
+                 f"{eb['m_eff']}개임.")
         L.append("")
-        L.append("순위는 양방향으로 보고한다. 이미지 쪽 선택이 텍스트 쪽 순위에서 몇 위인지와,")
-        L.append("텍스트 쪽 선택이 이미지 쪽 순위에서 몇 위인지는 서로 다른 질문이기 때문이다.")
-        L.append("1위에서는 두 질문이 같은 사건이 된다 — 양쪽이 매칭된 좌표를 골랐다는 뜻이다.")
+        L.append("순위는 양방향으로 보고함. 이미지 쪽 선택이 텍스트 쪽 순위에서 몇 위인지와")
+        L.append("텍스트 쪽 선택이 이미지 쪽 순위에서 몇 위인지는 서로 다른 질문임. 1위에서만")
+        L.append("두 질문이 같은 사건이 됨 — 양쪽이 서로 매칭된 좌표를 골랐다는 뜻임.")
         L.append("")
         L.append("| 방향 | 1위 | 5위 이내 | 10위 이내 | 순위 중앙값 | MRR |")
         L.append("|---|---|---|---|---|---|")
@@ -255,6 +463,8 @@ def build(root: Path, s: str, r: str, pair: str) -> list[str]:
             L.append("조건을 풀면 카테고리는 늘지만 라벨 자체가 시끄러워져 천장도 함께 내려간다.")
             L.append("결론의 방향은 두 경우 모두 같다.")
             L.append("")
+
+        L.extend(coco80_baselines(root, s))
 
     # ---- match confidence ----------------------------------------------------
     L.append("## 매칭이 얼마나 강하고 얼마나 분명한가")
@@ -396,6 +606,8 @@ def build(root: Path, s: str, r: str, pair: str) -> list[str]:
         L.append("설명되지 않는다. 짝을 섞어 적합한 회전이 바닥에 붙는 것은 이 검정에 자유")
         L.append("파라미터로 인한 누수가 없음을 보여준다.")
         L.append("")
+
+    L.extend(alignment_methods(root, s, r))
 
     # ---- stability -----------------------------------------------------------
     L.append("## 두 run이 모두 재현해내는 개념에서도 격차가 남는가")

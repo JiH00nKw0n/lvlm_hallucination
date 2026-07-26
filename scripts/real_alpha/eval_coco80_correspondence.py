@@ -66,6 +66,10 @@ def parse_args() -> argparse.Namespace:
                         "the modality-specific method; ignored for the shared ones, "
                         "which have nothing to permute.")
     p.add_argument("--ckpt", required=True)
+    p.add_argument("--identity-perm", action="store_true",
+                   help="modality-specific dictionaries with no alignment at all, "
+                        "i.e. coordinate i on one side read against coordinate i on "
+                        "the other. Shows what the permutation itself contributes.")
     p.add_argument("--method", choices=["separated", "shared", "aux"], default="separated",
                    help="separated = two dictionaries plus a learned permutation. "
                         "shared / aux = one dictionary used for both modalities, so "
@@ -214,6 +218,12 @@ def main() -> None:
         alive_i, alive_t = alive_masks(panel, args.alive_rule)
         match = hungarian_perm(panel["C"], alive_i, alive_t)
         perm = match["perm"]
+        if args.identity_perm:
+            # The two dictionaries are still separate; only the map between them
+            # is removed. Anything above chance here would mean the coordinates
+            # happened to line up on their own.
+            perm = np.arange(len(perm), dtype=np.int64)
+            match["usable"] = alive_i & alive_t
         M_img = np.where(match["usable"])[0]   # image latents with a live partner
         M_txt = perm[M_img]
         m_eff = len(M_img)
