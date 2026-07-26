@@ -61,6 +61,9 @@ def parse_args() -> argparse.Namespace:
                    help="only used for its alive masks over the two runs")
     p.add_argument("--panel-img-txt", required=True,
                    help="supplies the cross-modal permutation and correlations")
+    p.add_argument("--panel-txt-txt", default=None,
+                   help="text-side alive masks, so stability can be required of both "
+                        "endpoints of a cross-modal pair rather than only the image one")
     p.add_argument("--ckpt-a", required=True)
     p.add_argument("--ckpt-b", required=True)
     p.add_argument("--alive-rule", choices=["ever", "density"], default="ever")
@@ -108,7 +111,8 @@ def main() -> None:
     logger.info("stability over %d matched concepts: mean %.4f",
                 len(stab["rows"]), stab["mean_stability"])
 
-    cross = hungarian_perm(p_it["C"], alive_i, alive_t)
+    C_it = p_it["C"]
+    cross = hungarian_perm(C_it, alive_i, alive_t)
     perm, usable, matched_c = cross["perm"], cross["usable"], cross["matched_c"]
 
     # The same-modality side is matched by decoder cosine, which is the very
@@ -212,6 +216,70 @@ def main() -> None:
             "note": "too few co-activating pairs to condition on",
         }
 
+
+    # ---- reproducible on both sides AND actually corresponding ---------------
+    # Conditioning on stability alone breaks in both directions. Restricting to
+    # stable image atoms and following the global permutation leaves the text
+    # endpoint unconstrained; forcing a bijection inside the top few percent of
+    # each side pairs concepts that have no reason to correspond. Either way the
+    # matched correlation collapses and the pair stops being a correspondence at
+    # all. The defensible cut requires both endpoints to be reproducible and the
+    # pair to genuinely co-activate, and reports the matched correlation next to
+    # every cell so the reader can see when that stops being true.
+    if args.panel_txt_txt:
+        p_tt = load_panel(args.panel_txt_txt)
+        alive_ta, alive_tb = alive_masks(p_tt, args.alive_rule)
+        Wtb = unit_decoder(args.ckpt_b, "text")
+        stab_t = geometry_stability(Wt, Wtb, alive_ta, alive_tb)
+
+        img_score = np.full(Wa.shape[0], -np.inf)
+        img_score[stab["rows"]] = stab["score"]
+        txt_score = np.full(Wt.shape[0], -np.inf)
+        txt_score[stab_t["rows"]] = stab_t["score"]
+
+        pair_rows = np.where(usable)[0]
+        pair_cos = (Wa[pair_rows] * Wt[perm[pair_rows]]).sum(axis=1)
+        pair_c = matched_c[pair_rows]
+        pair_stab = np.minimum(img_score[pair_rows], txt_score[perm[pair_rows]])
+        finite = np.isfinite(pair_stab)
+
+        grid = {}
+        for s_min in (0.0, 0.8, 0.9, 0.95):
+            for c_min in (0.0, 0.4, 0.6):
+                sel = finite & (pair_stab >= s_min) & (pair_c >= c_min)
+                n = int(sel.sum())
+                grid[f"stability>={s_min}, c>={c_min}"] = {
+                    "n": n,
+                    "cosine_median": float(np.median(pair_cos[sel])) if n else None,
+                    "distance_median": float(np.median(1.0 - pair_cos[sel])) if n else None,
+                    "matched_correlation_median": float(np.median(pair_c[sel])) if n else None,
+                    "pair_stability_median": float(np.median(pair_stab[sel])) if n else None,
+                }
+        quant = {}
+        sp_ok = pair_stab[finite]
+        cos_ok = pair_cos[finite]
+        c_ok = pair_c[finite]
+        order_s = np.argsort(-sp_ok)
+        for q in (0.01, 0.05):
+            k = max(1, int(round(q * len(sp_ok))))
+            sel = order_s[:k]
+            quant[f"top_{int(q * 100)}pct_by_stability"] = {
+                "n": int(k),
+                "pair_stability_median": float(np.median(sp_ok[sel])),
+                "cosine_median": float(np.median(cos_ok[sel])),
+                "distance_median": float(np.median(1.0 - cos_ok[sel])),
+                "matched_correlation_median": float(np.median(c_ok[sel])),
+            }
+
+        report["stable_and_corresponding"] = {
+            "by_stability_quantile": quant,
+            "text_mean_stability": stab_t["mean_stability"],
+            "n_pairs_scored": int(finite.sum()),
+            "note": ("pair stability is the weaker of the two endpoints; every cell "
+                     "is our method's own Hungarian pairs, filtered, never rematched"),
+            "grid": grid,
+        }
+
     (out / "stability_conditioned.json").write_text(json.dumps(report, indent=2))
 
     print()
@@ -247,6 +315,20 @@ def main() -> None:
                 print(f"    top {q:>3}% by stability (n={k['n']:>4}): "
                       f"stability {k['stability_median']:.3f}, "
                       f"cross-modal distance {k['cross_modal_distance_median']:.3f}")
+    if "stable_and_corresponding" in report:
+        b = report["stable_and_corresponding"]
+        print(f"\nour Hungarian pairs, filtered by both-endpoint stability and by "
+              f"co-activation ({b['n_pairs_scored']} pairs scored)")
+        print(f"  {'condition':<28}{'n':>7}{'cosine':>9}{'distance':>10}{'matched c':>11}")
+        for k, e in b.get("by_stability_quantile", {}).items():
+            print(f"  {k:<28}{e['n']:>7}{e['cosine_median']:>9.3f}"
+                  f"{e['distance_median']:>10.3f}{e['matched_correlation_median']:>11.3f}")
+        for k, e in b["grid"].items():
+            if not e["n"]:
+                print(f"  {k:<28}{0:>7}{'--':>9}{'--':>10}{'--':>11}")
+                continue
+            print(f"  {k:<28}{e['n']:>7}{e['cosine_median']:>9.3f}"
+                  f"{e['distance_median']:>10.3f}{e['matched_correlation_median']:>11.3f}")
     print(f"\nwrote {out / 'stability_conditioned.json'}")
 
 

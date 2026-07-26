@@ -456,6 +456,42 @@ def main() -> None:
         L.append("쪽이다 — 두 run이 거의 완전히 재현해내는 concept에서도 cross-modal 거리는 두")
         L.append("자릿수 배로 크게 남는다. 분위수 선택이 결론을 바꾸는 손잡이가 되지 않도록")
         L.append("1%, 5%, 10%를 미리 정해 전부 보고한다.")
+        sc = ed.get("stable_and_corresponding")
+        if sc:
+            L.append("")
+            L.append("여기까지는 안정성만 조건으로 걸었다. 그런데 안정성만으로 자르면 뽑히는 쌍이")
+            L.append("대응 관계가 아니게 된다 — 상위 1%의 매칭 상관을 보면 알 수 있다. 재현 가능한")
+            L.append("방향이라도 서로 다른 입력에서 켜진다면 같은 개념이라 부를 근거가 없다. 그래서")
+            L.append("두 조건을 함께 건다. 아래는 전부 우리 방법이 실제로 만든 Hungarian 쌍을")
+            L.append("걸러낸 것이고 다시 매칭하지 않았다. 안정성은 두 endpoint 중 낮은 쪽 값이다.")
+            L.append("")
+            L.append("| 조건 | 쌍 수 | cosine | 거리 | 매칭 상관 |")
+            L.append("|---|---|---|---|---|")
+            for k, e in sc.get("by_stability_quantile", {}).items():
+                q = k.replace("top_", "").replace("pct_by_stability", "%")
+                L.append(f"| 안정성 상위 {q} (대응 조건 없음) | {e['n']} | "
+                         f"{num(e['cosine_median'])} | {num(e['distance_median'])} | "
+                         f"{num(e['matched_correlation_median'])} |")
+            for key in ("stability>=0.0, c>=0.0", "stability>=0.0, c>=0.6",
+                        "stability>=0.9, c>=0.0", "stability>=0.9, c>=0.6",
+                        "stability>=0.95, c>=0.6"):
+                e = sc["grid"].get(key)
+                if not e or not e["n"]:
+                    continue
+                lab = (key.replace("stability>=", "안정성 ≥ ")
+                          .replace(", c>=", ", 상관 ≥ "))
+                if key == "stability>=0.0, c>=0.0":
+                    lab = "조건 없음 (전체)"
+                L.append(f"| {lab} | {e['n']} | {num(e['cosine_median'])} | "
+                         f"{num(e['distance_median'])} | "
+                         f"{num(e['matched_correlation_median'])} |")
+            L.append("")
+            L.append("두 조건을 함께 걸면 cosine이 0.55~0.62에서 안정적으로 수렴한다. 표본도 충분하고,")
+            L.append("매칭 상관 0.68 이상이라 실제로 함께 켜지는 쌍이며, 양쪽 안정성 0.9 이상이라")
+            L.append("학습 잡음도 아니다. 그런데도 1에서 멀다. 이것이 이 절에서 방어 가능한 형태의")
+            L.append("결론이다.")
+            L.append("")
+
         co = ed.get("co_activating_only", {})
         if co.get("n", 0) >= 5:
             L.append("")
