@@ -122,12 +122,20 @@ def per_row_medians(C: np.ndarray, dist: np.ndarray, thr: float) -> np.ndarray:
     return np.array([np.median(dist[r, mask[r]]) for r in rows], dtype=np.float64)
 
 
-def bootstrap_ci(values: np.ndarray, n_boot: int, rng: np.random.Generator) -> tuple[float, float]:
+def bootstrap_ci(values: np.ndarray, n_boot: int, rng: np.random.Generator,
+                 stat=np.median) -> tuple[float, float]:
+    """Percentile interval for a statistic, resampling latents.
+
+    The median is robust to the long tail of near-orthogonal pairs; the mean is
+    not, and moves with it. Both are reported because they answer slightly
+    different questions, and a reader who only sees one cannot tell whether the
+    other would have agreed.
+    """
     if len(values) < 2:
         return float("nan"), float("nan")
     draws = rng.integers(0, len(values), size=(n_boot, len(values)))
-    meds = np.median(values[draws], axis=1)
-    return float(np.percentile(meds, 2.5)), float(np.percentile(meds, 97.5))
+    vals = stat(values[draws], axis=1)
+    return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
 
 
 def summarize(p: dict, thr: float, n_boot: int, rng: np.random.Generator) -> dict:
@@ -137,17 +145,22 @@ def summarize(p: dict, thr: float, n_boot: int, rng: np.random.Generator) -> dic
     cell_vals = dist[mask]
     row_vals = per_row_medians(C, dist, thr)
     lo, hi = bootstrap_ci(row_vals, n_boot, rng)
+    mlo, mhi = bootstrap_ci(row_vals, n_boot, rng, stat=np.mean)
     return {
         "threshold": thr,
         "n_pairs": n_pairs,
         "n_rows": int(len(row_vals)),
         "median_over_cells": float(np.median(cell_vals)) if n_pairs else float("nan"),
+        "mean_over_cells": float(np.mean(cell_vals)) if n_pairs else float("nan"),
         "median_over_latents": float(np.median(row_vals)) if len(row_vals) else float("nan"),
+        "mean_over_latents": float(np.mean(row_vals)) if len(row_vals) else float("nan"),
+        "sd_over_latents": float(np.std(row_vals, ddof=1)) if len(row_vals) > 1 else float("nan"),
         "iqr_over_latents": (
             [float(np.percentile(row_vals, 25)), float(np.percentile(row_vals, 75))]
             if len(row_vals) else [float("nan")] * 2
         ),
         "ci95_over_latents": [lo, hi],
+        "ci95_mean_over_latents": [mlo, mhi],
     }
 
 
@@ -236,6 +249,7 @@ def main() -> None:
             db = np.array([np.median(b["dist"][r, mb[r]]) for r in shared])
             diff = db - da
             lo, hi = bootstrap_ci(diff, args.bootstrap, rng)
+            mlo, mhi = bootstrap_ci(diff, args.bootstrap, rng, stat=np.mean)
             from scipy.stats import wilcoxon  # noqa: PLC0415
             try:
                 pval = float(wilcoxon(diff)[1])
@@ -244,7 +258,10 @@ def main() -> None:
             report["paired_img_txt_minus_img_img"] = {
                 "threshold": thr, "n_latents": int(len(shared)),
                 "median_difference": float(np.median(diff)),
-                "ci95": [lo, hi], "wilcoxon_p": float(pval),
+                "ci95": [lo, hi],
+                "mean_difference": float(np.mean(diff)),
+                "ci95_mean": [mlo, mhi],
+                "wilcoxon_p": float(pval),
             }
         else:
             report["paired_img_txt_minus_img_img"] = {
@@ -283,21 +300,25 @@ def main() -> None:
 
     # ---- console summary -----------------------------------------------------
     print()
-    hdr = f"{'panel':<22}{'alive a/b':>12}{'n(c>=%.1f)' % args.headline_c:>12}" \
-          f"{'median d':>11}{'95% CI':>18}"
+    hdr = (f"{'panel':<22}{'alive a/b':>12}{'n(c>=%.1f)' % args.headline_c:>12}"
+           f"{'median':>9}{'95% CI':>18}{'mean':>9}{'95% CI':>18}")
     print(hdr)
     print("-" * len(hdr))
     for name, e in report["panels"].items():
         h = e["headline"]
         ci = f"[{h['ci95_over_latents'][0]:.3f}, {h['ci95_over_latents'][1]:.3f}]"
+        mci = f"[{h['ci95_mean_over_latents'][0]:.3f}, {h['ci95_mean_over_latents'][1]:.3f}]"
         print(f"{name:<22}{e['n_alive_a']:>5}/{e['n_alive_b']:<6}{h['n_pairs']:>12}"
-              f"{h['median_over_latents']:>11.3f}{ci:>18}")
+              f"{h['median_over_latents']:>9.3f}{ci:>18}"
+              f"{h['mean_over_latents']:>9.3f}{mci:>18}")
     if "paired_img_txt_minus_img_img" in report:
         pr = report["paired_img_txt_minus_img_img"]
         if pr.get("n_latents"):
-            print(f"\npaired (img_txt - img_img) over {pr['n_latents']} shared latents: "
-                  f"{pr['median_difference']:+.3f}  "
-                  f"95% CI [{pr['ci95'][0]:+.3f}, {pr['ci95'][1]:+.3f}]  "
+            print(f"\npaired (img_txt - img_img) over {pr['n_latents']} shared latents")
+            print(f"  median {pr['median_difference']:+.3f}  "
+                  f"95% CI [{pr['ci95'][0]:+.3f}, {pr['ci95'][1]:+.3f}]")
+            print(f"  mean   {pr['mean_difference']:+.3f}  "
+                  f"95% CI [{pr['ci95_mean'][0]:+.3f}, {pr['ci95_mean'][1]:+.3f}]  "
                   f"Wilcoxon p={pr['wilcoxon_p']:.2e}")
     print(f"\nwrote {out.with_suffix('.pdf')} and {out.with_suffix('.json')}")
 

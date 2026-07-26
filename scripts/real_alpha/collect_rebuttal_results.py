@@ -106,8 +106,8 @@ def main() -> None:
         L.append("지배하지 못하도록, latent마다 자기 쌍들의 중앙값을 먼저 구하고 그 값들의")
         L.append("중앙값을 보고한다.")
         L.append("")
-        L.append("| 비교 | 살아있는 latent | 상관 0.6 이상 쌍 | 거리 중앙값 | 95% 신뢰구간 |")
-        L.append("|---|---|---|---|---|")
+        L.append("| 비교 | 살아있는 latent | 상관 0.6 이상 쌍 | 거리 중앙값 | 95% 신뢰구간 | 거리 평균 | 95% 신뢰구간 |")
+        L.append("|---|---|---|---|---|---|---|")
         labels = {
             "img_img": "image SAE, 두 run",
             "txt_txt": "text SAE, 두 run, 같은 캡션",
@@ -117,13 +117,25 @@ def main() -> None:
         for k, lab in labels.items():
             e = ea["panels"].get(k)
             if e is None:
-                L.append(f"| {lab} | -- | -- | -- | -- |")
+                # CC3M has one caption per image, so the different-caption
+                # condition does not exist there.
+                L.append(f"| {lab} | 해당 없음 | -- | -- | -- | -- | -- |")
                 continue
             h = e["headline"]
             ci = h["ci95_over_latents"]
+            mci = h.get("ci95_mean_over_latents", [None, None])
             L.append(f"| {lab} | {e['n_alive_a']}/{e['n_alive_b']} | {h['n_pairs']} | "
-                     f"{num(h['median_over_latents'])} | [{num(ci[0])}, {num(ci[1])}] |")
-        L.append(f"| 무작위 방향 | -- | -- | {num(ea['random_null_distance'], 2)} | -- |")
+                     f"{num(h['median_over_latents'])} | [{num(ci[0])}, {num(ci[1])}] | "
+                     f"{num(h.get('mean_over_latents'))} | "
+                     f"[{num(mci[0])}, {num(mci[1])}] |")
+        L.append(f"| 무작위 방향 | -- | -- | {num(ea['random_null_distance'], 2)} | -- | "
+                 f"{num(ea['random_null_distance'], 2)} | -- |")
+        L.append("")
+        L.append("평균이 중앙값보다 일관되게 크다. 거의 직교한 쌍들이 만드는 긴 꼬리가 평균을")
+        L.append("끌어올리기 때문이고, 같은 이유로 중앙값이 대표값으로는 더 안정적이다. 두 값을")
+        L.append("모두 싣는 이유는 하나만 보면 다른 하나가 같은 방향인지 알 수 없기 때문이다.")
+        L.append("신뢰구간은 셀이 아니라 latent를 재표집해 구한다 — 같은 latent가 만드는 셀들은")
+        L.append("서로 독립이 아니다.")
         L.append("")
         L.append("다른 캡션 조건이 왜 필요한지 짚어둘 필요가 있다. 두 image SAE는 완전히 같은")
         L.append("벡터를 읽으므로 입력이 달라서 생기는 잡음이 아예 없는 반면, image 대 text는")
@@ -133,10 +145,13 @@ def main() -> None:
         L.append("")
         p = ea.get("paired_img_txt_minus_img_img", {})
         if p.get("n_latents"):
+            mci = p.get("ci95_mean", [None, None])
             L.append(f"두 비교 모두에서 기준을 넘는 image latent {p['n_latents']}개를 하나씩 짝지어")
-            L.append(f"보면, 모달리티를 건너는 데 드는 추가 거리가 {num(p['median_difference'])}이다 ")
-            L.append(f"(95% 신뢰구간 [{num(p['ci95'][0])}, {num(p['ci95'][1])}], "
-                     f"Wilcoxon p={p['wilcoxon_p']:.1e}).")
+            L.append(f"보면, 모달리티를 건너는 데 드는 추가 거리가 중앙값 {num(p['median_difference'])} ")
+            L.append(f"(95% 신뢰구간 [{num(p['ci95'][0])}, {num(p['ci95'][1])}]), "
+                     f"평균 {num(p.get('mean_difference'))} "
+                     f"(95% 신뢰구간 [{num(mci[0])}, {num(mci[1])}])이다. "
+                     f"Wilcoxon p={p['wilcoxon_p']:.1e}.")
             L.append("")
 
         others = sorted((root / "rebuttal_EA").glob(f"{s}_r*/fig_same_modality.json"))
