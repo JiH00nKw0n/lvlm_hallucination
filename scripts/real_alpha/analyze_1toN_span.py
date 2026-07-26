@@ -53,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tau", type=float, default=0.4,
                    help="correlation above which a text latent counts as a partner")
     p.add_argument("--n-draws", type=int, default=20, help="random draws per control")
+    p.add_argument("--n-boot", type=int, default=2000,
+                   help="bootstrap resamples over groups for the intervals")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", required=True)
     return p.parse_args()
@@ -132,19 +134,47 @@ def main() -> None:
     ctrl_rand_dirs = np.array(ctrl_rand_dirs)
     sizes = np.array(sizes)
 
+    # The orthogonal residual is what the request is phrased in: the decoder rows
+    # are unit norm, so the projection and the residual satisfy
+    # ||P_S x||^2 + ||x - P_S x||^2 = 1 exactly, and the distance is sqrt(1-e).
+    # Its median follows from the explained median because sqrt(1-.) is monotone,
+    # but its mean does not, so distances are summarized from the per-group values.
+    ARMS = {
+        "all_partners": full,
+        "strongest_partner_only": top1,
+        "strongest_partner_plus_random_atoms": ctrl_keep,
+        "random_text_atoms": ctrl_rand_atoms,
+        "random_unit_directions": ctrl_rand_dirs,
+    }
+
+    def boot_ci(v: np.ndarray, stat) -> list[float]:
+        if v.size == 0:
+            return [float("nan"), float("nan")]
+        idx = rng.integers(0, v.size, size=(args.n_boot, v.size))
+        b = stat(v[idx], axis=1)
+        return [float(np.percentile(b, 2.5)), float(np.percentile(b, 97.5))]
+
+    def with_ci(v: np.ndarray) -> dict:
+        s = describe(v)
+        s["mean_ci95"] = boot_ci(v, np.mean)
+        s["median_ci95"] = boot_ci(v, np.median)
+        return s
+
     report = {
         "ckpt": args.ckpt, "panel": args.panel, "tau": args.tau,
+        "threshold_rule": "signed correlation C[i,j] >= tau (not |C|)",
         "alive_rule": args.alive_rule, "dim": int(d),
         "n_alive_image": int(len(image_idx)),
         "n_groups": int(len(groups)),
         "group_share_of_alive_image": float(len(groups) / len(image_idx)),
         "group_size_histogram": {str(k): int(v) for k, v in sorted(Counter(sizes.tolist()).items())},
-        "explained": {
-            "all_partners": describe(full),
-            "strongest_partner_only": describe(top1),
-            "strongest_partner_plus_random_atoms": describe(ctrl_keep),
-            "random_text_atoms": describe(ctrl_rand_atoms),
-            "random_unit_directions": describe(ctrl_rand_dirs),
+        "explained": {k: with_ci(v) for k, v in ARMS.items()},
+        "orthogonal_distance": {k: with_ci(np.sqrt(np.clip(1.0 - v, 0.0, None)))
+                                for k, v in ARMS.items()},
+        "per_group": {
+            "image_latent": [int(i) for i, _p in groups],
+            "n_partners": sizes.tolist(),
+            **{k: v.tolist() for k, v in ARMS.items()},
         },
         "analytic_random_subspace": float(np.mean(sizes) / d),
         "marginal_gain_over_strongest": float(np.median(full - top1)),

@@ -256,7 +256,7 @@ def one_to_many(root: Path, s: str, r: str) -> list[str]:
     L.append("나머지를 버리는 셈이 됨. 얼마나 버리는지를 재야 함.")
     L.append("")
     L.append(f"바로 위 구간 분포와 이 절은 CC3M **전체 {j['n_samples']:,}쌍**에서 계산함. "
-             "문서의 다른 절은 50만 쌍 부분표본을 씀 — 상관계수 추정에는 그걸로 충분하지만"),
+             "문서의 다른 절은 50만 쌍 부분표본을 씀 — 상관계수 추정에는 그걸로 충분하지만")
     L.append("(n=50만이면 Pearson r의 표준오차가 약 0.0014로 구간 폭 0.1보다 두 자릿수 작음),")
     L.append("alive 판정은 \"한 번이라도 켜지는가\"라 표본이 늘면 희소한 좌표가 넘어옴. 매칭의")
     L.append("분모가 걸린 이 두 분석만 전체로 다시 돌린 이유임.")
@@ -741,38 +741,76 @@ def build(root: Path, s: str, r: str, pair: str) -> list[str]:
     L.append("")
     L.append("측정된 거리가 사실은 splitting의 부산물이라는 반론을 검정한다. image 쪽 개념")
     L.append("하나가 text 쪽에서 N개로 쪼개진 것뿐이라면, 그 N개를 다 합친 공간은 image 방향을")
-    L.append("설명할 수 있어야 한다. decoder 행은 학습 시점에 이미 단위벡터로 정규화되어")
-    L.append("있으므로, 사영 성분과 직교 잔차의 제곱합이 정확히 1이 되고 설명 비율을 1 − r²로")
-    L.append("읽을 수 있다.")
+    L.append("설명할 수 있어야 한다.")
+    L.append("")
+    L.append("각 1:N 그룹에서 image decoder column vector를 $x$, 이어진 $N$개의 text decoder")
+    L.append("column vector가 펼치는 부분공간을 $S$라 두고, 둘 사이의 거리를 이렇게 정의한다.")
+    L.append("")
+    L.append("$$d_\\perp(x, S) = \\lVert x - P_S x \\rVert$$")
+    L.append("")
+    L.append("$P_S x$는 $x$를 $S$에 직교 사영한 벡터다. decoder 행은 학습 시점에 이미")
+    L.append("단위벡터로 정규화되어 있으므로 $\\lVert P_S x\\rVert^2 + d_\\perp^2 = 1$이 정확히")
+    L.append("성립하고, 거리와 설명 비율 $e$는 $d_\\perp = \\sqrt{1-e}$로 서로 옮겨진다. 거리가")
+    L.append("1에 가까울수록 image 방향에서 text 부분공간으로 설명되지 않는 성분이 크다는 뜻이다.")
     L.append("")
     if ee is None:
         L.append("**측정 없음** — `analyze_1toN_span.py`를 실행할 것.")
     elif ee.get("n_groups", 0) == 0:
         L.append(f"이 임계값({ee['tau']})에서 파트너가 둘 이상인 image latent가 없다.")
     else:
-        ex = ee["explained"]
+        ex, dd = ee["explained"], ee["orthogonal_distance"]
         L.append(f"하나의 image latent가 상관 {ee['tau']} 이상으로 둘 이상의 text latent와 이어지는")
         L.append(f"1:N 그룹은 살아있는 image latent의 {pct(ee['group_share_of_alive_image'])}를 차지한다")
-        L.append(f"({ee['n_groups']}개 그룹). image 방향을 그 text 파트너들이 펼치는 부분공간에")
-        L.append("사영했을 때 설명되는 에너지 비율은 다음과 같다.")
+        L.append(f"({ee['n_groups']}개 그룹). 임계는 부호 있는 상관 $r \\ge {ee['tau']}$이고")
+        L.append("$\\lvert r \\rvert$가 아니다 — 음의 상관은 파트너로 세지 않는다.")
         L.append("")
-        L.append("| 부분공간 | 설명 비율 중앙값 |")
-        L.append("|---|---|")
-        L.append(f"| 모든 파트너 | {num(ex['all_partners']['median'])} |")
-        L.append(f"| 가장 강한 파트너 하나 | {num(ex['strongest_partner_only']['median'])} |")
-        L.append(f"| 가장 강한 파트너 + 무작위 text atom | {num(ex['strongest_partner_plus_random_atoms']['median'])} |")
-        L.append(f"| 무작위 text atom | {num(ex['random_text_atoms']['median'])} |")
-        L.append(f"| 무작위 방향 | {num(ex['random_unit_directions']['median'])} "
-                 f"(이론값 {num(ee['analytic_random_subspace'])}) |")
+        L.append("| 비교 대상 | 거리 중앙값 | 95% 신뢰구간 | 거리 평균 | 95% 신뢰구간 | 설명 비율 중앙값 |")
+        L.append("|---|---|---|---|---|---|")
+        for key, lab in (
+            ("all_partners", "모든 text 파트너가 펼치는 부분공간"),
+            ("strongest_partner_only", "$N$개 중 가장 강한 text latent 하나"),
+            ("strongest_partner_plus_random_atoms", "가장 강한 파트너 + 무작위 text atom"),
+            ("random_text_atoms", "무작위 text atom"),
+            ("random_unit_directions", "무작위 방향"),
+        ):
+            a, b = dd[key], ex[key]
+            mc, ac = a["median_ci95"], a["mean_ci95"]
+            L.append(f"| {lab} | {num(a['median'])} | [{num(mc[0])}, {num(mc[1])}] | "
+                     f"{num(a['mean'])} | [{num(ac[0])}, {num(ac[1])}] | {num(b['median'])} |")
         L.append("")
-        L.append("N차원 부분공간은 어떤 방향이든 우연히 N/d 정도는 설명하므로, 설명 비율만")
-        L.append("단독으로 보면 의미가 없다. splitting 가설을 실제로 검정하는 비교는 가장 강한")
-        L.append("파트너를 남기고 나머지를 무작위 atom으로 바꾼 조건이다.")
+        L.append("신뢰구간은 그룹 단위로 2000회 재표집해 구했다. 무작위 방향의 설명 비율이 이론값")
+        L.append(f"$N/d$ = {num(ee['analytic_random_subspace'])}과 맞으므로 사영 계산이 제대로 돌고")
+        L.append("있다는 확인도 된다.")
         L.append("")
-        L.append(f"쪼개진 나머지 파트너들이 더하는 몫은 {num(ee['marginal_gain_over_strongest'])}이고 "
-                 f"대조군은 {num(ee['marginal_gain_of_control'])}이다. 효과는 실재하지만 작고, "
-                 f"image 방향의 {pct(ee['unexplained_median'])}는 어떤 splitting 조합으로도 설명되지 "
-                 f"않는다. 설명 비율이 0.5를 넘는 그룹은 {pct(ee['frac_groups_explained_above_half'])}다.")
+        L.append(f"모든 text 파트너가 펼치는 부분공간을 쓰면 직교 거리 중앙값이")
+        L.append(f"{num(dd['all_partners']['median'])}이고, 가장 강한 text latent 하나만 쓸 때의")
+        L.append(f"{num(dd['strongest_partner_only']['median'])}보다 작다. 여러 파트너를 함께")
+        L.append("고려하면 image 방향에 조금 더 가까워진다.")
+        L.append("")
+        L.append("**그 개선이 splitting 때문인지는 따로 물어야 한다.** $N$차원 부분공간은 어떤")
+        L.append("방향이든 우연히 $N/d$ 정도는 설명하므로, 파트너를 더할수록 거리가 줄어드는 것")
+        L.append("자체는 splitting의 증거가 아니다. 가설을 검정하는 비교는 가장 강한 파트너를")
+        L.append("남기고 나머지를 무작위 atom으로 바꾼 조건이다 — 쪼개진 나머지 조각들이 무작위")
+        L.append("방향보다 더 설명하는가.")
+        L.append("")
+        L.append(f"설명 비율로 보면 나머지 파트너들이 더하는 몫은 "
+                 f"{num(ee['marginal_gain_over_strongest'])}이고 대조군은 "
+                 f"{num(ee['marginal_gain_of_control'])}이다. 효과는 실재하지만 작다.")
+        L.append("")
+        L.append(f"그리고 직교 거리는 여전히 1에 가깝다. 모든 파트너를 다 써도 "
+                 f"{num(dd['all_partners']['median'])}이고, image 방향 에너지의 "
+                 f"{pct(ee['unexplained_median'])}가 부분공간에 직교하는 성분으로 남는다.")
+        L.append(f"설명 비율이 0.5를 넘는 그룹은 {pct(ee['frac_groups_explained_above_half'])}다.")
+        L.append("1:N splitting은 무작위 기준보다 뚜렷한 정렬을 보이지만, 여러 text latent를")
+        L.append("조합해도 image latent의 전체 방향을 설명하지는 못한다.")
+        d_med = dd["all_partners"]["median"]
+        d_mean = dd["all_partners"]["mean"]
+        if abs(d_med - d_mean) > 0.02:
+            L.append("")
+            L.append(f"이 설정에서는 중앙값 {num(d_med)}과 평균 {num(d_mean)}이 벌어진다. "
+                     "분포가 한쪽으로")
+            L.append("치우쳐 있다는 뜻이고, 잘 설명되는 소수의 그룹이 평균을 끌어내린다. 한 값만")
+            L.append("보면 그 비대칭이 보이지 않으므로 둘 다 싣는다.")
         L.append("")
 
     # ---- ceiling -------------------------------------------------------------
