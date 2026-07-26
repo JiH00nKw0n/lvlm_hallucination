@@ -112,8 +112,8 @@ def coco80_baselines(root: Path, s: str) -> list[str]:
                  f"{pct(c['image_self_agreement'])} | {pct(c['chance_hit@1'])} |")
     L.append("")
 
-    ours = next((j for tag, _label, j in got if tag == ""), None)
-    noal = next((j for tag, _label, j in got if tag == "noalign"), None)
+    ours = next((j for tag, _, j in got if tag == ""), None)
+    noal = next((j for tag, _, j in got if tag == "noalign"), None)
     if ours and noal:
         p = noal["controls"]["p_value_vs_random_permutation"]
         L.append(f"정렬을 빼면 {pct(ours['result']['agree@1'])}에서 "
@@ -240,6 +240,84 @@ def coco80_heterogeneity(root: Path, s: str, r: str) -> list[str]:
     return L
 
 
+def one_to_many(root: Path, s: str, r: str) -> list[str]:
+    """Reviewer PBPC W3 — what a bijection costs when the truth is one-to-many."""
+    if s != "cc3m_k32":
+        return []
+    j = load(root / "rebuttal_full" / f"{s}_{r}" / "splitting" / "one_to_many_splitting.json")
+    if j is None:
+        return []
+    jw, jr = j["jaccard_within_group"], j["jaccard_random_pairs"]
+    cs, cf = j["strongest_share_of_cofiring"], j["cofiring_share_of_image_firing"]
+
+    L = ["### 대응이 1:1이 아니라 1:N이면 어떻게 되는가", ""]
+    L.append("**질문의 무게.** 우리 방법은 Hungarian으로 1:1 대응을 강제함. 개념 하나가 텍스트")
+    L.append("쪽에서 여러 좌표로 쪼개져 있다면 그 가정이 틀린 것이고, 짝을 하나만 남기면서")
+    L.append("나머지를 버리는 셈이 됨. 얼마나 버리는지를 재야 함.")
+    L.append("")
+    L.append(f"바로 위 구간 분포와 이 절은 CC3M **전체 {j['n_samples']:,}쌍**에서 계산함. "
+             "문서의 다른 절은 50만 쌍 부분표본을 씀 — 상관계수 추정에는 그걸로 충분하지만"),
+    L.append("(n=50만이면 Pearson r의 표준오차가 약 0.0014로 구간 폭 0.1보다 두 자릿수 작음),")
+    L.append("alive 판정은 \"한 번이라도 켜지는가\"라 표본이 늘면 희소한 좌표가 넘어옴. 매칭의")
+    L.append("분모가 걸린 이 두 분석만 전체로 다시 돌린 이유임.")
+    L.append("")
+    L.append("**1:N을 어떻게 셌는가.** 살아있는 이미지 좌표마다, 공동활성 상관이 τ를 넘는 텍스트")
+    L.append("좌표를 셈. 2개 이상이면 1:N 그룹임. τ에 원칙적인 값이 없어서 하나로 못 박지 않고")
+    L.append("스윕함 — 유리한 지점 하나만 고르면 그 자체가 반칙임.")
+    L.append("")
+    L.append("| τ | 1:N 그룹 | 살아있는 이미지 좌표 중 비율 | 평균 그룹 크기 | 최대 |")
+    L.append("|---|---|---|---|---|")
+    for row in j["tau_sweep"]:
+        L.append(f"| {row['tau']:.1f} | {row['n_groups']} | "
+                 f"{pct(row['share_of_alive_image'])} | {row['mean_group_size']:.2f} | "
+                 f"{row['max_group_size']} |")
+    L.append("")
+    tau_row = [x for x in j["tau_sweep"] if x["tau"] == j["tau"]][0]
+    L.append("τ가 낮은 쪽은 잡음과 구별되지 않음. 짝을 뒤섞고 상관행렬을 다시 계산했을 때 나오는")
+    L.append("최대 상관이 0.082였으므로, τ=0.1의 64.3%는 대부분 잡음을 세고 있는 셈임. 잡음 위로")
+    L.append(f"확실히 올라간 τ={j['tau']}에서 1:N은 "
+             f"{pct(tau_row['share_of_alive_image'])}이고,")
+    hist = j["group_size_histogram"]
+    L.append(f"그중 {hist.get('2', 0)}개가 파트너 2개짜리임. 꼬리가 짧음.")
+    L.append("")
+    L.append("**N개의 파트너가 서로 다른 개념인가, 같은 개념이 쪼개진 것인가.** 이게 핵심임.")
+    L.append("서로 다른 개념이면 다른 입력에서 켜질 것이고, 같은 개념이 여러 좌표로 나뉜 것이면")
+    L.append("거의 같은 입력에서 함께 켜질 것임. 각 텍스트 좌표가 켜지는 샘플 집합을 구해")
+    L.append("Jaccard 유사도(교집합/합집합)를 잼.")
+    L.append("")
+    L.append("| 어떤 쌍인가 | Jaccard 중앙값 | 평균 | 5–95% | J<0.1 비율 | n |")
+    L.append("|---|---|---|---|---|---|")
+    L.append(f"| **같은 그룹 안의 파트너끼리** | **{num(jw['median'])}** | {num(jw['mean'])} | "
+             f"{num(jw['p05'])}–{num(jw['p95'])} | {pct(jw['share_below_0.1'])} | {jw['n']} |")
+    L.append(f"| 무작위로 고른 텍스트 좌표 두 개 | {num(jr['median'])} | {num(jr['mean'])} | "
+             f"{num(jr['p05'])}–{num(jr['p95'])} | {pct(jr['share_below_0.1'])} | {jr['n']} |")
+    L.append("")
+    L.append(f"무작위 쌍은 사실상 겹치지 않는 반면({pct(jr['share_below_0.1'])}가 J<0.1, 중앙값 "
+             f"{num(jr['median'])}), 그룹 안의 파트너들은 {num(jw['median'])}임. 세 자릿수 차이고, "
+             f"사실상 분리된 쌍은 {pct(jw['share_below_0.1'])}뿐임. 1:N의 대다수는 서로 다른")
+    L.append("개념이 아니라 같은 개념이 여러 좌표로 쪼개진 feature splitting으로 읽힘.")
+    L.append("")
+    L.append("**그러면 1:1로 강제할 때 얼마를 잃는가.**")
+    L.append("")
+    L.append("| | 중앙값 | 평균 | 5–95% |")
+    L.append("|---|---|---|---|")
+    L.append(f"| 가장 강한 파트너가 덮는 그룹 공동발화 | {pct(cs['median'])} | {pct(cs['mean'])} | "
+             f"{pct(cs['p05'])}–{pct(cs['p95'])} |")
+    L.append(f"| 그 공동발화가 차지하는 이미지 좌표 전체 발화 | {pct(cf['median'])} | "
+             f"{pct(cf['mean'])} | {pct(cf['p05'])}–{pct(cf['p95'])} |")
+    L.append("")
+    L.append(f"파트너를 하나만 남겨도 그룹 공동발화의 {pct(cs['median'])}는 이미 덮임. 나머지 "
+             "파트너들은 새 샘플을 거의 더하지 않고 같은 샘플에 겹쳐 반응할 뿐임. 이것이 하드한")
+    L.append("1:1 강제가 그럼에도 작동한 이유로 보임.")
+    L.append("")
+    L.append("**단서를 하나 달아야 함.** 위 두 번째 줄이 그것임. 그 공동발화 집합 자체가 해당")
+    L.append(f"이미지 좌표 전체 발화의 {pct(cf['median'])}밖에 안 됨. 즉 \"가장 강한 하나면 충분하다\"는")
+    L.append("진술은 그 좌표 활동의 절반 남짓에 대한 것이고, 나머지 절반에서는 그 이미지 좌표가")
+    L.append("어떤 파트너와도 함께 켜지지 않음. 첫 줄만 인용하면 과장이 됨.")
+    L.append("")
+    return L
+
+
 ALIGN_METHOD_LABELS = {
     "hungarian (ours)": "Hungarian (ours)",
     "greedy 1:1": "greedy 1:1",
@@ -335,7 +413,10 @@ def alignment_methods(root: Path, s: str, r: str) -> list[str]:
 def build(root: Path, s: str, r: str, pair: str) -> list[str]:
 
     ea = load(root / "rebuttal_EA" / f"{s}_{pair}" / "fig_same_modality.json")
-    ec = load(root / "rebuttal_EC" / f"{s}_{r}" / "match_confidence.json")
+    # The full-dataset panel is used where it exists: "alive" means "fires at
+    # least once", so a subsample undercounts the rare latents.
+    ec = (load(root / "rebuttal_full" / f"{s}_{r}" / "match_confidence" / "match_confidence.json")
+          or load(root / "rebuttal_EC" / f"{s}_{r}" / "match_confidence.json"))
     ee = load(root / "rebuttal_EE" / f"{s}_{r}" / "one_to_many_span.json")
     ef = load(root / "rebuttal_EF" / f"{s}_{r}" / "alignment_ceiling.json")
     ed = load(root / "rebuttal_ED" / f"{s}_{pair}" / "stability_conditioned.json")
@@ -601,7 +682,10 @@ def build(root: Path, s: str, r: str, pair: str) -> list[str]:
     if ec is None:
         L.append("**측정 없음** — `analyze_match_confidence.py`를 실행할 것.")
     else:
-        L.append(f"매칭된 {ec['n_matched_usable']}쌍의 co-activation 상관을 0.1 구간으로 나누면:")
+        L.append(f"{ec['n_samples']:,}쌍에서 계산한 상관행렬에 Hungarian을 돌린 결과임. "
+                 f"살아있는 좌표는 이미지 {ec['n_alive_image']}개 / 텍스트 "
+                 f"{ec['n_alive_text']}개이고, 매칭된 {ec['n_matched_usable']}쌍의 상관을 "
+                 f"0.1 구간으로 나누면:")
         L.append("")
         L.append("| 상관계수 | 쌍 수 | 비율 | 누적 |")
         L.append("|---|---|---|---|")
@@ -627,7 +711,8 @@ def build(root: Path, s: str, r: str, pair: str) -> list[str]:
     if ab is not None:
         L.append("약한 매칭이 실제로 손해를 끼치는지는 그 비율이 얼마인지와는 다른 질문이다.")
         L.append("상관이 컷오프 이상인 매칭만 남기고 나머지 좌표를 0으로 만든 뒤, 학습에 쓰지")
-        L.append("않은 split에서 이미지와 캡션을 서로 검색하게 하면:")
+        L.append("않은 split에서 이미지와 캡션을 서로 검색하게 하면 (이 표만 50만 쌍 패널에서")
+        L.append("계산한 것이라 좌표 수가 위와 다르다):")
         L.append("")
         L.append("| 남긴 매칭 | 좌표 수 | I→T R@1 | I→T R@5 | T→I R@1 | 파트너를 섞었을 때 I→T R@1 |")
         L.append("|---|---|---|---|---|---|")
@@ -642,6 +727,8 @@ def build(root: Path, s: str, r: str, pair: str) -> list[str]:
         L.append("망가뜨린 조건이다. 여기서 성능이 0 근처로 무너진다는 것은, 검색을 떠받치는")
         L.append("것이 그 좌표들이 얼마나 활성화되느냐가 아니라 대응 관계 자체라는 뜻이다.")
         L.append("")
+
+    L.extend(one_to_many(root, s, r))
 
     # ---- feature splitting ---------------------------------------------------
     L.append("## 이 격차가 그냥 feature splitting 때문 아닌가")

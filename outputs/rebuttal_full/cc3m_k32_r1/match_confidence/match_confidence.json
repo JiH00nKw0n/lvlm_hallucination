@@ -1,0 +1,135 @@
+{
+  "ckpt": "outputs/rebuttal_models/cc3m_k32_r1/final",
+  "panel": "outputs/rebuttal_full/cc3m_k32_r1/C_img_txt_full.npz",
+  "alive_rule": "ever",
+  "n_samples": 2818048,
+  "n_alive_image": 3704,
+  "n_alive_text": 3323,
+  "n_matched_usable": 3323,
+  "matched_correlation": {
+    "n": 3323,
+    "mean": 0.19962540524500233,
+    "p05": 0.0021924972534179688,
+    "p25": 0.0348052978515625,
+    "median": 0.13916015625,
+    "p75": 0.3143310546875,
+    "p95": 0.5976074218749998
+  },
+  "correlation_bands": [
+    {
+      "range": "[0.9, 1.0]",
+      "count": 2,
+      "share": 0.0006018657839301836,
+      "cumulative_from_top": 0.0006018657839301836
+    },
+    {
+      "range": "[0.8, 0.9)",
+      "count": 14,
+      "share": 0.004213060487511285,
+      "cumulative_from_top": 0.004814926271441469
+    },
+    {
+      "range": "[0.7, 0.8)",
+      "count": 46,
+      "share": 0.013842913030394222,
+      "cumulative_from_top": 0.01865783930183569
+    },
+    {
+      "range": "[0.6, 0.7)",
+      "count": 102,
+      "share": 0.03069515498043936,
+      "cumulative_from_top": 0.04935299428227505
+    },
+    {
+      "range": "[0.5, 0.6)",
+      "count": 174,
+      "share": 0.05236232320192597,
+      "cumulative_from_top": 0.10171531748420101
+    },
+    {
+      "range": "[0.4, 0.5)",
+      "count": 219,
+      "share": 0.0659043033403551,
+      "cumulative_from_top": 0.16761962082455611
+    },
+    {
+      "range": "[0.3, 0.4)",
+      "count": 335,
+      "share": 0.10081251880830575,
+      "cumulative_from_top": 0.26843213963286183
+    },
+    {
+      "range": "[0.2, 0.3)",
+      "count": 422,
+      "share": 0.12699368040926873,
+      "cumulative_from_top": 0.39542582004213056
+    },
+    {
+      "range": "[0.1, 0.2)",
+      "count": 590,
+      "share": 0.17755040625940416,
+      "cumulative_from_top": 0.5729762263015348
+    },
+    {
+      "range": "[0.0, 0.1)",
+      "count": 1334,
+      "share": 0.40144447788143245,
+      "cumulative_from_top": 0.9744207041829672
+    },
+    {
+      "range": "negative",
+      "count": 85,
+      "share": 0.0255792958170328,
+      "cumulative_from_top": 1.0
+    }
+  ],
+  "matched_cosine_distance": {
+    "n": 3323,
+    "mean": 0.7805436849594116,
+    "p05": 0.3162655234336853,
+    "p25": 0.6230683326721191,
+    "median": 0.8566080331802368,
+    "p75": 0.972156286239624,
+    "p95": 1.0441439151763916
+  },
+  "ambiguity": {
+    "top1_minus_top2": {
+      "n": 3323,
+      "mean": 0.07288864254951477,
+      "p05": 0.001312255859375,
+      "p25": 0.009674072265625,
+      "median": 0.0345458984375,
+      "p75": 0.096099853515625,
+      "p95": 0.2856200933456421
+    },
+    "top2_over_top1": {
+      "n": 3323,
+      "mean": 0.7582413554191589,
+      "p05": 0.3855276107788086,
+      "p25": 0.63869309425354,
+      "median": 0.8035320043563843,
+      "p75": 0.9164883494377136,
+      "p95": 0.9856808185577393
+    },
+    "share_runner_up_within_10pct": 0.28347878423111644,
+    "share_runner_up_within_50pct": 0.881733373457719
+  },
+  "reciprocity": {
+    "share_mutual_first_choice": 0.2675293409569666,
+    "n_mutual": 889
+  },
+  "noise_floor": {
+    "panel": "outputs/rebuttal_full/cc3m_k32_r1/C_img_txt_full_shuffled.npz",
+    "matched_correlation": {
+      "n": 3323,
+      "mean": 0.005706057001803246,
+      "p05": 0.0018740653991699218,
+      "p25": 0.002223968505859375,
+      "median": 0.0028839111328125,
+      "p75": 0.006778717041015625,
+      "p95": 0.0184173583984375
+    },
+    "p99": 0.03322753906249992,
+    "share_of_real_matches_below_floor": 0.24465844116761962
+  }
+}
