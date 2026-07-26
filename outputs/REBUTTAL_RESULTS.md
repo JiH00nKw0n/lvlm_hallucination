@@ -465,11 +465,22 @@ COCO 80개 카테고리 중 양쪽 절반 모두에서 양성이 50장 이상인
 | | 일치율 |
 |---|---|
 | 학습된 permutation | **44.6%** |
+| Iso-Energy Alignment | 27.7% |
+| Shared SAE | 24.6% |
+| Group-Sparse | 7.7% |
+| 정렬 없음 (permutation을 항등으로) | 0% |
 | 무작위 permutation | 0.034% |
 | 카테고리 라벨을 섞은 경우 | 0% |
 | 우연 (3209개 중 하나) | 0.031% |
 | 이미지 쪽이 자기 나머지 절반과 (달성 가능한 천장) | 96.9% |
 | 텍스트 쪽이 자기 나머지 절반과 | 93.8% |
+
+Iso-Energy Alignment / Shared SAE / Group-Sparse는 논문 §5의 다른 arm임. 학습
+데이터·latent 크기·sparsity·epoch을 전부 맞췄고 손실 함수만 다름. "정렬 없음"은
+우리 모델을 그대로 두고 **permutation만 항등으로** 바꾼 것 — 두 dictionary가
+분리되어 있다는 사실은 유지되고 좌표를 잇는 학습된 대응만 사라짐. 이게 0%로
+떨어지므로 위 수치는 dictionary가 좋아서가 아니라 permutation이 일을 해서 나온
+것임. 방법별 상세 수치와 각자의 천장은 아래 소절에 있음.
 
 무작위 permutation 대비 p = 0.0000. 65개 카테고리에서 서로 다른 image latent가 49개 선택됐으므로, 자주 켜지는 latent 몇 개가 전부를 이기는 퇴화 현상은 아니다.
 

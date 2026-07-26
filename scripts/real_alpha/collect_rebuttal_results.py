@@ -69,19 +69,27 @@ EB_BASELINES = [
 ]
 
 
+def eb_arm(root: Path, s: str, tag: str, suffix: str = "") -> dict | None:
+    name = f"{s}_{tag}_r1{suffix}" if tag else f"{s}_r1{suffix}"
+    return load(root / "rebuttal_EB" / name / "coco80_correspondence.json")
+
+
+def eb_arms(root: Path, s: str) -> list[tuple[str, str, dict]]:
+    """Every baseline arm that actually ran, in the order we report them."""
+    if s != "cc3m_k32":
+        return []
+    got = [(tag, lab, eb_arm(root, s, tag)) for tag, lab in EB_BASELINES]
+    return [(t, lab, j) for t, lab, j in got if j is not None]
+
+
 def coco80_baselines(root: Path, s: str) -> list[str]:
     """Same COCO-80 test run on the paper's baselines. CC3M only."""
-    if s != "cc3m_k32":
+    got = eb_arms(root, s)
+    if len(got) < 2:
         return []
 
     def arm(tag: str, suffix: str = "") -> dict | None:
-        name = f"{s}_{tag}_r1{suffix}" if tag else f"{s}_r1{suffix}"
-        return load(root / "rebuttal_EB" / name / "coco80_correspondence.json")
-
-    got = [(tag, lab, arm(tag)) for tag, lab in EB_BASELINES]
-    got = [(t, lab, j) for t, lab, j in got if j is not None]
-    if len(got) < 2:
-        return []
+        return eb_arm(root, s, tag, suffix)
 
     L = ["### 논문의 다른 방법들은 같은 검정에서 어떻게 나오는가", ""]
     L.append("위 검정은 좌표마다 개념 정체성이 있는 방법에만 돌릴 수 있음. 논문 §5의 arm 중")
@@ -104,8 +112,8 @@ def coco80_baselines(root: Path, s: str) -> list[str]:
                  f"{pct(c['image_self_agreement'])} | {pct(c['chance_hit@1'])} |")
     L.append("")
 
-    ours = next((j for tag, _lab, j in got if tag == ""), None)
-    noal = next((j for tag, _lab, j in got if tag == "noalign"), None)
+    ours = next((j for tag, _label, j in got if tag == ""), None)
+    noal = next((j for tag, _label, j in got if tag == "noalign"), None)
     if ours and noal:
         p = noal["controls"]["p_value_vs_random_permutation"]
         L.append(f"정렬을 빼면 {pct(ours['result']['agree@1'])}에서 "
@@ -429,12 +437,24 @@ def build(root: Path, s: str, r: str, pair: str) -> list[str]:
         L.append("| | 일치율 |")
         L.append("|---|---|")
         L.append(f"| 학습된 permutation | **{pct(res['agree@1'])}** |")
+        for tag, lab, arm in eb_arms(root, s):
+            if tag == "":
+                continue  # already the first row
+            L.append(f"| {lab} | {pct(arm['result']['agree@1'])} |")
         L.append(f"| 무작위 permutation | {pct(ctl['random_permutation_hit@1_mean'])} |")
         L.append(f"| 카테고리 라벨을 섞은 경우 | {pct(ctl['label_shuffle_hit@1'])} |")
         L.append(f"| 우연 ({eb['m_eff']}개 중 하나) | {pct(ctl['chance_hit@1'])} |")
         L.append(f"| 이미지 쪽이 자기 나머지 절반과 (달성 가능한 천장) | {pct(ctl['image_self_agreement'])} |")
         L.append(f"| 텍스트 쪽이 자기 나머지 절반과 | {pct(ctl['text_self_agreement'])} |")
         L.append("")
+        if eb_arms(root, s):
+            L.append("Iso-Energy Alignment / Shared SAE / Group-Sparse는 논문 §5의 다른 arm임. 학습")
+            L.append("데이터·latent 크기·sparsity·epoch을 전부 맞췄고 손실 함수만 다름. \"정렬 없음\"은")
+            L.append("우리 모델을 그대로 두고 **permutation만 항등으로** 바꾼 것 — 두 dictionary가")
+            L.append("분리되어 있다는 사실은 유지되고 좌표를 잇는 학습된 대응만 사라짐. 이게 0%로")
+            L.append("떨어지므로 위 수치는 dictionary가 좋아서가 아니라 permutation이 일을 해서 나온")
+            L.append("것임. 방법별 상세 수치와 각자의 천장은 아래 소절에 있음.")
+            L.append("")
         L.append(f"무작위 permutation 대비 p = {ctl['p_value_vs_random_permutation']:.4f}. "
                  f"{eb['n_categories']}개 카테고리에서 서로 다른 image latent가 "
                  f"{eb['distinct_image_latents_chosen']}개 선택됐으므로, 자주 켜지는 latent 몇 개가 "
