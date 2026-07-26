@@ -111,12 +111,26 @@ def main() -> None:
     cross = hungarian_perm(p_it["C"], alive_i, alive_t)
     perm, usable, matched_c = cross["perm"], cross["usable"], cross["matched_c"]
 
+    # The same-modality side is matched by decoder cosine, which is the very
+    # quantity being reported, while the cross-modal side is matched by
+    # co-activation. Part of any gap between them is therefore the choice of
+    # matching operator rather than modality. Matching the cross-modal side the
+    # same way separates the two.
+    cross_geom = geometry_stability(Wa, Wt, alive_i, alive_t)
+    geom_partner = np.full(Wa.shape[0], -1, dtype=np.int64)
+    geom_partner[cross_geom["rows"]] = cross_geom["partner"]
+
     # keep concepts that are alive on both sides of both comparisons
     keep = usable[stab["rows"]]
     rows = stab["rows"][keep]
     s = stab["score"][keep]
     d_same = 1.0 - s
     d_cross = 1.0 - (Wa[rows] * Wt[perm[rows]]).sum(axis=1)
+    has_geom = geom_partner[rows] >= 0
+    d_cross_geom = np.full(len(rows), np.nan)
+    d_cross_geom[has_geom] = 1.0 - (
+        Wa[rows[has_geom]] * Wt[geom_partner[rows[has_geom]]]
+    ).sum(axis=1)
     c_match = matched_c[rows]
     logger.info("concepts usable in both comparisons: %d", len(rows))
 
@@ -128,6 +142,18 @@ def main() -> None:
         "n_concepts": int(len(rows)),
         "same_modality_distance_all": describe(d_same),
         "cross_modal_distance_all": describe(d_cross),
+        "cross_modal_distance_all_matched_by_geometry": describe(d_cross_geom[has_geom]),
+        "operator_vs_modality": {
+            "note": ("same-modality matching optimizes decoder cosine, cross-modal "
+                     "matching optimizes co-activation, so the two columns are not "
+                     "produced the same way; matching the cross-modal side by "
+                     "decoder cosine too isolates the modality component"),
+            "same_modality": float(np.median(d_same)),
+            "cross_modal_matched_by_geometry": float(np.nanmedian(d_cross_geom)),
+            "cross_modal_matched_by_coactivation": float(np.median(d_cross)),
+            "attributable_to_operator": float(np.median(d_cross) - np.nanmedian(d_cross_geom)),
+            "attributable_to_modality": float(np.nanmedian(d_cross_geom) - np.median(d_same)),
+        },
         "matched_correlation_all": describe(c_match),
         "by_stability_quantile": {},
         "by_decile": {},
@@ -142,6 +168,9 @@ def main() -> None:
             "stability_median": float(np.median(s[sel])),
             "same_modality_distance_median": float(np.median(d_same[sel])),
             "cross_modal_distance_median": float(np.median(d_cross[sel])),
+            "cross_modal_distance_median_matched_by_geometry": (
+                float(np.nanmedian(d_cross_geom[sel])) if np.isfinite(d_cross_geom[sel]).any()
+                else float("nan")),
             "matched_correlation_median": float(np.median(c_match[sel])),
         }
 
@@ -189,12 +218,19 @@ def main() -> None:
     print(f"concepts compared: {len(rows)}   mean stability {stab['mean_stability']:.4f}")
     print()
     print(f"{'stability cut':<16}{'n':>6}{'stability':>12}{'d same-mod':>13}"
-          f"{'d cross-mod':>13}{'match corr':>12}")
+          f"{'d cross-mod':>13}{'d cross (geom)':>16}{'match corr':>12}")
     for name, e in report["by_stability_quantile"].items():
         print(f"{name:<16}{e['n']:>6}{e['stability_median']:>12.3f}"
               f"{e['same_modality_distance_median']:>13.3f}"
               f"{e['cross_modal_distance_median']:>13.3f}"
+              f"{e['cross_modal_distance_median_matched_by_geometry']:>16.3f}"
               f"{e['matched_correlation_median']:>12.3f}")
+    ov = report["operator_vs_modality"]
+    print(f"\nmatched the same way on both sides: same {ov['same_modality']:.3f} vs "
+          f"cross {ov['cross_modal_matched_by_geometry']:.3f}")
+    print(f"  of the gap to the reported cross-modal number, "
+          f"{ov['attributable_to_operator']:+.3f} is the matching operator and "
+          f"{ov['attributable_to_modality']:+.3f} is modality")
     print()
     print("decile curve (most reproducible first):")
     print("  " + "  ".join(f"{e['cross_modal_distance_median']:.2f}"

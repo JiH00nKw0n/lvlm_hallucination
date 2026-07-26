@@ -420,15 +420,33 @@ def main() -> None:
         L.append(f"두 run의 image dictionary 사이 평균 안정성은 {num(ed['mean_stability'])}이고 "
                  f"비교된 concept은 {ed['n_concepts']}개다.")
         L.append("")
-        L.append("| 안정성 상위 | 개수 | 안정성 | 같은 모달리티 거리 | cross-modal 거리 | 매칭 상관 |")
-        L.append("|---|---|---|---|---|---|")
+        L.append("두 거리를 나란히 놓을 때 짚어야 할 것이 있다. 같은 모달리티 쪽은 decoder")
+        L.append("cosine을 최대화하도록 짝을 지었고 그 cosine을 보고하므로, 보고하는 값을 그대로")
+        L.append("최적화한 셈이다. 반면 cross-modal 쪽은 co-activation 상관을 최대화한 짝의")
+        L.append("cosine이다. 그래서 격차의 일부는 모달리티가 아니라 매칭 기준의 차이에서 온다.")
+        L.append("cross-modal 쪽도 같은 방식으로, 즉 decoder cosine으로 짝지은 열을 함께 싣는다.")
+        L.append("")
+        L.append("| 안정성 상위 | 개수 | 안정성 | 같은 모달리티 거리 | cross-modal 거리 | cross-modal, 기준 통일 | 매칭 상관 |")
+        L.append("|---|---|---|---|---|---|---|")
         for name, e in ed["by_stability_quantile"].items():
             L.append(f"| {name.replace('top_', '').replace('pct', '%')} | {e['n']} | "
                      f"{num(e['stability_median'])} | "
                      f"{num(e['same_modality_distance_median'])} | "
                      f"{num(e['cross_modal_distance_median'])} | "
+                     f"{num(e.get('cross_modal_distance_median_matched_by_geometry'))} | "
                      f"{num(e['matched_correlation_median'])} |")
         L.append("")
+        ov = ed.get("operator_vs_modality")
+        if ov:
+            L.append(f"양쪽을 똑같이 decoder cosine으로 짝지으면 같은 모달리티 "
+                     f"{num(ov['same_modality'])} 대 cross-modal "
+                     f"{num(ov['cross_modal_matched_by_geometry'])}다. 표에 실린 cross-modal "
+                     f"값과의 차이를 나누면 매칭 기준이 "
+                     f"{num(ov['attributable_to_operator'])}, 모달리티가 "
+                     f"{num(ov['attributable_to_modality'])}를 설명한다. 상위 1% 구간에서는 두 열이 "
+                     f"일치하는데, 가장 재현이 잘 되는 concept은 상관으로 짝지어도 기하로 짝지어도 "
+                     f"같은 파트너가 나오기 때문이다.")
+            L.append("")
         dec = " ".join(f"{v['cross_modal_distance_median']:.2f}" for v in ed["by_decile"].values())
         L.append(f"재현이 잘 되는 순서로 십분위를 나눈 cross-modal 거리: {dec}")
         L.append("")

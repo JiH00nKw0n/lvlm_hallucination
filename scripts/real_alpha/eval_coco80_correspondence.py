@@ -61,8 +61,16 @@ logger = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--panel", required=True, help="C_img_txt.npz, used to build the permutation")
+    p.add_argument("--panel", default=None,
+                   help="C_img_txt.npz, used to build the permutation. Required for "
+                        "the modality-specific method; ignored for the shared ones, "
+                        "which have nothing to permute.")
     p.add_argument("--ckpt", required=True)
+    p.add_argument("--method", choices=["separated", "shared", "aux"], default="separated",
+                   help="separated = two dictionaries plus a learned permutation. "
+                        "shared / aux = one dictionary used for both modalities, so "
+                        "the correspondence is the identity and the alignment loss is "
+                        "what is being tested.")
     p.add_argument("--labels", default="cache/coco80_labels.npz")
     p.add_argument("--cache-dir", default="cache/clip_b32_coco")
     p.add_argument("--captions", default="cache/coco_karpathy_captions.json")
@@ -190,15 +198,27 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     # ---- permutation and candidate coordinates -------------------------------
-    panel = load_panel(args.panel)
-    alive_i, alive_t = alive_masks(panel, args.alive_rule)
-    match = hungarian_perm(panel["C"], alive_i, alive_t)
-    perm = match["perm"]
-    M_img = np.where(match["usable"])[0]      # image latents with a live partner
-    M_txt = perm[M_img]
-    m_eff = len(M_img)
-    logger.info("candidate coordinates: %d (alive image %d, alive text %d)",
-                m_eff, match["n_alive_a"], match["n_alive_b"])
+    # A shared dictionary has no permutation to learn: image and text latents
+    # already live in one coordinate system, which is exactly what the alignment
+    # losses are trying to achieve. The candidate set is then every coordinate
+    # that fires on both modalities, and it is settled after encoding.
+    shared = args.method in ("shared", "aux")
+    if shared:
+        perm = None
+        M_img = M_txt = None
+        m_eff = 0
+    else:
+        if not args.panel:
+            raise SystemExit("--panel is required when --method separated")
+        panel = load_panel(args.panel)
+        alive_i, alive_t = alive_masks(panel, args.alive_rule)
+        match = hungarian_perm(panel["C"], alive_i, alive_t)
+        perm = match["perm"]
+        M_img = np.where(match["usable"])[0]   # image latents with a live partner
+        M_txt = perm[M_img]
+        m_eff = len(M_img)
+        logger.info("candidate coordinates: %d (alive image %d, alive text %d)",
+                    m_eff, match["n_alive_a"], match["n_alive_b"])
 
     # ---- labels --------------------------------------------------------------
     lab = np.load(args.labels)
@@ -215,7 +235,8 @@ def main() -> None:
 
     # ---- image side ----------------------------------------------------------
     img_rows_all = np.array([id_to_row[int(i)] for i in label_ids], dtype=np.int64)
-    sae_i = eval_utils.load_sae(args.ckpt, "separated").image_sae
+    model = eval_utils.load_sae(args.ckpt, args.method)
+    sae_i = model if shared else model.image_sae
     logger.info("encoding %d images", len(img_rows_all))
     i_samp, i_lat, i_val = sparse_latents(sae_i, ds._image_table, img_rows_all,
                                           args.batch_size, device)
@@ -238,10 +259,22 @@ def main() -> None:
     cap_owner = np.array(cap_owner, dtype=np.int64)
     logger.info("captions resolvable: %d", len(cap_rows))
 
-    sae_t = eval_utils.load_sae(args.ckpt, "separated").text_sae
+    sae_t = model if shared else model.text_sae
     logger.info("encoding %d captions", len(cap_rows))
     t_samp, t_lat, t_val = sparse_latents(sae_t, ds._text_table, cap_rows,
                                           args.batch_size, device)
+
+    if shared:
+        # Fires at least once on images and at least once on captions. Anything
+        # else cannot carry a cross-modal correspondence in either direction.
+        fires_img = np.zeros(n_latents, dtype=bool)
+        fires_img[np.unique(i_lat)] = True
+        fires_txt = np.zeros(n_latents, dtype=bool)
+        fires_txt[np.unique(t_lat)] = True
+        M_img = M_txt = np.where(fires_img & fires_txt)[0]
+        m_eff = len(M_img)
+        logger.info("candidate coordinates: %d (fires on images %d, on captions %d)",
+                    m_eff, int(fires_img.sum()), int(fires_txt.sum()))
 
     # caption-level labels inherit their image's labels
     Y_cap = Y[cap_owner]
@@ -340,7 +373,7 @@ def main() -> None:
     lab_shuffle_hit = float(np.mean(i_star == j_star[rng.permutation(len(scored))]))
 
     report = {
-        "ckpt": args.ckpt, "panel": args.panel,
+        "ckpt": args.ckpt, "panel": args.panel, "method": args.method,
         "labels": args.labels,
         "area_filtered": not args.unfiltered_area,
         "require_caption_mention": args.require_caption_mention,
