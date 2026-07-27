@@ -161,3 +161,80 @@ SMOKE=1 bash scripts/run_llava_experiment.sh      # then without SMOKE for full
   small GPU reduce `training.latent_size` (e.g. 32768) in the yaml.
 - **Interrupted run** → just re-run the same `docker run`; caches + the
   per-stage skip logic resume where it stopped.
+
+---
+
+## Reporting the density figure as numbers
+
+Some venues forbid figures in a rebuttal. `scripts/real_alpha/density_bin_stats.py`
+prints the same distribution the density plot draws — for each co-activation
+correlation bin, the mean / median / std / min / max of the matched decoder
+**cosine distance**.
+
+It reads only what Stage 3 already wrote, so it needs **no GPU and no
+re-extraction**:
+
+```
+outputs/real_exp_llava_coco/separated/ckpt/final/diagnostic_B_C_train.npy
+outputs/real_exp_llava_coco/separated/ckpt/final/model.safetensors
+```
+
+Run it after (or instead of) the plotting step:
+
+```bash
+python scripts/real_alpha/density_bin_stats.py \
+    --run-dir outputs/real_exp_llava_coco/separated/ckpt/final \
+    --name "LLaVA-1.5-7B" \
+    --out outputs/real_exp_llava_coco/density_bin_stats
+```
+
+Inside the Docker image:
+
+```bash
+docker run --rm --gpus all \
+  -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+  --entrypoint python lvlm-llava \
+  scripts/real_alpha/density_bin_stats.py \
+    --run-dir outputs/real_exp_llava_coco/separated/ckpt/final \
+    --name "LLaVA-1.5-7B" \
+    --out outputs/real_exp_llava_coco/density_bin_stats
+```
+
+If `outputs/real_exp_llava_coco/density_models.json` exists (Stage 3 writes it),
+`--models outputs/real_exp_llava_coco/density_models.json` does the same thing
+and also handles several models at once.
+
+### Outputs
+
+| file | what |
+|---|---|
+| `density_bin_stats.md` | ready-to-paste tables, one section per model |
+| `density_bin_stats.json` | the same numbers plus quartiles and the per-bin correlation summary |
+
+`density_bin_stats.md` looks like this (numbers from CLIP ViT-B/32, for shape only):
+
+| correlation bin | pairs | share | mean | median | std | min | max |
+|---|---|---|---|---|---|---|---|
+| [0.0, 0.2) | 289 | 51.8% | 0.8433 | 0.8743 | 0.1586 | 0.2708 | 1.1760 |
+| [0.2, 0.4) | 132 | 23.7% | 0.6657 | 0.6551 | 0.1760 | 0.2372 | 1.0443 |
+| [0.4, 0.6) | 70 | 12.5% | 0.5728 | 0.5687 | 0.1460 | 0.2929 | 0.9185 |
+| [0.6, 0.8) | 45 | 8.1% | 0.4939 | 0.4722 | 0.0950 | 0.3174 | 0.8822 |
+| [0.8, 1.0] | 22 | 3.9% | 0.5017 | 0.5123 | 0.0711 | 0.4066 | 0.6974 |
+
+A second table repeats the same pairs as cosine instead of cosine distance,
+since the two conventions get mixed up easily.
+
+### Notes
+
+- The script imports `load_model_data` from `plot_multi_model_density.py`
+  instead of recomputing anything, so the table and the figure use the same
+  alive rule, the same Hungarian matching and the same bin edges. They cannot
+  drift apart.
+- Bin edges are `[0, 0.2, 0.4, 0.6, 0.8, 1.0]`, and the top bin is closed on the
+  right so a pair at exactly 1.0 is not dropped.
+- Matched pairs whose correlation is negative fall below every bin. The script
+  counts them and says so; they are still included in the *all matched pairs*
+  row.
+- The header line states which alive rule was used. Stage 3 does not write
+  `diagnostic_B_firing_rates.npz`, so a fresh LLaVA run falls back to the
+  nonzero-variance proxy — the same fallback the figure uses.
