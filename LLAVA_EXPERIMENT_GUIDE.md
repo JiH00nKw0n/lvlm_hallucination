@@ -238,3 +238,61 @@ since the two conventions get mixed up easily.
 - The header line states which alive rule was used. Stage 3 does not write
   `diagnostic_B_firing_rates.npz`, so a fresh LLaVA run falls back to the
   nonzero-variance proxy — the same fallback the figure uses.
+
+---
+
+## Quickstart: the run is already finished, I just need the numbers
+
+Nothing needs to be retrained or re-extracted. Three steps.
+
+**1. Update the code.**
+
+```bash
+cd lvlm_hallucination
+git pull origin master
+```
+
+**2. Check the two inputs are there.** These are left behind by Stage 3 of the
+run you already completed:
+
+```bash
+ls outputs/real_exp_llava_coco/separated/ckpt/final/diagnostic_B_C_train.npy \
+   outputs/real_exp_llava_coco/separated/ckpt/final/model.safetensors
+```
+
+If `diagnostic_B_C_train.npy` is missing, Stage 3 never ran. Produce it with the
+command below — it needs the COCO embedding cache and a GPU, and takes a few
+minutes because the correlation matrix is the only thing it computes:
+
+```bash
+python scripts/real_alpha/run_diagnostic_B.py \
+    --run-dir outputs/real_exp_llava_coco/separated/ckpt/final \
+    --cache-dir cache/llava_coco
+```
+
+**3. Write the tables.**
+
+```bash
+python scripts/real_alpha/density_bin_stats.py \
+    --run-dir outputs/real_exp_llava_coco/separated/ckpt/final \
+    --name "LLaVA-1.5-7B" \
+    --out outputs/real_exp_llava_coco/density_bin_stats
+```
+
+Docker equivalent, if the native environment is not set up (CPU is enough — pass
+`--gpus all` only if you also need step 2):
+
+```bash
+docker run --rm \
+  -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+  --entrypoint python lvlm-llava \
+  scripts/real_alpha/density_bin_stats.py \
+    --run-dir outputs/real_exp_llava_coco/separated/ckpt/final \
+    --name "LLaVA-1.5-7B" \
+    --out outputs/real_exp_llava_coco/density_bin_stats
+```
+
+**What to send back:** `outputs/real_exp_llava_coco/density_bin_stats.md`. The
+console also prints the per-bin summary, so a copy of the terminal output works
+as a fallback. `density_bin_stats.json` carries the same numbers plus quartiles
+if anything needs checking later.
