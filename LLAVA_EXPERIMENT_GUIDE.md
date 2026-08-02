@@ -296,3 +296,91 @@ docker run --rm \
 console also prints the per-bin summary, so a copy of the terminal output works
 as a fallback. `density_bin_stats.json` carries the same numbers plus quartiles
 if anything needs checking later.
+
+---
+
+## Additional experiments: sparsity sweep (k = 8, 16, 32)
+
+The main run uses **k = 256**, chosen to match the CLIP baseline's sparsity
+*ratio* (256 / 32768 per side = 0.78 %, the same as 32 / 4096). This sweep
+repeats the Table-1 comparison at three much sparser settings so the conclusions
+can be checked against a range of k rather than a single point.
+
+**Only k changes.** `latent_size` stays 65536 (32768 per side for the separated
+methods), and epochs, batch size, learning rate, schedule, data splits and the
+five methods are exactly those in `configs/real/coco_llava.yaml`. A difference
+between arms is therefore attributable to sparsity, not to capacity or
+optimization.
+
+| config | k | active coordinates per side |
+|---|---:|---:|
+| `configs/real/coco_llava_k8.yaml` | 8 | 0.024 % |
+| `configs/real/coco_llava_k16.yaml` | 16 | 0.049 % |
+| `configs/real/coco_llava_k32.yaml` | 32 | 0.098 % |
+| `configs/real/coco_llava.yaml` (main run) | 256 | 0.78 % |
+
+### Running it
+
+The expensive part — LLaVA extraction of COCO and ImageNet — is **not** repeated.
+The sweep reuses `cache/llava_coco` and `cache/llava_imagenet` from the main run,
+so it starts straight at SAE training.
+
+```bash
+bash scripts/run_llava_k_sweep.sh
+```
+
+Docker:
+
+```bash
+docker run --rm --gpus all \
+  -e HF_TOKEN=$HF_TOKEN \
+  -v $PWD/hf_cache:/workspace/.hf \
+  -v $PWD/cache:/workspace/lvlm_hallucination/cache \
+  -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+  --entrypoint bash lvlm-llava \
+  scripts/run_llava_k_sweep.sh
+```
+
+Knobs:
+
+| env | default | note |
+|---|---|---|
+| `KS` | `8 16 32` | which arms to run, e.g. `KS="16"` for one |
+| `DENSITY` | `0` | `1` also runs `run_diagnostic_B.py` + `density_bin_stats.py` per arm |
+| `SAE_SAVE_TOTAL_LIMIT` | `1` | checkpoints kept per method; the sweep triples disk use |
+
+Each arm is idempotent — an arm whose `table.md` already exists is skipped, so a
+crashed sweep resumes by re-invoking the same command.
+
+### Cost
+
+Extraction is skipped, so each arm is SAE training (5 methods) plus evaluation,
+roughly **8 h on one 40 GB A100** — about **24 h for all three**. Disk grows by
+~10 GB per arm at `SAE_SAVE_TOTAL_LIMIT=1`.
+
+If time is short, `KS="32"` is the single most informative arm: it is the
+sparsity at which the CLIP experiments were run, so it makes the LLaVA and CLIP
+results directly comparable.
+
+### Outputs
+
+| path | what |
+|---|---|
+| `outputs/real_exp_llava_coco_k{8,16,32}/table.md`, `table.tex` | the five-method table for that k |
+| `outputs/real_exp_llava_coco_k{8,16,32}/<method>/…` | per-method checkpoints + eval JSONs |
+| `outputs/real_exp_llava_coco_k{8,16,32}/density_bin_stats.{md,json}` | only with `DENSITY=1` |
+
+The script prints all arms' tables side by side at the end, with the k = 256 main
+run appended for reference.
+
+### What to expect, and what to check
+
+At k = 8 with 32768 coordinates per side, most coordinates will never fire. A
+large dead-latent fraction is the expected outcome, not a bug, but it does affect
+how the numbers should be read: the alive-restricted matching has fewer
+coordinates to work with, so the permutation is solving a smaller problem. The
+`run_real_v2.py` logs report the alive count per method — worth recording
+alongside the table.
+
+Please send back `table.md` for each arm (and `density_bin_stats.md` if
+`DENSITY=1` was used).
