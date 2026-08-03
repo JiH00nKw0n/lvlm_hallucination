@@ -12,8 +12,10 @@
 #   bash scripts/run_llava_k32_L32768.sh
 #   CUDA_VISIBLE_DEVICES=1 bash scripts/run_llava_k32_L32768.sh        # pin a GPU
 #   DENSITY=1 bash scripts/run_llava_k32_L32768.sh                     # + per-bin density stats
+#   FULL_PERM=0 bash scripts/run_llava_k32_L32768.sh                   # keep the 50k-sample perm
 #
-# Idempotent: returns immediately if this arm's table.md already exists.
+# Idempotent: every stage skips when its artifact exists, so re-invoking after a
+# crash resumes.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ -f env.sh ] && source env.sh || true
@@ -26,12 +28,14 @@ ROOT="outputs/real_exp_llava_coco_k${K}_L${L}"
 COCO_CACHE=cache/llava_coco
 IN_CACHE=cache/llava_imagenet
 DENSITY="${DENSITY:-0}"
+FULL_PERM="${FULL_PERM:-1}"
 mkdir -p .log
 
 # One checkpoint per method: six arms at once would otherwise fill the disk.
 export SAE_SAVE_TOTAL_LIMIT="${SAE_SAVE_TOTAL_LIMIT:-1}"
 
 banner(){ echo; echo "======== $* ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ========"; }
+LOG=".log/llava_k${K}_L${L}.log"
 
 if [ ! -f "$COCO_CACHE/meta.json" ]; then
   echo "ERROR: $COCO_CACHE/meta.json missing. This arm reuses the caches built by" >&2
@@ -42,12 +46,36 @@ fi
   echo "WARNING: $IN_CACHE/meta.json missing; ImageNet zero-shot will fail, COCO still runs." >&2
 [ -f "$CFG" ] || { echo "ERROR: $CFG not found" >&2; exit 1; }
 
-banner "k=$K latent=$L (16384/side) -> $ROOT"
-if [ -f "$ROOT/table.md" ]; then
-  echo "skip: $ROOT/table.md exists"
+banner "k=$K latent=$L (16384/side): train + eval -> $ROOT"
+if [ -f "$ROOT/table.md" ] && [ -f "$ROOT/ours/perm_is_full_train" ]; then
+  echo "skip: $ROOT/table.md exists and the perm is already full-train"
 else
-  $PY scripts/real_alpha/run_real_v2.py --config "$CFG" 2>&1 \
-      | tee -a ".log/llava_k${K}_L${L}.log"
+  $PY scripts/real_alpha/run_real_v2.py --config "$CFG" 2>&1 | tee -a "$LOG"
+fi
+
+# ---------------------------------------------------------------------------
+# run_real_v2 builds the Hungarian permutation from eval_utils.build_perm, which
+# subsamples 50,000 training pairs and materializes their dense latents. Rebuild
+# it over the WHOLE COCO train split instead: build_hungarian_perm_full.py
+# streams the Pearson accumulator, so the (N, L/2) tensors are never held in
+# memory, and it applies the identical alive rule (fire >= 1) and Hungarian.
+# Then drop only the artifacts that depend on the permutation and let the second
+# pass rebuild them; everything else is skipped because it already exists.
+# ---------------------------------------------------------------------------
+PERM="$ROOT/ours/perm.npz"
+if [ "$FULL_PERM" = "1" ] && [ ! -f "$ROOT/ours/perm_is_full_train" ] && [ -f "$PERM" ]; then
+  banner "k=$K latent=$L: rebuild the permutation on the FULL COCO train split"
+  $PY scripts/real_alpha/build_hungarian_perm_full.py \
+      --ckpt "$ROOT/separated/ckpt/final" \
+      --dataset coco --cache-dir "$COCO_CACHE" --split train \
+      --max-samples 0 --output "$PERM" 2>&1 | tee -a "$LOG"
+  touch "$ROOT/ours/perm_is_full_train"
+
+  rm -f "$ROOT/ours/coco/retrieval.json" \
+        "$ROOT/ours/imagenet/zeroshot_raw.json" \
+        "$ROOT/table.md" "$ROOT/table.tex"
+  banner "k=$K latent=$L: re-evaluate 'ours' with the full-train permutation"
+  $PY scripts/real_alpha/run_real_v2.py --config "$CFG" 2>&1 | tee -a "$LOG"
 fi
 
 if [ "$DENSITY" = "1" ]; then

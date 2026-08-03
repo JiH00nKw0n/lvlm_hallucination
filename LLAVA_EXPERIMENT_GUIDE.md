@@ -432,6 +432,46 @@ scripts set by default.
 
 Each script prints its own `table.md` when it finishes.
 
+### How many training samples decide "alive"
+
+This matters more than it looks. A coordinate counts as **alive if it fires at
+least once**, and only alive coordinates are eligible for the Hungarian
+assignment — dead rows and columns are pushed to a large negative cost so they
+cannot take an alive coordinate's partner. So the sample the alive test runs on
+decides which coordinates the permutation is even allowed to use.
+
+`eval_utils.build_perm`, which `run_real_v2.py` calls, **subsamples 50,000
+training pairs** (`max_samples=50_000`) and materializes their dense `(N, L/2)`
+latents. On COCO that is 50k of roughly 567k train pairs, so a coordinate that
+fires on, say, 1 in 20,000 inputs may be called dead purely because it was not
+sampled.
+
+These arm scripts therefore rebuild the permutation over the **entire COCO train
+split** with `scripts/real_alpha/build_hungarian_perm_full.py`, which streams the
+Pearson accumulator so the `(N, L/2)` tensors are never materialized — the naive
+path would need about 37 GB per side at `latent_size = 32768`. The alive rule,
+the Pearson definition, the dead-slot masking and the Hungarian call are copied
+verbatim from `build_perm`; the only difference is N.
+
+The script then deletes just the permutation-dependent artifacts
+(`ours/coco/retrieval.json`, `ours/imagenet/zeroshot_raw.json`, `table.md`) and
+re-runs the pipeline, which skips everything already on disk and re-evaluates
+only `ours`. A marker file `ours/perm_is_full_train` records that this happened.
+
+Set `FULL_PERM=0` to keep the 50k-sample permutation and match the main run's
+behaviour exactly.
+
+Two numbers worth recording per arm, both printed by the rebuild:
+
+```
+build_perm: alive image=<n>/<L/2>, alive text=<n>/<L/2>
+```
+
+Per-method alive counts also land in
+`outputs/real_exp_llava_coco_k{K}_L{L}/<method>/coco/dead_latents.json`, though
+that evaluator uses its own 50,000-sample cap, so its counts are a lower bound
+and are not the ones the permutation used.
+
 ### What to watch
 
 The sparsest arm, `k16_L32768`, activates 16 of 16384 coordinates per side. A
