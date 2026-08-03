@@ -1,0 +1,56 @@
+name: coco_llava_k32_L32768
+
+# LLaVA-1.5-7B HACL-style paired EOS embeddings (dim 4096), COCO-trained.
+# Density + Table-1 share this SAE structure. Caches produced by
+# scripts/real_alpha/extract_llava_cache.py (--dataset coco|imagenet).
+# Capacity x sparsity grid arm: k=32, latent_size=32768. latent_size is the
+# TOTAL, so the separated methods keep the usual half-and-half split at
+# 16384/side, and the active fraction is 32/16384 = 0.195% per side.
+# Everything else -- epochs, batch, lr, schedule, splits, the five methods
+# -- matches coco_llava.yaml, so a difference between arms is attributable
+# to (k, latent_size) alone. Reuses the caches the main run built.
+data:
+  dataset: coco
+  cache_dir: cache/llava_coco
+  split_train: train
+  split_eval: test
+  eval_samples: 0
+
+training:
+  lr: 5.0e-4
+  num_epochs: 30
+  batch_size: 1024
+  weight_decay: 1.0e-5
+  max_grad_norm: 1.0
+  warmup_ratio: 0.05
+  k: 32
+  latent_size: 32768
+  hidden_size: 4096
+  seed: 0
+  dataloader_num_workers: 2
+  device: cuda
+
+methods:
+  - name: shared
+  - name: separated
+  - name: iso_align
+    aux_weight: 1.0e-4
+  - name: group_sparse
+    aux_weight: 0.05
+  - name: ours
+    base_method: separated
+
+evaluations:
+  - dataset: coco
+    cache_dir: cache/llava_coco
+    split: test
+    tasks: [recon, retrieval]
+  - dataset: imagenet
+    cache_dir: cache/llava_imagenet
+    split: val
+    tasks: [recon, zeroshot_raw]
+    n_classes: 1000
+    n_templates: 80
+
+output:
+  root: outputs/real_exp_llava_coco_k32_L32768

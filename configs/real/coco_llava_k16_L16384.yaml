@@ -1,13 +1,14 @@
-name: coco_llava_k16
+name: coco_llava_k16_L16384
 
 # LLaVA-1.5-7B HACL-style paired EOS embeddings (dim 4096), COCO-trained.
 # Density + Table-1 share this SAE structure. Caches produced by
 # scripts/real_alpha/extract_llava_cache.py (--dataset coco|imagenet).
-# Sparsity sweep arm: identical to coco_llava.yaml except k=16, so the effect
-# of sparsity is not confounded with capacity, data or schedule. latent_size
-# stays 65536 (TOTAL -> 32768/side for separated), giving 0.049% active
-# coordinates per side against 0.78% at the k=256 default. Reuses the caches
-# the main run already built -- no re-extraction.
+# Capacity x sparsity grid arm: k=16, latent_size=16384. latent_size is the
+# TOTAL, so the separated methods keep the usual half-and-half split at
+# 8192/side, and the active fraction is 16/8192 = 0.195% per side.
+# Everything else -- epochs, batch, lr, schedule, splits, the five methods
+# -- matches coco_llava.yaml, so a difference between arms is attributable
+# to (k, latent_size) alone. Reuses the caches the main run built.
 data:
   dataset: coco
   cache_dir: cache/llava_coco
@@ -23,7 +24,7 @@ training:
   max_grad_norm: 1.0
   warmup_ratio: 0.05
   k: 16
-  latent_size: 65536
+  latent_size: 16384
   hidden_size: 4096
   seed: 0
   dataloader_num_workers: 2
@@ -52,4 +53,4 @@ evaluations:
     n_templates: 80
 
 output:
-  root: outputs/real_exp_llava_coco_k16
+  root: outputs/real_exp_llava_coco_k16_L16384

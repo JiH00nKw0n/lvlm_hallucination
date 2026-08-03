@@ -299,37 +299,86 @@ if anything needs checking later.
 
 ---
 
-## Additional experiments: sparsity sweep (k = 8, 16, 32)
+## Additional experiments: capacity × sparsity grid
 
-The main run uses **k = 256**, chosen to match the CLIP baseline's sparsity
-*ratio* (256 / 32768 per side = 0.78 %, the same as 32 / 4096). This sweep
-repeats the Table-1 comparison at three much sparser settings so the conclusions
-can be checked against a range of k rather than a single point.
+The main run fixes one point on two axes at once — `k = 256` and
+`latent_size = 65536`. This grid varies both so the conclusions can be read
+against a range instead of a single setting.
 
-**Only k changes.** `latent_size` stays 65536 (32768 per side for the separated
-methods), and epochs, batch size, learning rate, schedule, data splits and the
-five methods are exactly those in `configs/real/coco_llava.yaml`. A difference
-between arms is therefore attributable to sparsity, not to capacity or
-optimization.
+`latent_size` is the **total**. The modality-specific methods (`separated`,
+`ours`) keep the usual half-and-half split, so an arm at `latent_size = 8192`
+gives each side 4096 coordinates. The shared methods use all of it, which is
+what makes the two families capacity-matched.
 
-| config | k | active coordinates per side |
-|---|---:|---:|
-| `configs/real/coco_llava_k8.yaml` | 8 | 0.024 % |
-| `configs/real/coco_llava_k16.yaml` | 16 | 0.049 % |
-| `configs/real/coco_llava_k32.yaml` | 32 | 0.098 % |
-| `configs/real/coco_llava.yaml` (main run) | 256 | 0.78 % |
+| config | k | latent_size (total) | per side | active per side |
+|---|---:|---:|---:|---:|
+| `coco_llava_k32_L8192.yaml` | 32 | 8192 | 4096 | 0.781 % |
+| `coco_llava_k32_L16384.yaml` | 32 | 16384 | 8192 | 0.391 % |
+| `coco_llava_k32_L32768.yaml` | 32 | 32768 | 16384 | 0.195 % |
+| `coco_llava_k16_L8192.yaml` | 16 | 8192 | 4096 | 0.391 % |
+| `coco_llava_k16_L16384.yaml` | 16 | 16384 | 8192 | 0.195 % |
+| `coco_llava_k16_L32768.yaml` | 16 | 32768 | 16384 | 0.098 % |
+| `coco_llava.yaml` (main run) | 256 | 65536 | 32768 | 0.781 % |
 
-### Running it
+**`k32_L8192` is the anchor arm.** 4096 coordinates per side at k = 32 is exactly
+the CLIP setting from the paper's main experiments, so it makes the LLaVA and
+CLIP numbers directly comparable. `k32_L8192` and the k = 256 main run also share
+an active fraction of 0.781 %, which separates the effect of raw capacity from
+the effect of sparsity.
 
-The expensive part — LLaVA extraction of COCO and ImageNet — is **not** repeated.
-The sweep reuses `cache/llava_coco` and `cache/llava_imagenet` from the main run,
-so it starts straight at SAE training.
+Nothing else changes: epochs, batch size (1024), learning rate, schedule, data
+splits and the five methods all come from `configs/real/coco_llava.yaml`.
 
-```bash
-bash scripts/run_llava_k_sweep.sh
+### Running an arm
+
+One script per arm, each standalone, so they can be launched in parallel:
+
+```
+scripts/run_llava_k32_L8192.sh
+scripts/run_llava_k32_L16384.sh
+scripts/run_llava_k32_L32768.sh
+scripts/run_llava_k16_L8192.sh
+scripts/run_llava_k16_L16384.sh
+scripts/run_llava_k16_L32768.sh
 ```
 
-Docker:
+```bash
+bash scripts/run_llava_k32_L8192.sh
+```
+
+The arms share nothing at run time except the read-only embedding caches, and
+each writes to its own `outputs/real_exp_llava_coco_k{K}_L{L}/`. Extraction is
+**not** repeated — they reuse `cache/llava_coco` and `cache/llava_imagenet` from
+the main run and start at SAE training. Each arm is idempotent: it returns
+immediately if its `table.md` already exists.
+
+Suggested order, one k group at a time:
+
+```bash
+# k = 32 first, all three capacities in parallel
+for L in 8192 16384 32768; do
+  nohup bash scripts/run_llava_k32_L${L}.sh > .log/arm_k32_L${L}.out 2>&1 &
+done
+wait
+
+# then k = 16
+for L in 8192 16384 32768; do
+  nohup bash scripts/run_llava_k16_L${L}.sh > .log/arm_k16_L${L}.out 2>&1 &
+done
+```
+
+To pin arms to different GPUs, set `CUDA_VISIBLE_DEVICES` per launch:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/run_llava_k32_L8192.sh &
+CUDA_VISIBLE_DEVICES=1 bash scripts/run_llava_k32_L16384.sh &
+```
+
+### Docker — no rebuild needed
+
+`Dockerfile.llava` bakes the code in with `COPY . .`, so a previously built image
+does not contain these new scripts. Rather than rebuilding, mount `scripts/` and
+`configs/` over the baked copies:
 
 ```bash
 docker run --rm --gpus all \
@@ -337,50 +386,59 @@ docker run --rm --gpus all \
   -v $PWD/hf_cache:/workspace/.hf \
   -v $PWD/cache:/workspace/lvlm_hallucination/cache \
   -v $PWD/outputs:/workspace/lvlm_hallucination/outputs \
+  -v $PWD/scripts:/workspace/lvlm_hallucination/scripts \
+  -v $PWD/configs:/workspace/lvlm_hallucination/configs \
   --entrypoint bash lvlm-llava \
-  scripts/run_llava_k_sweep.sh
+  scripts/run_llava_k32_L8192.sh
 ```
 
-Knobs:
+The two extra `-v` lines are the only difference from the main run's command.
+Launch one container per arm to run them in parallel.
 
-| env | default | note |
-|---|---|---|
-| `KS` | `8 16 32` | which arms to run, e.g. `KS="16"` for one |
-| `DENSITY` | `0` | `1` also runs `run_diagnostic_B.py` + `density_bin_stats.py` per arm |
-| `SAE_SAVE_TOTAL_LIMIT` | `1` | checkpoints kept per method; the sweep triples disk use |
+### Fitting several arms on one GPU
 
-Each arm is idempotent — an arm whose `table.md` already exists is skipped, so a
-crashed sweep resumes by re-invoking the same command.
+SAE parameter count is `2 × hidden × latent_size` = `8192 × L`, the same for the
+shared and the two-sided methods since capacity is matched. With fp32 weights,
+gradients and AdamW moments that is roughly:
+
+| latent_size | parameters | ≈ GPU memory per arm |
+|---:|---:|---:|
+| 8192 | 67 M | ~1.1 GB |
+| 16384 | 134 M | ~2.2 GB |
+| 32768 | 268 M | ~4.3 GB |
+
+One k group (three arms) therefore needs about 8 GB plus a CUDA context per
+process, so three arms fit comfortably on a 24 GB card and all six fit on a
+40 GB one. These are estimates from parameter counts — watch `nvidia-smi` on the
+first launch rather than trusting them.
 
 ### Cost
 
-Extraction is skipped, so each arm is SAE training (5 methods) plus evaluation,
-roughly **8 h on one 40 GB A100** — about **24 h for all three**. Disk grows by
-~10 GB per arm at `SAE_SAVE_TOTAL_LIMIT=1`.
+Extraction is skipped, so an arm is SAE training (5 methods) plus evaluation.
+The k = 256 / 65536 main run takes ~8 h for this part; these arms are smaller, so
+expect less. Run in parallel, one k group should finish well inside a day.
 
-If time is short, `KS="32"` is the single most informative arm: it is the
-sparsity at which the CLIP experiments were run, so it makes the LLaVA and CLIP
-results directly comparable.
+Disk grows by roughly 1–5 GB per arm at `SAE_SAVE_TOTAL_LIMIT=1`, which the
+scripts set by default.
 
 ### Outputs
 
 | path | what |
 |---|---|
-| `outputs/real_exp_llava_coco_k{8,16,32}/table.md`, `table.tex` | the five-method table for that k |
-| `outputs/real_exp_llava_coco_k{8,16,32}/<method>/…` | per-method checkpoints + eval JSONs |
-| `outputs/real_exp_llava_coco_k{8,16,32}/density_bin_stats.{md,json}` | only with `DENSITY=1` |
+| `outputs/real_exp_llava_coco_k{K}_L{L}/table.md`, `table.tex` | the five-method table for that arm |
+| `outputs/real_exp_llava_coco_k{K}_L{L}/<method>/…` | per-method checkpoints + eval JSONs |
+| `outputs/real_exp_llava_coco_k{K}_L{L}/density_bin_stats.{md,json}` | only with `DENSITY=1` |
+| `.log/llava_k{K}_L{L}.log` | full training/eval log for that arm |
 
-The script prints all arms' tables side by side at the end, with the k = 256 main
-run appended for reference.
+Each script prints its own `table.md` when it finishes.
 
-### What to expect, and what to check
+### What to watch
 
-At k = 8 with 32768 coordinates per side, most coordinates will never fire. A
-large dead-latent fraction is the expected outcome, not a bug, but it does affect
-how the numbers should be read: the alive-restricted matching has fewer
-coordinates to work with, so the permutation is solving a smaller problem. The
-`run_real_v2.py` logs report the alive count per method — worth recording
-alongside the table.
+The sparsest arm, `k16_L32768`, activates 16 of 16384 coordinates per side. A
+large dead-latent fraction there is expected rather than a bug, but it changes
+how the row should be read: alive-restricted matching has fewer coordinates to
+work with, so the permutation is solving a smaller problem. `run_real_v2.py` logs
+the alive count per method — worth recording next to the table.
 
 Please send back `table.md` for each arm (and `density_bin_stats.md` if
 `DENSITY=1` was used).
