@@ -44,7 +44,7 @@ evaluations:
   - dataset: coco
     cache_dir: cache/llava_coco
     split: test
-    tasks: [recon, retrieval]
+    tasks: [recon, retrieval, dead_latents]
   - dataset: imagenet
     cache_dir: cache/llava_imagenet
     split: val

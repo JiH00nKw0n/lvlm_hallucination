@@ -437,8 +437,24 @@ Each script prints its own `table.md` when it finishes.
 The sparsest arm, `k16_L32768`, activates 16 of 16384 coordinates per side. A
 large dead-latent fraction there is expected rather than a bug, but it changes
 how the row should be read: alive-restricted matching has fewer coordinates to
-work with, so the permutation is solving a smaller problem. `run_real_v2.py` logs
-the alive count per method — worth recording next to the table.
+work with, so the permutation is solving a smaller problem.
+
+These configs therefore add `dead_latents` to the COCO evaluation tasks, so every
+method writes its own count to
+`outputs/real_exp_llava_coco_k{K}_L{L}/<method>/coco/dead_latents.json`:
+
+```json
+{"alive_image_count": ..., "latent_size_image": ...,
+ "alive_text_count": ...,  "latent_size_text": ...}
+```
+
+**A latent counts as alive if it fires at least once** (`alive_min_fires = 1`) on
+the sample the evaluator sees, which is the first 50,000 pairs
+(`eval_dead_latents.py --max-samples`, default 50000). This is the same rule
+`build_perm` uses to decide which coordinates the Hungarian assignment may match,
+so the two numbers refer to the same thing. It is *not* the stricter
+firing-rate > 0.001 rule used by the density figure — a rarely firing latent
+counts as alive here and does not there.
 
 Please send back `table.md` for each arm (and `density_bin_stats.md` if
 `DENSITY=1` was used).
