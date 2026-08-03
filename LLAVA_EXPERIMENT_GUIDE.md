@@ -318,6 +318,7 @@ what makes the two families capacity-matched.
 | `coco_llava_k16_L8192.yaml` | 16 | 8192 | 4096 | 0.391 % |
 | `coco_llava_k16_L16384.yaml` | 16 | 16384 | 8192 | 0.195 % |
 | `coco_llava_k16_L32768.yaml` | 16 | 32768 | 16384 | 0.098 % |
+| `coco_llava_k8_L32768.yaml` | 8 | 32768 | 16384 | 0.049 % |
 | `coco_llava.yaml` (main run) | 256 | 65536 | 32768 | 0.781 % |
 
 **`k32_L8192` is the anchor arm.** 4096 coordinates per side at k = 32 is exactly
@@ -340,6 +341,7 @@ scripts/run_llava_k32_L32768.sh
 scripts/run_llava_k16_L8192.sh
 scripts/run_llava_k16_L16384.sh
 scripts/run_llava_k16_L32768.sh
+scripts/run_llava_k8_L32768.sh
 ```
 
 ```bash
@@ -365,6 +367,10 @@ wait
 for L in 8192 16384 32768; do
   nohup bash scripts/run_llava_k16_L${L}.sh > .log/arm_k16_L${L}.out 2>&1 &
 done
+wait
+
+# k = 8 exists only at the largest capacity, as the sparsest point on the grid
+bash scripts/run_llava_k8_L32768.sh
 ```
 
 To pin arms to different GPUs, set `CUDA_VISIBLE_DEVICES` per launch:
@@ -475,7 +481,7 @@ bound measured on a different sample — these arms do not run it.
 
 ### What to watch
 
-The sparsest arm, `k16_L32768`, activates 16 of 16384 coordinates per side. A
+The sparsest arm, `k8_L32768`, activates 8 of 16384 coordinates per side. A
 large dead-latent fraction there is expected rather than a bug, but it changes
 how the row should be read: alive-restricted matching has fewer coordinates to
 work with, so the permutation is solving a smaller problem.
