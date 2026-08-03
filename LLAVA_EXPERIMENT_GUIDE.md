@@ -427,6 +427,7 @@ scripts set by default.
 |---|---|
 | `outputs/real_exp_llava_coco_k{K}_L{L}/table.md`, `table.tex` | the five-method table for that arm |
 | `outputs/real_exp_llava_coco_k{K}_L{L}/<method>/…` | per-method checkpoints + eval JSONs |
+| `outputs/real_exp_llava_coco_k{K}_L{L}/ours/perm.npz` | the full-train permutation, with its alive masks and fire counts |
 | `outputs/real_exp_llava_coco_k{K}_L{L}/density_bin_stats.{md,json}` | only with `DENSITY=1` |
 | `.log/llava_k{K}_L{L}.log` | full training/eval log for that arm |
 
@@ -467,10 +468,10 @@ Two numbers worth recording per arm, both printed by the rebuild:
 build_perm: alive image=<n>/<L/2>, alive text=<n>/<L/2>
 ```
 
-Per-method alive counts also land in
-`outputs/real_exp_llava_coco_k{K}_L{L}/<method>/coco/dead_latents.json`, though
-that evaluator uses its own 50,000-sample cap, so its counts are a lower bound
-and are not the ones the permutation used.
+That pair of counts is the one that matters, because it is the alive set the
+permutation actually used. `eval_dead_latents.py` can report per-method counts
+too, but it applies its own 50,000-sample cap, so its numbers would be a lower
+bound measured on a different sample — these arms do not run it.
 
 ### What to watch
 
